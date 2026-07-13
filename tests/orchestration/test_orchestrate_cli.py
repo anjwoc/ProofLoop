@@ -83,7 +83,10 @@ else:
     print("unknown role prompt", file=sys.stderr)
     raise SystemExit(3)
 
-print(json.dumps({"model": model, "status": "completed"}))
+if Path(sys.argv[0]).name == "codex":
+    print(json.dumps({"type": "thread.started", "model": model}))
+else:
+    print(json.dumps({"event": "model_resolved", "resolvedModel": model}))
 '''
 
 
