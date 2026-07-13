@@ -90,7 +90,12 @@ print(json.dumps({"model": model, "status": "completed"}))
 class OrchestrateCLITest(unittest.TestCase):
     """SIMULATED_HOST_E2E: host CLIs are deterministic child-process fixtures."""
 
-    def _run(self, host: str, recovery: bool = False) -> tuple[subprocess.CompletedProcess[str], Path]:
+    def _run(
+        self,
+        host: str,
+        recovery: bool = False,
+        output_format: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -108,8 +113,11 @@ class OrchestrateCLITest(unittest.TestCase):
         env["PYTHONPATH"] = str(ROOT)
         if recovery:
             env["FAKE_PROOFLOOP_RECOVERY"] = "1"
+        command = [sys.executable, "-m", "proofloop_core.cli", "orchestrate", "--host", host, "--repo", str(repo), "--request", "Implement the bounded value behavior", "--strategy", "planned", "--timeout-seconds", "30"]
+        if output_format is not None:
+            command.extend(["--output-format", output_format, "--verbosity", "info", "--color", "never"])
         completed = subprocess.run(
-            [sys.executable, "-m", "proofloop_core.cli", "orchestrate", "--host", host, "--repo", str(repo), "--request", "Implement the bounded value behavior", "--strategy", "planned", "--timeout-seconds", "30"],
+            command,
             cwd=ROOT, env=env, capture_output=True, text=True, check=False, timeout=90,
         )
         return completed, repo
@@ -140,6 +148,25 @@ class OrchestrateCLITest(unittest.TestCase):
         trace = json.loads((Path(result["runDir"]) / "model-trace-summary.json").read_text())
         self.assertTrue(trace["routingObserved"])
         self.assertEqual("EXTERNAL_MODEL_ROUTING", trace["capabilityMode"])
+
+    def test_jsonl_output_contains_only_standard_events(self) -> None:
+        completed, _ = self._run("codex", output_format="jsonl")
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        events = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertTrue(events)
+        self.assertTrue(all(event["schemaVersion"] == "1" for event in events))
+        self.assertEqual("run.started", events[0]["type"])
+        self.assertEqual("run.completed", events[-1]["type"])
+        self.assertNotIn("truthReport", events[-1])
+
+    def test_human_output_contains_live_status_without_final_json_document(self) -> None:
+        completed, _ = self._run("codex", output_format="human")
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        self.assertIn("[ProofLoop][INIT]", completed.stdout)
+        self.assertIn("requested: gpt-5.6", completed.stdout)
+        self.assertIn("observed: gpt-5.6", completed.stdout)
+        self.assertIn("TRUTH PROVEN", completed.stdout)
+        self.assertNotIn('"truthReport":', completed.stdout)
 
 
 if __name__ == "__main__":

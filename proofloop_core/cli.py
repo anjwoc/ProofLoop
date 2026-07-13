@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .checks import run_checks
@@ -21,6 +22,7 @@ from .attempts import record_attempt
 from .hosts import capability, probe
 from .host_runner import invoke_role
 from .orchestrator import orchestrate
+from .watch import resolve_run_dir, watch_events
 
 
 def _print(value: object) -> None:
@@ -64,6 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     request_group.add_argument("--request-file")
     p_orchestrate.add_argument("--strategy", choices=["direct", "planned", "high-risk", "analysis"])
     p_orchestrate.add_argument("--timeout-seconds", type=int, default=1200)
+    p_orchestrate.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="quiet")
+    p_orchestrate.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
+    p_orchestrate.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+
+    p_watch = sub.add_parser("watch")
+    watch_source = p_watch.add_mutually_exclusive_group(required=True)
+    watch_source.add_argument("--run")
+    watch_source.add_argument("--run-dir")
+    p_watch.add_argument("--repo", default=".")
+    p_watch.add_argument("--format", choices=["human", "jsonl"], default="human")
+    p_watch.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
+    p_watch.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    p_watch.add_argument("--task")
+    p_watch.add_argument("--level", choices=["debug", "info", "warning", "error"])
+    p_watch.add_argument("--no-follow", action="store_true")
 
     p_pre = sub.add_parser("preflight")
     p_pre.add_argument("--repo", default=".")
@@ -139,13 +156,38 @@ def main(argv: list[str] | None = None) -> int:
     p_truth.add_argument("--output")
 
     args = parser.parse_args(argv)
+    if args.command == "watch":
+        selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
+        try:
+            watch_events(
+                selected,
+                stream=sys.stdout,
+                output_format=args.format,
+                verbosity=args.verbosity,
+                color=args.color,
+                task_id=args.task,
+                minimum_level=args.level,
+                follow=not args.no_follow,
+            )
+        except KeyboardInterrupt:
+            pass
+        return 0
     if args.command == "orchestrate":
         host = _resolve_host(args.host)
         request = args.request
         if args.request_file:
             request = Path(args.request_file).read_text(encoding="utf-8")
         strategy_map = {"direct": "DIRECT_VERIFIED_CHANGE", "planned": "PLANNED_IMPLEMENTATION", "high-risk": "HIGH_RISK_ENGINEERING", "analysis": "REPOSITORY_ANALYSIS"}
-        result = orchestrate(host, args.repo, request or "", strategy_override=strategy_map.get(args.strategy), timeout_seconds=args.timeout_seconds)
+        result = orchestrate(
+            host,
+            args.repo,
+            request or "",
+            strategy_override=strategy_map.get(args.strategy),
+            timeout_seconds=args.timeout_seconds,
+            output_format=args.output_format,
+            verbosity=args.verbosity,
+            color=args.color,
+        )
     elif args.command == "host-capabilities":
         result = probe(args.host) if args.probe else capability(args.host)
     elif args.command == "invoke-role":
@@ -197,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             repo = repo.parent
         if (repo / ".proofloop").exists():
             finalize_run(repo, result)
-    _print(result)
+    if args.command != "orchestrate" or args.output_format == "quiet":
+        _print(result)
     if args.command == "orchestrate":
         return 0 if result.get("verdict") == "PROVEN" else 2
     return 0 if result.get("verdict") not in {"FAIL", "FAILED"} else 1
