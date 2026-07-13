@@ -71,7 +71,13 @@ class RendererTest(unittest.TestCase):
                 "recovery.scheduled",
                 phase="REPAIR",
                 level="warning",
-                data={"fromRole": "implementer_fast", "toRole": "implementer_recovery", "reason": "same fingerprint"},
+                data={
+                    "fromRole": "implementer_fast",
+                    "toRole": "implementer_recovery",
+                    "fromRequestedModel": "fast-model",
+                    "toRequestedModel": "recovery-model",
+                    "reason": "same fingerprint",
+                },
             )
         )
         renderer.render(event("review.fix_required", phase="REVIEW", data={"finding": "keyboard navigation missing"}))
@@ -82,6 +88,7 @@ class RendererTest(unittest.TestCase):
         self.assertIn("FAIL · exit 1", text)
         self.assertIn("test_value", text)
         self.assertIn("implementer_fast → implementer_recovery", text)
+        self.assertIn("fast-model → recovery-model", text)
         self.assertIn("keyboard navigation missing", text)
         self.assertIn("PROVEN", text)
 

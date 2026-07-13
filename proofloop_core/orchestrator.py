@@ -470,10 +470,11 @@ class ProofLoopOrchestrator:
             timed_out = bool(result.get("timedOut"))
             cancelled = bool(result.get("cancelled"))
             reason_code = "HOST_TIMEOUT" if timed_out else "HOST_CANCELLED" if cancelled else "HOST_EXIT_NONZERO"
+            terminal_type = "role.cancelled" if cancelled else "role.failed"
             self._emit(
-                "role.failed",
+                terminal_type,
                 phase=invocation_phase,
-                message=f"{role} failed.",
+                message=f"{role} {'cancelled' if cancelled else 'failed'}.",
                 level="error",
                 task_id=task_id,
                 data={
@@ -835,6 +836,8 @@ Do not decide whether tests passed; ProofLoop will run them.
                     data={
                         "fromRole": role,
                         "toRole": "implementer_recovery",
+                        "fromRequestedModel": self._requested_model_for_role(role),
+                        "toRequestedModel": self._requested_model_for_role("implementer_recovery"),
                         "attempt": sequence + 1,
                         "reasonCode": "SAME_FINGERPRINT_REPEATED" if action == "RUN_RECOVERY" else "RECOVERY_ATTEMPT_FAILED",
                         "reason": decision.get("reason"),
@@ -1017,6 +1020,8 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                     data={
                         "fromRole": "reviewer_deep",
                         "toRole": "implementer_recovery",
+                        "fromRequestedModel": self._requested_model_for_role("reviewer_deep"),
+                        "toRequestedModel": self._requested_model_for_role("implementer_recovery"),
                         "reasonCode": "REVIEW_FIX_REQUIRED",
                         "reason": finding or review.get("simplicityVerdict"),
                     },

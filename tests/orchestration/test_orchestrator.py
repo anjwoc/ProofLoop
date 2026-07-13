@@ -63,6 +63,12 @@ class ScriptedAdapter:
             "available": True,
             "mode": "EXTERNAL_MODEL_ROUTING",
             "modelRoutingStatus": "OBSERVABLE",
+            "externalRoles": {
+                "planner_deep": {"model": "deep-model"},
+                "implementer_fast": {"model": "fast-model"},
+                "implementer_recovery": {"model": "recovery-model"},
+                "reviewer_deep": {"model": "deep-model"},
+            },
         }
 
     def invoke(self, invocation: RoleInvocation) -> dict[str, Any]:
@@ -244,6 +250,38 @@ class OrchestratorTest(unittest.TestCase):
             self.assertFalse(failed["data"]["cancelled"])
             self.assertEqual("HOST_TIMEOUT", failed["data"]["reasonCode"])
 
+    def test_role_cancellation_emits_a_distinct_terminal_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+
+            def cancelled_result(_invocation):
+                return {
+                    "verdict": "FAIL",
+                    "role": "planner_deep",
+                    "requestedModel": "deep-model",
+                    "observedModel": None,
+                    "modelEvidence": "CLI_REQUESTED_ONLY",
+                    "exitCode": 130,
+                    "timedOut": False,
+                    "cancelled": True,
+                    "traceRecorded": False,
+                }
+
+            adapter.invoke = cancelled_result  # type: ignore[method-assign]
+            result = orchestrate(
+                "codex",
+                root,
+                "Implement the bounded value behavior",
+                adapter=adapter,
+                strategy_override="PLANNED_IMPLEMENTATION",
+            )
+            cancelled = next(event for event in load_events(result["runDir"]) if event["type"] == "role.cancelled")
+            self.assertFalse(cancelled["data"]["timedOut"])
+            self.assertTrue(cancelled["data"]["cancelled"])
+            self.assertEqual("HOST_CANCELLED", cancelled["data"]["reasonCode"])
+
     def test_direct_strategy_skips_deep_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -291,6 +329,8 @@ class OrchestratorTest(unittest.TestCase):
             recovery = next(event for event in events if event["type"] == "recovery.scheduled")
             self.assertEqual("implementer_fast", recovery["data"]["fromRole"])
             self.assertEqual("implementer_recovery", recovery["data"]["toRole"])
+            self.assertEqual("fast-model", recovery["data"]["fromRequestedModel"])
+            self.assertEqual("recovery-model", recovery["data"]["toRequestedModel"])
             self.assertEqual(attempts[1]["failureFingerprint"], recovery["data"]["fingerprint"])
 
     def test_review_fix_required_invokes_recovery_and_re_review(self) -> None:
@@ -322,6 +362,8 @@ class OrchestratorTest(unittest.TestCase):
                 any(
                     event["type"] == "recovery.scheduled"
                     and event["data"].get("reasonCode") == "REVIEW_FIX_REQUIRED"
+                    and event["data"].get("fromRequestedModel") == "deep-model"
+                    and event["data"].get("toRequestedModel") == "recovery-model"
                     for event in events
                 )
             )

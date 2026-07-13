@@ -145,7 +145,13 @@ class HumanRenderer:
             source = data.get("fromRole", "unknown")
             target = data.get("toRole", "unknown")
             reason = data.get("reason") or event.get("message")
-            return f"{prefix} ⇧ {source} → {target}\n  reason: {reason}"
+            lines = [f"{prefix} ⇧ {source} → {target}"]
+            from_model = data.get("fromRequestedModel")
+            to_model = data.get("toRequestedModel")
+            if from_model or to_model:
+                lines.append(f"  requested model: {from_model or 'unavailable'} → {to_model or 'unavailable'}")
+            lines.append(f"  reason: {reason}")
+            return "\n".join(lines)
 
         if event_type in {"retry.scheduled", "replan.scheduled"}:
             reason = data.get("reason") or event.get("message")
