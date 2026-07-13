@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class PackageTest(unittest.TestCase):
+    def test_entry_skill_description_is_trigger_focused(self) -> None:
+        text = (ROOT / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
+        description = next(line for line in text.splitlines() if line.startswith("description:"))
+        self.assertTrue(description.startswith("description: Use when "), description)
+
     def test_package_validator(self) -> None:
         completed = subprocess.run(["python3", "scripts/validate_package.py"], cwd=ROOT, capture_output=True, text=True, check=False)
         self.assertEqual(0, completed.returncode, completed.stderr)

@@ -1,6 +1,6 @@
 ---
 name: proofloop
-description: Run ProofLoop's automatic evidence-driven coding harness. Use for non-trivial feature work, bug fixes, refactors, risky code changes, or whenever the user invokes ProofLoop. The skill launches one orchestrator command; it must not manually simulate planning, retries, model switching, verification, or completion.
+description: Use when the user invokes ProofLoop or requests non-trivial feature work, bug fixes, refactors, or risky code changes that should run through ProofLoop's automatic evidence-driven coding harness.
 ---
 
 # ProofLoop Entry Skill
