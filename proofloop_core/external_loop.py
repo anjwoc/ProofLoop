@@ -9,6 +9,7 @@ from typing import Any
 
 from .checks import run_checks
 from .diff_guard import inspect_diff
+from .events import EventEmitter
 from .fingerprint import fingerprint_check_report
 from .io import write_json
 from .repair import decide_next
@@ -64,6 +65,8 @@ def run_external_loop(
     recovery_command: list[str] | None,
     baseline: str = "HEAD",
     timeout_seconds: int = 900,
+    *,
+    emitter: EventEmitter | None = None,
 ) -> dict[str, Any]:
     task = load_task_brief(task_path)
     repo = Path(repository).resolve()
@@ -99,7 +102,12 @@ def run_external_loop(
         invocation["stdoutRef"] = str(call_dir / "stdout.log")
         invocation["stderrRef"] = str(call_dir / "stderr.log")
 
-        checks = run_checks(task, repo, root / "checks" / f"attempt-{sequence:02d}")
+        checks = run_checks(
+            task,
+            repo,
+            root / "checks" / f"attempt-{sequence:02d}",
+            emitter=emitter,
+        )
         diff = inspect_diff(task, repo, baseline)
         fingerprint = fingerprint_check_report(checks)
         attempt = {
