@@ -129,12 +129,11 @@ def build_antigravity(root: Path, output: Path) -> None:
         json.dumps(
             {
                 "host": "antigravity",
-                "mode": "EXTERNAL_MODEL_ROUTING",
+                "mode": "ROLE_ROUTING_ONLY",
                 "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
-                "crossModelRouting": "REQUESTED_MODELS_UNPROVEN_UNTIL_TRACE",
+                "crossModelRouting": False,
                 "deterministicSidecar": "$HOME/.proofloop/bin/proofloop-core",
-                "externalMode": capability("antigravity").get("externalMode"),
-                "externalRoles": capability("antigravity").get("externalRoles"),
+                "roles": capability("antigravity")["roles"],
             },
             indent=2,
         )

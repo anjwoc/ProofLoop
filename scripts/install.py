@@ -160,11 +160,11 @@ def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -
         shutil.copy2(output / "workflows" / "proofloop.md", workflow_target)
     return {
         "host": "antigravity",
-        "mode": "EXTERNAL_MODEL_ROUTING",
+        "mode": "ROLE_ROUTING_ONLY",
         "skills": installed_skills,
         "workflow": str(workflow_target),
         "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
-        "crossModelRouting": "REQUESTED_MODELS_UNPROVEN_UNTIL_TRACE",
+        "crossModelRouting": False,
         "permissionBypass": "OPT_IN_WITH_PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1",
         "next": "Restart Antigravity and invoke /proofloop <request>.",
     }

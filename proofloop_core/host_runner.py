@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .events import EventEmitter
-from .hosts import capability
+from .hosts import capability, role_only_trace_summary
 from .io import write_json
 from .output_parsers import parser_for
 from .process_runner import ProcessRunner
@@ -53,7 +53,8 @@ def invoke_role(
     if role not in {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
     config = capability(host)
-    role_config = config.get("externalRoles", config["roles"])[role]
+    role_table = config["roles"] if host == "antigravity" else config.get("externalRoles", config["roles"])
+    role_config = role_table[role]
     model = role_config["model"]
     executable_name = binary or config["binary"]
     executable = shutil.which(executable_name) if os.path.sep not in executable_name else executable_name
@@ -72,7 +73,7 @@ def invoke_role(
             "--model", model, message,
         ]
     elif host == "antigravity":
-        command = [str(executable), "--model", model]
+        command = [str(executable)]
         if os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1":
             command.append("--dangerously-skip-permissions")
         command.extend(["-p", message])
@@ -90,7 +91,7 @@ def invoke_role(
     started = time.time()
     parser = parser_for(host)
     observed: str | None = None
-    evidence_level = "CLI_REQUESTED_ONLY"
+    evidence_level = "UNAVAILABLE" if host == "antigravity" else "CLI_REQUESTED_ONLY"
     model_event_emitted = False
     parser_degraded = False
 
@@ -189,9 +190,12 @@ def invoke_role(
     }
     trace = root / "model-trace.jsonl"
     _append(trace, event)
-    summary = summarize_trace(trace)
-    summary["host"] = host
-    summary["capabilityMode"] = "EXTERNAL_MODEL_ROUTING"
+    if host == "antigravity":
+        summary = role_only_trace_summary(host)
+    else:
+        summary = summarize_trace(trace)
+        summary["host"] = host
+        summary["capabilityMode"] = "EXTERNAL_MODEL_ROUTING"
     write_json(root / "model-trace-summary.json", summary)
     result = {
         "verdict": "PASS" if process_result.exit_code == 0 else "FAIL",

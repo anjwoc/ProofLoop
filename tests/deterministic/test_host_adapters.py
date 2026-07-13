@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from proofloop_core.adapters import ExternalCLIAdapter, RoleInvocation
 from proofloop_core.events import EventEmitter
@@ -57,6 +58,9 @@ class HostAdapterTest(unittest.TestCase):
             self.assertIn("--verbosity info", entry)
             self.assertIn("--color auto", entry)
             self.assertNotIn("invoke-role", entry)
+            built_capability = json.loads((output / "capability.json").read_text(encoding="utf-8"))
+            self.assertEqual("ROLE_ROUTING_ONLY", built_capability["mode"])
+            self.assertFalse(built_capability["crossModelRouting"])
 
     def test_codex_subagent_hook_records_active_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,6 +99,13 @@ class HostAdapterTest(unittest.TestCase):
         self.assertEqual("NATIVE_MODEL_ROUTING", codex["mode"])
         self.assertEqual("gpt-5.6-terra", codex["roles"]["implementer_fast"]["model"])
         self.assertEqual("ROLE_ROUTING_ONLY", antigravity["mode"])
+        self.assertNotIn("externalMode", antigravity)
+        self.assertNotIn("externalRoles", antigravity)
+        with patch(
+            "proofloop_core.adapters.probe",
+            return_value={"host": "antigravity", "available": True, "mode": "ROLE_ROUTING_ONLY"},
+        ):
+            self.assertEqual("ROLE_ROUTING_ONLY", ExternalCLIAdapter("antigravity").probe()["mode"])
 
     def test_codex_installer_uses_plain_mutating_commands_and_direct_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,6 +156,23 @@ class HostAdapterTest(unittest.TestCase):
             self.assertTrue(workflow.exists())
             self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\ndescription:"))
             self.assertTrue((home / ".proofloop" / "bin" / "proofloop-core").exists())
+            result = json.loads(completed.stdout[completed.stdout.index('{\n  "runtime"'):])
+            adapter = result["adapters"][0]
+            self.assertEqual("ROLE_ROUTING_ONLY", adapter["mode"])
+            self.assertFalse(adapter["crossModelRouting"])
+
+    def test_doctor_reports_antigravity_as_role_only(self) -> None:
+        completed = subprocess.run(
+            ["python3", "scripts/doctor.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        antigravity = json.loads(completed.stdout)["hosts"]["antigravity"]
+        self.assertEqual("ROLE_ROUTING_ONLY", antigravity["defaultProofLoopMode"])
+        self.assertFalse(antigravity["crossModelRouting"])
 
     def test_antigravity_project_install(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -176,10 +204,14 @@ class HostAdapterTest(unittest.TestCase):
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
             event = json.loads((run_dir / "model-trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
-            self.assertEqual("Gemini 3.5 Flash (Low)", event["requestedModel"])
-            self.assertEqual("CLI_REQUESTED_ONLY", event["modelEvidence"])
+            self.assertEqual("current-session-model", event["requestedModel"])
+            self.assertEqual("UNAVAILABLE", event["modelEvidence"])
+            self.assertNotIn("--model", event["command"])
+            self.assertIn("-p", event["command"])
             summary = json.loads((run_dir / "model-trace-summary.json").read_text(encoding="utf-8"))
             self.assertFalse(summary["routingObserved"])
+            self.assertFalse(summary["routingClaimed"])
+            self.assertEqual("ROLE_ROUTING_ONLY", summary["capabilityMode"])
 
     def test_host_runner_streams_structured_model_evidence_to_emitter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,11 +279,14 @@ class HostAdapterTest(unittest.TestCase):
             )
 
             self.assertIsNone(result["observedModel"])
-            self.assertEqual("CLI_REQUESTED_ONLY", result["modelEvidence"])
+            self.assertEqual("current-session-model", result["requestedModel"])
+            self.assertEqual("UNAVAILABLE", result["modelEvidence"])
             event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
             self.assertEqual("role.model_observed", event["type"])
             self.assertIsNone(event["data"]["observedModel"])
-            self.assertEqual("CLI_REQUESTED_ONLY", event["data"]["evidenceLevel"])
+            self.assertEqual("UNAVAILABLE", event["data"]["evidenceLevel"])
+            invocation = json.loads((Path(result["invocationDir"]) / "invocation.json").read_text(encoding="utf-8"))
+            self.assertNotIn("--model", invocation["command"])
 
     def test_built_entry_skills_call_fixed_orchestrator_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -302,6 +337,7 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual(0, completed.returncode, completed.stderr)
             args = json.loads(log.read_text(encoding="utf-8"))
             self.assertNotIn("--dangerously-skip-permissions", args)
+            self.assertNotIn("--model", args)
             env["PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS"] = "1"
             completed = subprocess.run(
                 ["python3", "-m", "proofloop_core.cli", "invoke-role", "--host", "antigravity", "--role", "implementer_fast", "--repo", str(root), "--run-dir", str(root / "run2"), "--binary", str(fake)],
@@ -310,6 +346,7 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual(0, completed.returncode, completed.stderr)
             args = json.loads(log.read_text(encoding="utf-8"))
             self.assertIn("--dangerously-skip-permissions", args)
+            self.assertNotIn("--model", args)
 
 
 if __name__ == "__main__":

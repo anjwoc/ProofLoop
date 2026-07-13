@@ -41,8 +41,9 @@ result = {
         },
         "antigravity": {
             **probe("antigravity"),
-            "defaultProofLoopMode": "EXTERNAL_MODEL_ROUTING",
+            "defaultProofLoopMode": "ROLE_ROUTING_ONLY",
             "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
+            "crossModelRouting": False,
             "globalSkill": exists(home / ".gemini" / "config" / "skills" / "proofloop" / "SKILL.md"),
             "cliSkill": exists(home / ".gemini" / "antigravity-cli" / "skills" / "proofloop" / "SKILL.md"),
             "workflow": exists(home / ".gemini" / "config" / "global_workflows" / "proofloop.md"),
@@ -51,7 +52,7 @@ result = {
                 "enabled": os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1",
                 "optInVariable": "PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1",
             },
-            "note": "The workflow launches the external orchestrator. Requested role models remain UNPROVEN until the host output exposes an observed model.",
+            "note": "The workflow launches role-isolated Antigravity processes on the current session model; cross-model routing is not claimed.",
         },
     },
     "truth": {

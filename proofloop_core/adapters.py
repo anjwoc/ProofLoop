@@ -46,10 +46,9 @@ class ExternalCLIAdapter:
     def probe(self) -> dict[str, Any]:
         result = probe(self.host)
         configured = result.get("mode")
-        if self.host == "antigravity" and result.get("available"):
-            result["mode"] = "EXTERNAL_MODEL_ROUTING"
+        if self.host == "antigravity":
             result["nativeMode"] = configured
-            result["modelRoutingStatus"] = "REQUESTED_MODELS_UNPROVEN"
+            result["modelRoutingStatus"] = "ROLE_ROUTING_ONLY"
         elif result.get("available"):
             result["mode"] = "EXTERNAL_MODEL_ROUTING"
             result["nativeMode"] = configured

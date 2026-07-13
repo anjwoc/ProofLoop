@@ -205,7 +205,9 @@ class ProofLoopOrchestrator:
         )
 
     def _requested_model_for_role(self, role: str) -> str | None:
-        roles = self.capability.get("externalRoles") or self.capability.get("roles") or {}
+        roles = self.capability.get("roles") or {}
+        if self.capability.get("mode") != "ROLE_ROUTING_ONLY":
+            roles = self.capability.get("externalRoles") or roles
         value = roles.get(role) if isinstance(roles, dict) else None
         model = value.get("model") if isinstance(value, dict) else None
         return model if isinstance(model, str) and model else None

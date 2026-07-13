@@ -32,13 +32,6 @@ HOST_CAPABILITIES: dict[str, dict[str, Any]] = {
     "antigravity": {
         "binary": "agy",
         "mode": "ROLE_ROUTING_ONLY",
-        "externalMode": "EXTERNAL_MODEL_ROUTING_EXPERIMENTAL",
-        "externalRoles": {
-            "planner_deep": {"model": "Gemini 3.1 Pro (High)", "reasoning": "high", "sandbox": "host-managed"},
-            "implementer_fast": {"model": "Gemini 3.5 Flash (Low)", "reasoning": "low", "sandbox": "host-managed"},
-            "implementer_recovery": {"model": "Gemini 3.1 Pro (High)", "reasoning": "high", "sandbox": "host-managed"},
-            "reviewer_deep": {"model": "Gemini 3.1 Pro (High)", "reasoning": "high", "sandbox": "host-managed"},
-        },
         "roles": {
             "planner_deep": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},
             "implementer_fast": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},

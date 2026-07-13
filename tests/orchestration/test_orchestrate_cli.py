@@ -149,8 +149,15 @@ class OrchestrateCLITest(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual("PROVEN", result["verdict"])
         trace = json.loads((Path(result["runDir"]) / "model-trace-summary.json").read_text())
-        self.assertTrue(trace["routingObserved"])
-        self.assertEqual("EXTERNAL_MODEL_ROUTING", trace["capabilityMode"])
+        self.assertFalse(trace["routingClaimed"])
+        self.assertFalse(trace["routingObserved"])
+        self.assertEqual("ROLE_ROUTING_ONLY", trace["capabilityMode"])
+        events = [
+            json.loads(line)
+            for line in (Path(result["runDir"]) / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        started = next(event for event in events if event["type"] == "role.started")
+        self.assertEqual("current-session-model", started["data"]["requestedModel"])
 
     def test_jsonl_output_contains_only_standard_events(self) -> None:
         completed, _ = self._run("codex", output_format="jsonl")
