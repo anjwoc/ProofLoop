@@ -106,6 +106,35 @@ class CheckRunnerTest(unittest.TestCase):
             self.assertLess(output_events[0]["recordedAt"] - started, 0.4)
             self.assertGreater(finished - started, 0.5)
 
+    def test_failed_check_event_keeps_only_a_bounded_output_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_path = root / "task.json"
+            task_path.write_text(
+                json.dumps(
+                    {
+                        "id": "TASK-tail",
+                        "objective": "bound failure output",
+                        "allowedPaths": [],
+                        "protectedPaths": [],
+                        "changeBudget": {"maxChangedFiles": 8, "maxAddedLines": 500, "maxNewFiles": 4, "allowDependencyChanges": False},
+                        "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "fixture", "considered": []},
+                        "requiredChecks": [
+                            {"command": ["python3", "-c", "import sys; [print(f'line-{i}') for i in range(100)]; sys.exit(1)"]}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            emitter = RecordingEmitter()
+
+            run_checks(load_task_brief(task_path), root, root / "evidence", emitter=emitter)
+
+            tail = emitter.events[-1]["data"]["outputTail"]
+            self.assertEqual(20, len(tail))
+            self.assertEqual("line-80", tail[0])
+            self.assertEqual("line-99", tail[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

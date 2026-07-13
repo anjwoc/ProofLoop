@@ -33,6 +33,8 @@ def validate_event(event: Any, *, expected_run_id: str | None = None) -> dict[st
     sequence = event.get("sequence")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise ValueError("sequence must be a positive integer")
+    if event["eventId"] != f"evt-{sequence:06d}":
+        raise ValueError("eventId does not match sequence")
     if event.get("level") not in _LEVELS:
         raise ValueError("invalid event level")
     if not isinstance(event.get("data"), dict):

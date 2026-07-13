@@ -33,6 +33,7 @@ class ProcessRunner:
         terminate_grace_seconds: float = 2.0,
         drain_grace_seconds: float = 2.0,
         poll_interval: float = 0.05,
+        max_queued_lines: int = 1024,
     ) -> None:
         if terminate_grace_seconds < 0:
             raise ValueError("terminate_grace_seconds must be non-negative")
@@ -40,9 +41,12 @@ class ProcessRunner:
             raise ValueError("drain_grace_seconds must be non-negative")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be positive")
+        if max_queued_lines <= 0:
+            raise ValueError("max_queued_lines must be positive")
         self.terminate_grace_seconds = terminate_grace_seconds
         self.drain_grace_seconds = drain_grace_seconds
         self.poll_interval = poll_interval
+        self.max_queued_lines = max_queued_lines
 
     def run(
         self,
@@ -66,7 +70,10 @@ class ProcessRunner:
         stderr_file = Path(stderr_path)
         stdout_file.parent.mkdir(parents=True, exist_ok=True)
         stderr_file.parent.mkdir(parents=True, exist_ok=True)
-        messages: queue.Queue[tuple[str, str | None, BaseException | None]] = queue.Queue()
+        messages: queue.Queue[tuple[str, str | None, BaseException | None]] = queue.Queue(
+            maxsize=self.max_queued_lines
+        )
+        stop_readers = threading.Event()
         started = time.monotonic()
 
         with stdout_file.open("wb") as stdout_handle, stderr_file.open("wb") as stderr_handle:
@@ -80,16 +87,19 @@ class ProcessRunner:
                 start_new_session=os.name == "posix",
             )
             assert process.stdout is not None and process.stderr is not None
+            if os.name == "posix":
+                os.set_blocking(process.stdout.fileno(), False)
+                os.set_blocking(process.stderr.fileno(), False)
 
             threads = [
                 threading.Thread(
                     target=self._read_stream,
-                    args=("stdout", process.stdout, stdout_handle, messages),
+                    args=("stdout", process.stdout, stdout_handle, messages, stop_readers, self.poll_interval),
                     daemon=True,
                 ),
                 threading.Thread(
                     target=self._read_stream,
-                    args=("stderr", process.stderr, stderr_handle, messages),
+                    args=("stderr", process.stderr, stderr_handle, messages, stop_readers, self.poll_interval),
                     daemon=True,
                 ),
             ]
@@ -102,7 +112,7 @@ class ProcessRunner:
             termination_started: float | None = None
             kill_started: float | None = None
             killed = False
-            pipes_forced_closed = False
+            readers_stopped = False
             callback_error: BaseException | None = None
             reader_error: BaseException | None = None
 
@@ -126,21 +136,20 @@ class ProcessRunner:
                     self._kill(process)
                 elif (
                     killed
-                    and not pipes_forced_closed
+                    and not readers_stopped
                     and kill_started is not None
                     and now - kill_started >= self.drain_grace_seconds
                     and len(finished_streams) < 2
                 ):
-                    pipes_forced_closed = True
-                    self._close_pipe(process.stdout)
-                    self._close_pipe(process.stderr)
+                    readers_stopped = True
+                    stop_readers.set()
 
                 try:
                     stream_name, line, stream_error = messages.get(timeout=self.poll_interval)
                 except queue.Empty:
                     continue
                 if stream_error is not None:
-                    if not pipes_forced_closed and reader_error is None:
+                    if not readers_stopped and reader_error is None:
                         reader_error = stream_error
                         if termination_started is None:
                             termination_started = time.monotonic()
@@ -188,12 +197,33 @@ class ProcessRunner:
         pipe: BinaryIO,
         output: BinaryIO,
         messages: queue.Queue[tuple[str, str | None, BaseException | None]],
+        stop_event: threading.Event,
+        poll_interval: float,
     ) -> None:
+        pending = bytearray()
         try:
-            for raw_line in iter(pipe.readline, b""):
-                output.write(raw_line)
+            while not stop_event.is_set():
+                try:
+                    chunk = os.read(pipe.fileno(), 65536)
+                except BlockingIOError:
+                    stop_event.wait(poll_interval)
+                    continue
+                if not chunk:
+                    break
+                output.write(chunk)
                 output.flush()
-                messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+                pending.extend(chunk)
+                while b"\n" in pending:
+                    boundary = pending.index(b"\n") + 1
+                    raw_line = bytes(pending[:boundary])
+                    del pending[:boundary]
+                    messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+                while len(pending) >= 65536:
+                    raw_line = bytes(pending[:65536])
+                    del pending[:65536]
+                    messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+            if pending:
+                messages.put((name, bytes(pending).decode("utf-8", errors="replace"), None))
         except BaseException as exc:
             messages.put((name, None, exc))
         finally:
@@ -212,7 +242,7 @@ class ProcessRunner:
                 os.killpg(process.pid, signal.SIGTERM)
             else:
                 process.terminate()
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
 
     @staticmethod
@@ -222,14 +252,5 @@ class ProcessRunner:
                 os.killpg(process.pid, signal.SIGKILL)
             elif process.poll() is None:
                 process.kill()
-        except ProcessLookupError:
-            pass
-
-    @staticmethod
-    def _close_pipe(pipe: BinaryIO | None) -> None:
-        if pipe is None:
-            return
-        try:
-            os.close(pipe.fileno())
-        except OSError:
+        except (ProcessLookupError, PermissionError):
             pass

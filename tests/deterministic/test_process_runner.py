@@ -187,6 +187,60 @@ class ProcessRunnerTest(unittest.TestCase):
             self.assertEqual(b"before\xffafter\n", (root / "out.log").read_bytes())
             self.assertEqual(["before\ufffdafter\n"], arrivals)
 
+    @unittest.skipUnless(os.name == "posix", "detached descendant semantics require POSIX")
+    def test_timeout_has_a_real_drain_deadline_for_detached_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            child_pid_path = root / "child.pid"
+            holder: dict[str, object] = {}
+            child_script = (
+                "import os, signal, time\n"
+                f"open({str(child_pid_path)!r}, 'w').write(str(os.getpid()))\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "time.sleep(30)\n"
+            )
+            leader_script = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {child_script!r}], start_new_session=True)\n"
+                "print('leader-ready', flush=True)\n"
+                "time.sleep(30)\n"
+            )
+
+            def execute() -> None:
+                try:
+                    holder["result"] = ProcessRunner(
+                        terminate_grace_seconds=0.1,
+                        drain_grace_seconds=0.1,
+                    ).run(
+                        [sys.executable, "-u", "-c", leader_script],
+                        cwd=root,
+                        stdout_path=root / "out.log",
+                        stderr_path=root / "err.log",
+                        timeout_seconds=0.2,
+                    )
+                except BaseException as exc:
+                    holder["error"] = exc
+
+            thread = threading.Thread(target=execute, daemon=True)
+            thread.start()
+            thread.join(timeout=1.5)
+            was_stuck = thread.is_alive()
+            if child_pid_path.exists():
+                try:
+                    os.kill(int(child_pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            thread.join(timeout=2)
+
+            self.assertFalse(was_stuck, "drain deadline did not release detached descendant pipes")
+            self.assertNotIn("error", holder)
+            result = holder["result"]
+            self.assertEqual(124, result.exit_code)  # type: ignore[union-attr]
+
+    def test_output_queue_capacity_is_explicitly_bounded(self) -> None:
+        runner = ProcessRunner(max_queued_lines=8)
+        self.assertEqual(8, runner.max_queued_lines)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,16 @@ class EventEmitterTest(unittest.TestCase):
             with self.assertRaisesRegex(EventStoreCorruptError, "line 1"):
                 EventEmitter("run-1", root, io.StringIO(), "quiet")
 
+    def test_event_id_must_match_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            malformed = json.loads(event_line(2))
+            malformed["eventId"] = "evt-000001"
+            (root / "events.jsonl").write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(EventStoreCorruptError, "eventId"):
+                EventEmitter("run-1", root, io.StringIO(), "quiet")
+
 
 if __name__ == "__main__":
     unittest.main()

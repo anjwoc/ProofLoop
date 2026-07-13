@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -15,22 +16,6 @@ from .task_brief import TaskBrief
 def _safe_name(index: int, name: str | None) -> str:
     raw = name or f"check-{index:02d}"
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in raw).strip("-") or f"check-{index:02d}"
-
-
-def _failure_evidence(stdout_path: Path, stderr_path: Path) -> tuple[list[str], list[str]]:
-    lines: list[str] = []
-    for path in (stdout_path, stderr_path):
-        lines.extend(
-            line.strip()
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
-            if line.strip()
-        )
-    failed = [
-        line
-        for line in lines
-        if re.search(r"(?:^|\s)(?:FAIL|FAILED|ERROR)(?:\s|:|$)", line, re.IGNORECASE)
-    ]
-    return failed[-20:], lines[-20:]
 
 
 def run_checks(
@@ -54,6 +39,8 @@ def run_checks(
         if repo not in cwd.parents and cwd != repo:
             raise ValueError(f"check cwd escapes repository: {cwd}")
         command_id = f"check-{index:03d}"
+        output_tail: deque[str] = deque(maxlen=20)
+        failed_tests: deque[str] = deque(maxlen=20)
         if emitter is not None:
             emitter.emit(
                 "check.started",
@@ -70,6 +57,13 @@ def run_checks(
         started = time.time()
 
         def on_line(stream_name: str, line: str) -> None:
+            for output_line in line.splitlines():
+                stripped = output_line.strip()
+                if not stripped:
+                    continue
+                output_tail.append(stripped)
+                if re.search(r"(?:^|\s)(?:FAIL|FAILED|ERROR)(?:\s|:|$)", stripped, re.IGNORECASE):
+                    failed_tests.append(stripped)
             if emitter is None:
                 return
             emitter.emit(
@@ -117,11 +111,6 @@ def run_checks(
         results.append(result)
         if emitter is not None:
             event_type = "check.completed" if process_result.exit_code == 0 else "check.failed"
-            failed_tests, output_tail = (
-                ([], [])
-                if process_result.exit_code == 0
-                else _failure_evidence(stdout_path, stderr_path)
-            )
             failure_reason = None
             if process_result.timed_out:
                 failure_reason = f"timeout after {check.timeout_seconds}s"
@@ -145,8 +134,8 @@ def run_checks(
                     "durationSeconds": result["durationSeconds"],
                     "stdoutRef": str(stdout_path),
                     "stderrRef": str(stderr_path),
-                    "failedTests": failed_tests,
-                    "outputTail": output_tail,
+                    "failedTests": [] if process_result.exit_code == 0 else list(failed_tests),
+                    "outputTail": [] if process_result.exit_code == 0 else list(output_tail),
                     "failureReason": failure_reason,
                 },
             )
