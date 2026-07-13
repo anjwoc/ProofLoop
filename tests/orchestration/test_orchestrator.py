@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -35,6 +36,13 @@ def make_repo(root: Path) -> None:
     )
     git(root, "add", ".")
     git(root, "commit", "-m", "baseline")
+
+
+def load_events(run_dir: str | Path) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in (Path(run_dir) / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
 
 
 class ScriptedAdapter:
@@ -158,12 +166,15 @@ class OrchestratorTest(unittest.TestCase):
             root = Path(tmp)
             make_repo(root)
             adapter = ScriptedAdapter()
+            stream = io.StringIO()
             result = orchestrate(
                 "codex",
                 root,
                 "Implement the bounded value behavior across source and tests",
                 adapter=adapter,
                 strategy_override="PLANNED_IMPLEMENTATION",
+                stream=stream,
+                output_format="jsonl",
             )
             self.assertEqual("PROVEN", result["verdict"], result)
             self.assertEqual(["planner_deep", "implementer_fast", "reviewer_deep"], adapter.calls)
@@ -171,6 +182,30 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual("PROVEN", json.loads((run / "truth-report.json").read_text())["verdict"])
             self.assertTrue(json.loads((run / "model-trace-summary.json").read_text())["routingObserved"])
             self.assertIn('return "fixed"', (root / "src" / "value.py").read_text(encoding="utf-8"))
+            events = load_events(run)
+            types = [event["type"] for event in events]
+            self.assertEqual("run.started", types[0])
+            for required in (
+                "capability.detected",
+                "strategy.selected",
+                "context.ready",
+                "task.created",
+                "task.started",
+                "role.started",
+                "role.model_observed",
+                "check.completed",
+                "diff_guard.completed",
+                "attempt.recorded",
+                "task.completed",
+                "review.started",
+                "review.completed",
+                "truth.completed",
+            ):
+                self.assertIn(required, types)
+            self.assertEqual("run.completed", types[-1])
+            self.assertEqual(list(range(1, len(events) + 1)), [event["sequence"] for event in events])
+            rendered = [json.loads(line) for line in stream.getvalue().splitlines()]
+            self.assertEqual(events, rendered)
 
     def test_direct_strategy_skips_deep_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,6 +247,14 @@ class OrchestratorTest(unittest.TestCase):
             transitions = (Path(result["runDir"]) / "transitions.jsonl").read_text()
             self.assertIn('"state": "RETRY_FAST"', transitions)
             self.assertIn('"state": "RUN_RECOVERY"', transitions)
+            events = load_events(result["runDir"])
+            types = [event["type"] for event in events]
+            self.assertIn("retry.scheduled", types)
+            self.assertIn("progress.stalled", types)
+            recovery = next(event for event in events if event["type"] == "recovery.scheduled")
+            self.assertEqual("implementer_fast", recovery["data"]["fromRole"])
+            self.assertEqual("implementer_recovery", recovery["data"]["toRole"])
+            self.assertEqual(attempts[1]["failureFingerprint"], recovery["data"]["fingerprint"])
 
     def test_review_fix_required_invokes_recovery_and_re_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +278,16 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual("APPROVED", final_review["verdict"])
             transitions = (run / "transitions.jsonl").read_text()
             self.assertIn('"state": "REVIEW_REPAIR"', transitions)
+            events = load_events(run)
+            fix = next(event for event in events if event["type"] == "review.fix_required")
+            self.assertEqual("simplify final change", fix["data"]["finding"])
+            self.assertTrue(
+                any(
+                    event["type"] == "recovery.scheduled"
+                    and event["data"].get("reasonCode") == "REVIEW_FIX_REQUIRED"
+                    for event in events
+                )
+            )
 
     def test_success_claim_without_plan_artifact_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -249,6 +302,9 @@ class OrchestratorTest(unittest.TestCase):
             )
             self.assertEqual("BLOCKED", result["verdict"])
             self.assertEqual("PLAN_ARTIFACT_MISSING", result["code"])
+            events = load_events(result["runDir"])
+            self.assertEqual("run.blocked", events[-1]["type"])
+            self.assertEqual("PLAN_ARTIFACT_MISSING", events[-1]["data"]["code"])
 
 
     def test_repository_analysis_blocks_instead_of_simulating(self) -> None:
@@ -280,6 +336,8 @@ class OrchestratorTest(unittest.TestCase):
             )
             self.assertEqual("FAILED", result["verdict"])
             self.assertEqual("PLANNER_DEEP_MUTATED_SOURCE", result["code"])
+            events = load_events(result["runDir"])
+            self.assertEqual("run.failed", events[-1]["type"])
 
 
 if __name__ == "__main__":

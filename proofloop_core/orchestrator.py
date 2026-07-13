@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, TextIO
 
 from .adapters import ExternalCLIAdapter, HostAdapter, RoleInvocation
 from .checks import run_checks
 from .diff_guard import inspect_diff
+from .events import EventEmitter
 from .fingerprint import fingerprint_check_report
 from .git_snapshot import changed_source_files, snapshot_worktree
 from .io import read_json, write_json
@@ -157,6 +159,10 @@ class ProofLoopOrchestrator:
         strategy_override: str | None = None,
         timeout_seconds: int = 1200,
         require_observed_routing: bool = True,
+        stream: TextIO | None = None,
+        output_format: str = "quiet",
+        verbosity: str = "info",
+        color: str = "auto",
     ):
         self.host = host
         self.repo = Path(repository).resolve()
@@ -165,12 +171,44 @@ class ProofLoopOrchestrator:
         self.strategy_override = strategy_override
         self.timeout_seconds = timeout_seconds
         self.require_observed_routing = require_observed_routing
+        self.stream = stream if stream is not None else sys.stdout
+        self.output_format = output_format
+        self.verbosity = verbosity
+        self.color = color
         self.run_dir: Path | None = None
+        self.emitter: EventEmitter | None = None
         self.capability: dict[str, Any] = {}
         self.strategy: StrategyDecision | None = None
         self.original_baseline: str | None = None
         self.used_roles: list[str] = []
         self.tasks: list[TaskBrief] = []
+
+    def _emit(
+        self,
+        event_type: str,
+        *,
+        phase: str,
+        message: str,
+        level: str = "info",
+        task_id: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if self.emitter is None:
+            return None
+        return self.emitter.emit(
+            event_type,
+            phase=phase,
+            message=message,
+            level=level,
+            task_id=task_id,
+            data=data,
+        )
+
+    def _requested_model_for_role(self, role: str) -> str | None:
+        roles = self.capability.get("externalRoles") or self.capability.get("roles") or {}
+        value = roles.get(role) if isinstance(roles, dict) else None
+        model = value.get("model") if isinstance(value, dict) else None
+        return model if isinstance(model, str) and model else None
 
     def transition(self, state: str, **details: Any) -> None:
         if self.run_dir is None:
@@ -184,11 +222,26 @@ class ProofLoopOrchestrator:
             raise ValueError("request must be non-empty")
         started = start_run(self.repo, self.request)
         self.run_dir = Path(started["runDir"])
+        self.emitter = EventEmitter(
+            started["runId"],
+            self.run_dir,
+            self.stream,
+            self.output_format,
+            self.verbosity,
+            self.color,
+        )
+        self._emit(
+            "run.started",
+            phase="INIT",
+            message="ProofLoop run started.",
+            data={"host": self.host, "repository": str(self.repo)},
+        )
         try:
             self.transition("INIT")
             write_json(self.run_dir / "request.json", {"schemaVersion": "1.0", "request": self.request})
 
             self.transition("PREFLIGHT")
+            self._emit("context.started", phase="PREFLIGHT", message="Repository preflight started.")
             preflight_result = preflight(self.repo)
             write_json(self.run_dir / "preflight.json", preflight_result)
             if not preflight_result.get("isGitRepository"):
@@ -197,16 +250,41 @@ class ProofLoopOrchestrator:
             run_state = read_json(self.run_dir / "run.json")
             run_state["baselineCommit"] = self.original_baseline
             write_json(self.run_dir / "run.json", run_state)
+            self._emit(
+                "context.ready",
+                phase="PREFLIGHT",
+                message="Repository preflight completed.",
+                data={"repository": str(self.repo), "baseline": self.original_baseline},
+            )
 
             self.transition("CAPABILITY")
             self.capability = self.adapter.probe()
             write_json(self.run_dir / "capability.json", self.capability)
             if not self.capability.get("available", True):
+                self._emit(
+                    "capability.degraded",
+                    phase="CAPABILITY",
+                    message=f"{self.host} host capability is unavailable.",
+                    level="error",
+                    data=self.capability,
+                )
                 raise OrchestrationError("HOST_CLI_MISSING", f"{self.host} CLI is not available")
+            self._emit(
+                "capability.detected",
+                phase="CAPABILITY",
+                message=f"{self.host} host capability detected.",
+                data=self.capability,
+            )
 
             self.transition("CLASSIFY")
             self.strategy = classify_request(self.request, self.strategy_override)
             write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
+            self._emit(
+                "strategy.selected",
+                phase="CLASSIFY",
+                message=f"Strategy {self.strategy.strategy} selected.",
+                data=self.strategy.to_dict(),
+            )
             if self.strategy.strategy == "REPOSITORY_ANALYSIS":
                 raise OrchestrationError(
                     "ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED",
@@ -215,12 +293,27 @@ class ProofLoopOrchestrator:
 
             self.transition("CONTEXT")
             context_path = self.run_dir / "repository-context.json"
+            self._emit("context.started", phase="CONTEXT", message="Repository context preparation started.")
             if self.strategy.context_required:
                 context = ensure_codegraph(self.repo, context_path, required=True)
                 if context.get("verdict") in {"FAIL", "BLOCKED"}:
+                    self._emit(
+                        "context.failed",
+                        phase="CONTEXT",
+                        message="Repository context preparation failed.",
+                        level="error",
+                        data=context,
+                    )
                     raise OrchestrationError("REPOSITORY_CONTEXT_BLOCKED", "required repository context is unavailable")
             else:
-                write_json(context_path, {"schemaVersion": "1.0", "verdict": "SKIPPED", "reason": "strategy does not require broad context"})
+                context = {"schemaVersion": "1.0", "verdict": "SKIPPED", "reason": "strategy does not require broad context"}
+                write_json(context_path, context)
+            self._emit(
+                "context.ready",
+                phase="CONTEXT",
+                message="Repository context is ready.",
+                data=context,
+            )
 
             if self.strategy.planner_required:
                 self.tasks = self._run_planner()
@@ -230,7 +323,18 @@ class ProofLoopOrchestrator:
                 self.tasks = self._run_direct_bootstrap()
 
             for task in self.tasks:
-                self._execute_task(task)
+                try:
+                    self._execute_task(task)
+                except Exception as exc:
+                    self._emit(
+                        "task.failed",
+                        phase="EXECUTE",
+                        message=f"Task {task.task_id} failed.",
+                        level="error",
+                        task_id=task.task_id,
+                        data={"error": f"{type(exc).__name__}: {exc}"},
+                    )
+                    raise
 
             self._final_verification_and_review()
             return self._finalize_truth()
@@ -247,10 +351,38 @@ class ProofLoopOrchestrator:
         task_path: Path | None = None,
         result_path: Path | None = None,
         immutable_source: bool = False,
+        phase: str | None = None,
+        task_id: str | None = None,
+        attempt: int | None = None,
     ) -> dict[str, Any]:
         assert self.run_dir is not None
         if role not in ROLE_SET:
             raise ValueError(role)
+        invocation_phase = phase or (
+            "PLAN" if role == "planner_deep" else "REVIEW" if role == "reviewer_deep" else "EXECUTE"
+        )
+        requested_model = self._requested_model_for_role(role)
+        role_data = {
+            "role": role,
+            "attempt": attempt,
+            "host": self.host,
+            "requestedModel": requested_model,
+            "routingMode": self.capability.get("mode"),
+        }
+        self._emit(
+            "role.queued",
+            phase=invocation_phase,
+            message=f"{role} queued.",
+            task_id=task_id,
+            data=role_data,
+        )
+        self._emit(
+            "role.started",
+            phase=invocation_phase,
+            message=f"{role} started.",
+            task_id=task_id,
+            data=role_data,
+        )
         baseline = snapshot_worktree(self.repo) if immutable_source else None
         invocation = RoleInvocation(
             role=role,
@@ -260,8 +392,23 @@ class ProofLoopOrchestrator:
             task_path=task_path,
             result_path=result_path,
             timeout_seconds=self.timeout_seconds,
+            emitter=self.emitter,
+            phase=invocation_phase,
+            task_id=task_id,
+            attempt=attempt,
         )
-        result = self.adapter.invoke(invocation)
+        try:
+            result = self.adapter.invoke(invocation)
+        except Exception as exc:
+            self._emit(
+                "role.failed",
+                phase=invocation_phase,
+                message=f"{role} invocation raised an error.",
+                level="error",
+                task_id=task_id,
+                data={**role_data, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            raise
         self.used_roles.append(role)
         event = {
             "timestampEpoch": time.time(),
@@ -283,19 +430,73 @@ class ProofLoopOrchestrator:
                 "exitCode": result.get("exitCode", 0 if result.get("verdict") == "PASS" else 1),
             }
             _append_jsonl(self.run_dir / "model-trace.jsonl", trace_event)
+        if not result.get("modelEventEmitted"):
+            observed = result.get("observedModel")
+            evidence_level = result.get("modelEvidence") or (
+                "HOST_OUTPUT" if observed else "CLI_REQUESTED_ONLY"
+            )
+            self._emit(
+                "role.model_observed",
+                phase=invocation_phase,
+                message="Host model observed." if observed else "Requested model could not be observed.",
+                level="info" if observed else "warning",
+                task_id=task_id,
+                data={
+                    "role": role,
+                    "attempt": attempt,
+                    "requestedModel": result.get("requestedModel") or requested_model,
+                    "observedModel": observed,
+                    "evidenceLevel": evidence_level,
+                    "invocationId": result.get("invocationId"),
+                },
+            )
         if immutable_source and baseline is not None:
             changed = changed_source_files(self.repo, baseline)
             if changed:
+                self._emit(
+                    "role.failed",
+                    phase=invocation_phase,
+                    message=f"{role} mutated read-only source.",
+                    level="error",
+                    task_id=task_id,
+                    data={**role_data, "changedFiles": changed, "reasonCode": "READ_ONLY_SOURCE_MUTATION"},
+                )
                 raise OrchestrationError(
                     f"{role.upper()}_MUTATED_SOURCE",
                     f"read-only role changed source files: {changed}",
                     verdict="FAILED",
                 )
         if result.get("verdict") not in {"PASS", "PROVEN"}:
+            self._emit(
+                "role.failed",
+                phase=invocation_phase,
+                message=f"{role} failed.",
+                level="error",
+                task_id=task_id,
+                data={
+                    **role_data,
+                    "exitCode": result.get("exitCode"),
+                    "reason": result.get("reason"),
+                },
+            )
             raise OrchestrationError(
                 f"{role.upper()}_INVOCATION_FAILED",
                 f"{role} invocation failed: {result.get('reason') or result.get('exitCode')}",
             )
+        self._emit(
+            "role.completed",
+            phase=invocation_phase,
+            message=f"{role} completed.",
+            task_id=task_id,
+            data={
+                **role_data,
+                "requestedModel": result.get("requestedModel") or requested_model,
+                "observedModel": result.get("observedModel"),
+                "evidenceLevel": result.get("modelEvidence"),
+                "exitCode": result.get("exitCode"),
+                "invocationId": result.get("invocationId"),
+            },
+        )
         return result
 
     def _run_planner(self) -> list[TaskBrief]:
@@ -332,7 +533,7 @@ Write JSON to {result_path} with exactly this shape:
 }}
 Rules: 1-4 bounded tasks; every command must be executable in this repository; stop at the first sufficient simplicity rung; no speculative work.
 """
-        self._invoke("planner_deep", prompt, result_path=result_path, immutable_source=True)
+        self._invoke("planner_deep", prompt, result_path=result_path, immutable_source=True, phase="PLAN")
         return self._materialize_plan(result_path)
 
     def _run_direct_bootstrap(self) -> list[TaskBrief]:
@@ -348,7 +549,14 @@ User request:
 Before editing, write a bounded task brief to {task_path} using the standard ProofLoop TaskBrief JSON fields. Then implement that task with the minimum change. Use actual repository test commands. Do not broaden scope or claim success.
 """
         baseline = snapshot_worktree(self.repo)
-        self._invoke("implementer_fast", prompt, result_path=task_path)
+        self._invoke(
+            "implementer_fast",
+            prompt,
+            result_path=task_path,
+            phase="EXECUTE",
+            task_id="TASK-001",
+            attempt=1,
+        )
         if not task_path.exists():
             raise OrchestrationError("DIRECT_TASK_BRIEF_MISSING", "fast implementer did not create a task brief")
         try:
@@ -359,6 +567,13 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
             raise OrchestrationError("DIRECT_TASK_BRIEF_INVALID", str(exc), verdict="FAILED") from exc
         # Store baseline so the already-performed direct implementation becomes attempt 1.
         write_json(self.run_dir / "direct-bootstrap.json", {"taskId": task.task_id, "baselineCommit": baseline})
+        self._emit(
+            "task.created",
+            phase="PLAN",
+            message=f"Task {task.task_id} created.",
+            task_id=task.task_id,
+            data=task_to_dict(task),
+        )
         return [task]
 
     def _materialize_plan(self, result_path: Path) -> list[TaskBrief]:
@@ -392,6 +607,13 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
                 if not loaded.allowed_paths:
                     raise ValueError("allowedPaths must not be empty")
                 tasks.append(loaded)
+                self._emit(
+                    "task.created",
+                    phase="PLAN",
+                    message=f"Task {loaded.task_id} created.",
+                    task_id=loaded.task_id,
+                    data=task_to_dict(loaded),
+                )
             except Exception as exc:
                 raise OrchestrationError("PLAN_TASK_SCHEMA_INVALID", f"{task_id}: {exc}", verdict="FAILED") from exc
         (self.run_dir / "plan.md").write_text(str(plan.get("summary") or "ProofLoop plan") + "\n", encoding="utf-8")
@@ -406,13 +628,33 @@ Do not edit source. Write JSON to {result_path}:
 {{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{{"severity":"critical|important|minor","message":"..."}}]}}
 Approve only if acceptance criteria, checks, scope, and escalation conditions are sufficient and minimal.
 """
-        self._invoke("reviewer_deep", prompt, result_path=result_path, immutable_source=True)
+        self._emit("review.started", phase="PLAN", message="High-risk plan review started.")
+        self._invoke(
+            "reviewer_deep",
+            prompt,
+            result_path=result_path,
+            immutable_source=True,
+            phase="PLAN",
+        )
         review = _read_optional_json(result_path)
         if not review or review.get("verdict") != "APPROVED":
             raise OrchestrationError("PLAN_REVIEW_NOT_APPROVED", "high-risk plan review did not approve the plan")
+        self._emit(
+            "review.completed",
+            phase="PLAN",
+            message="High-risk plan review approved.",
+            data={"verdict": review.get("verdict"), "findings": review.get("findings", [])},
+        )
 
     def _execute_task(self, task: TaskBrief) -> None:
         assert self.run_dir is not None
+        self._emit(
+            "task.started",
+            phase="EXECUTE",
+            message=f"Task {task.task_id} started.",
+            task_id=task.task_id,
+            data={"objective": task.objective},
+        )
         task_path = self.run_dir / "tasks" / f"{task.task_id}.json"
         task_dir = self.run_dir / "task-runs" / task.task_id
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -450,15 +692,36 @@ Use TDD for behavior changes. Make the smallest change inside allowed paths. Do 
 Write optional JSON to {result_path}: {{"status":"DONE|BLOCKED","classification":"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE","summary":"..."}}.
 Do not decide whether tests passed; ProofLoop will run them.
 """
-                self._invoke(role, prompt, task_path=task_path, result_path=result_path)
+                self._invoke(
+                    role,
+                    prompt,
+                    task_path=task_path,
+                    result_path=result_path,
+                    phase="EXECUTE",
+                    task_id=task.task_id,
+                    attempt=sequence,
+                )
             preinvoked = False
 
             checks_dir = task_dir / f"attempt-{sequence:02d}-checks"
             self.transition("VERIFY", taskId=task.task_id, attempt=sequence)
-            checks = run_checks(task, self.repo, checks_dir)
+            checks = run_checks(task, self.repo, checks_dir, emitter=self.emitter)
             diff = inspect_diff(task, self.repo, baseline)
             diff_path = task_dir / f"attempt-{sequence:02d}-diff-guard.json"
             write_json(diff_path, diff)
+            self._emit(
+                "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
+                phase="VERIFY",
+                message=f"Task {task.task_id} diff guard {str(diff.get('verdict')).lower()}.",
+                level="info" if diff.get("verdict") == "PASS" else "error",
+                task_id=task.task_id,
+                data={
+                    "verdict": diff.get("verdict"),
+                    "metrics": diff.get("metrics", {}),
+                    "violations": diff.get("violations", []),
+                    "artifact": str(diff_path),
+                },
+            )
             role_result = _read_optional_json(result_path) or {}
             attempt = {
                 "sequence": sequence,
@@ -476,23 +739,112 @@ Do not decide whether tests passed; ProofLoop will run them.
             attempts.append(attempt)
             _append_jsonl(self.run_dir / "attempts.jsonl", attempt)
             write_json(task_dir / "latest-attempt.json", attempt)
+            self._emit(
+                "attempt.recorded",
+                phase="REPAIR",
+                message=f"Attempt {sequence} recorded for {task.task_id}.",
+                level="info" if checks.get("verdict") == "PASS" and diff.get("verdict") == "PASS" else "warning",
+                task_id=task.task_id,
+                data=attempt,
+            )
+            if len(attempts) >= 2 and attempt.get("failureFingerprint") and (
+                attempt.get("failureFingerprint") == attempts[-2].get("failureFingerprint")
+            ):
+                self._emit(
+                    "progress.stalled",
+                    phase="REPAIR",
+                    message="The same failure fingerprint repeated.",
+                    level="warning",
+                    task_id=task.task_id,
+                    data={
+                        "fingerprint": attempt.get("failureFingerprint"),
+                        "previousAttempt": attempts[-2].get("sequence"),
+                        "attempt": sequence,
+                        "improved": False,
+                    },
+                )
+            elif len(attempts) >= 2 and checks.get("verdict") == "PASS" and diff.get("verdict") == "PASS":
+                self._emit(
+                    "progress.detected",
+                    phase="REPAIR",
+                    message="The latest attempt resolved deterministic failures.",
+                    task_id=task.task_id,
+                    data={"attempt": sequence, "improved": True},
+                )
             decision = decide_next(attempts, task.max_fast_attempts, task.max_recovery_attempts)
             write_json(task_dir / "next-action.json", decision)
 
             action = decision["action"]
             self.transition(action, taskId=task.task_id, attempt=sequence, reason=decision.get("reason"))
+            fast_used = sum(1 for item in attempts if item.get("role") == "implementer_fast")
+            recovery_used = sum(1 for item in attempts if item.get("role") == "implementer_recovery")
+            self._emit(
+                "budget.updated",
+                phase="REPAIR",
+                message="Repair budget updated.",
+                task_id=task.task_id,
+                data={
+                    "fastRemaining": max(0, task.max_fast_attempts - fast_used),
+                    "recoveryRemaining": max(0, task.max_recovery_attempts - recovery_used),
+                    "nextAction": action,
+                },
+            )
             if action == "REVIEW":
                 write_json(task_dir / "task-result.json", {"verdict": "PASS", "attempts": sequence})
+                self._emit(
+                    "task.completed",
+                    phase="EXECUTE",
+                    message=f"Task {task.task_id} completed.",
+                    task_id=task.task_id,
+                    data={"attempts": sequence, "verdict": "PASS"},
+                )
                 return
             if action in {"RETRY_FAST", "RUN_FAST"}:
+                self._emit(
+                    "retry.scheduled",
+                    phase="REPAIR",
+                    message="Fast implementation retry scheduled.",
+                    level="warning",
+                    task_id=task.task_id,
+                    data={
+                        "role": "implementer_fast",
+                        "attempt": sequence + 1,
+                        "reasonCode": "FAST_ATTEMPT_FAILED",
+                        "reason": decision.get("reason"),
+                        "fingerprint": attempt.get("failureFingerprint"),
+                    },
+                )
                 role = "implementer_fast"
                 continue
             if action in {"RUN_RECOVERY", "RETRY_RECOVERY"}:
+                self._emit(
+                    "recovery.scheduled" if action == "RUN_RECOVERY" else "retry.scheduled",
+                    phase="REPAIR",
+                    message="Recovery implementation scheduled.",
+                    level="warning",
+                    task_id=task.task_id,
+                    data={
+                        "fromRole": role,
+                        "toRole": "implementer_recovery",
+                        "attempt": sequence + 1,
+                        "reasonCode": "SAME_FINGERPRINT_REPEATED" if action == "RUN_RECOVERY" else "RECOVERY_ATTEMPT_FAILED",
+                        "reason": decision.get("reason"),
+                        "fingerprint": attempt.get("failureFingerprint"),
+                    },
+                )
                 role = "implementer_recovery"
                 continue
             if action == "RETURN_TO_PLANNER":
                 if replan_count >= 1:
                     raise OrchestrationError("REPLAN_BUDGET_EXHAUSTED", f"{task.task_id} still requires redesign")
+                self._emit(
+                    "replan.scheduled",
+                    phase="REPAIR",
+                    message="Task replan scheduled.",
+                    level="warning",
+                    task_id=task.task_id,
+                    data={"reasonCode": attempt.get("classification"), "reason": decision.get("reason")},
+                )
                 task = self._replan_task(task, task_path, attempts[-1])
                 replan_count += 1
                 role = "implementer_fast"
@@ -506,7 +858,15 @@ Do not decide whether tests passed; ProofLoop will run them.
         prompt = f"""Replan the blocked ProofLoop task at {task_path} using exact evidence {attempt['checksRef']} and {attempt['diffGuardRef']}.
 Do not edit source. Preserve the user contract unless evidence proves it impossible. Write one valid TaskBrief JSON to {result_path} with the same task id. Do not increase change budgets without explicit evidence and rationale.
 """
-        self._invoke("planner_deep", prompt, task_path=task_path, result_path=result_path, immutable_source=True)
+        self._invoke(
+            "planner_deep",
+            prompt,
+            task_path=task_path,
+            result_path=result_path,
+            immutable_source=True,
+            phase="REPAIR",
+            task_id=task.task_id,
+        )
         try:
             revised = load_task_brief(result_path)
         except Exception as exc:
@@ -523,9 +883,21 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
 
         for review_cycle in range(1, 3):
             self.transition("FINAL_VERIFY", reviewCycle=review_cycle)
-            checks = run_checks(aggregate, self.repo, self.run_dir / "checks")
+            checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
             diff = inspect_diff(aggregate, self.repo, self.original_baseline)
             write_json(self.run_dir / "diff-guard.json", diff)
+            self._emit(
+                "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
+                phase="VERIFY",
+                message=f"Final diff guard {str(diff.get('verdict')).lower()}.",
+                level="info" if diff.get("verdict") == "PASS" else "error",
+                data={
+                    "verdict": diff.get("verdict"),
+                    "metrics": diff.get("metrics", {}),
+                    "violations": diff.get("violations", []),
+                    "artifact": str(self.run_dir / "diff-guard.json"),
+                },
+            )
             if pending_repair:
                 attempt = {
                     "sequence": self._attempt_count() + 1,
@@ -540,11 +912,24 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
                     "diffGuardRef": str(self.run_dir / "diff-guard.json"),
                 }
                 _append_jsonl(self.run_dir / "attempts.jsonl", attempt)
+                self._emit(
+                    "attempt.recorded",
+                    phase="REPAIR",
+                    message="Final review repair attempt recorded.",
+                    task_id="FINAL-REVIEW-REPAIR",
+                    data=attempt,
+                )
                 pending_repair = False
             if checks.get("verdict") != "PASS" or diff.get("verdict") != "PASS":
                 raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
 
             self.transition("REVIEW", reviewCycle=review_cycle)
+            self._emit(
+                "review.started",
+                phase="REVIEW",
+                message=f"Final review cycle {review_cycle} started.",
+                data={"reviewCycle": review_cycle},
+            )
             cycle_path = self.run_dir / f"review-{review_cycle:02d}.json"
             prompt = f"""Act as the isolated ProofLoop final reviewer.
 User request: {self.request}
@@ -562,17 +947,71 @@ Write JSON to {cycle_path} exactly:
 }}
 Do not trust implementer summaries. APPROVED requires correct behavior, test integrity, scope compliance, and no unnecessary abstractions.
 """
-            self._invoke("reviewer_deep", prompt, result_path=cycle_path, immutable_source=True)
+            self._invoke(
+                "reviewer_deep",
+                prompt,
+                result_path=cycle_path,
+                immutable_source=True,
+                phase="REVIEW",
+            )
             review = _read_optional_json(cycle_path)
             if not review:
                 raise OrchestrationError("REVIEW_ARTIFACT_MISSING", "reviewer did not produce a review artifact")
             write_json(self.run_dir / "review.json", review)
             if review.get("verdict") == "APPROVED" and review.get("simplicityVerdict") == "MINIMAL":
+                self._emit(
+                    "review.completed",
+                    phase="REVIEW",
+                    message="Final review approved.",
+                    data={
+                        "reviewCycle": review_cycle,
+                        "verdict": review.get("verdict"),
+                        "simplicityVerdict": review.get("simplicityVerdict"),
+                        "findings": review.get("findings", []),
+                    },
+                )
                 return
             if review_cycle == 1 and (
                 review.get("verdict") == "FIX_REQUIRED" or review.get("simplicityVerdict") == "OVERBUILT"
             ):
                 self.transition("REVIEW_REPAIR", findings=review.get("findings", []))
+                findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+                finding = None
+                if findings and isinstance(findings[0], dict):
+                    finding = findings[0].get("message")
+                self._emit(
+                    "review.fix_required",
+                    phase="REVIEW",
+                    message="Final review requires repair.",
+                    level="warning",
+                    data={
+                        "reviewCycle": review_cycle,
+                        "verdict": review.get("verdict"),
+                        "simplicityVerdict": review.get("simplicityVerdict"),
+                        "finding": finding,
+                        "findings": findings,
+                    },
+                )
+                if review.get("simplicityVerdict") == "OVERBUILT":
+                    self._emit(
+                        "review.overbuilt",
+                        phase="REVIEW",
+                        message="Final review found overbuilt implementation.",
+                        level="warning",
+                        data={"deletionCandidates": review.get("deletionCandidates", [])},
+                    )
+                self._emit(
+                    "recovery.scheduled",
+                    phase="REPAIR",
+                    message="Review repair scheduled.",
+                    level="warning",
+                    data={
+                        "fromRole": "reviewer_deep",
+                        "toRole": "implementer_recovery",
+                        "reasonCode": "REVIEW_FIX_REQUIRED",
+                        "reason": finding or review.get("simplicityVerdict"),
+                    },
+                )
                 repair_result = self.run_dir / "review-repair-result.json"
                 repair_prompt = f"""Repair the final ProofLoop review findings in {cycle_path}.
 Use the aggregate task contract at {aggregate_path}. Preserve scope and change budgets. If the review says OVERBUILT, remove unnecessary abstractions without weakening correctness, security, or tests. Do not decide pass/fail; ProofLoop will rerun all checks.
@@ -583,6 +1022,9 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                     repair_prompt,
                     task_path=aggregate_path,
                     result_path=repair_result,
+                    phase="REPAIR",
+                    task_id="FINAL-REVIEW-REPAIR",
+                    attempt=review_cycle,
                 )
                 pending_repair = True
                 continue
@@ -671,6 +1113,22 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                     }
                 )
         write_json(self.run_dir / "claims.json", {"schemaVersion": "1.0", "claims": claims})
+        for claim in claims:
+            kind = claim.get("kind")
+            event_type = (
+                "claim.supported"
+                if kind == "FACT"
+                else "claim.contradicted"
+                if kind == "CONTRADICTED"
+                else "claim.unproven"
+            )
+            self._emit(
+                event_type,
+                phase="TRUTH",
+                message=str(claim.get("statement") or claim.get("id")),
+                level="info" if kind == "FACT" else "warning",
+                data=claim,
+            )
 
     def _finalize_truth(self) -> dict[str, Any]:
         assert self.run_dir is not None
@@ -682,7 +1140,20 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         truth = build_truth_report(self.run_dir)
         write_json(self.run_dir / "truth-report.json", truth)
         self.transition(truth["verdict"])
+        self._emit(
+            "truth.completed",
+            phase="TRUTH",
+            message=f"Truth gate completed with {truth['verdict']}.",
+            level="info" if truth.get("verdict") == "PROVEN" else "warning",
+            data={"status": truth.get("verdict"), "verdict": truth.get("verdict"), "truthReport": truth},
+        )
         finalize_run(self.repo, truth)
+        self._emit(
+            "run.completed",
+            phase="TRUTH",
+            message="ProofLoop run completed.",
+            data={"verdict": truth.get("verdict"), "runDir": str(self.run_dir)},
+        )
         return {"verdict": truth["verdict"], "runDir": str(self.run_dir), "truthReport": truth}
 
     def _finalize_terminal(self, verdict: str, code: str, message: str) -> dict[str, Any]:
@@ -699,6 +1170,14 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         write_json(self.run_dir / "truth-report.json", report)
         self.transition(verdict, code=code, message=message)
         finalize_run(self.repo, report)
+        event_type = "run.failed" if verdict == "FAILED" else "run.blocked"
+        self._emit(
+            event_type,
+            phase="TRUTH",
+            message=message,
+            level="error" if verdict == "FAILED" else "warning",
+            data={"verdict": verdict, "code": code, "message": message, "runDir": str(self.run_dir)},
+        )
         return {"verdict": verdict, "code": code, "message": message, "runDir": str(self.run_dir), "truthReport": report}
 
 
@@ -711,6 +1190,10 @@ def orchestrate(
     strategy_override: str | None = None,
     timeout_seconds: int = 1200,
     require_observed_routing: bool = True,
+    stream: TextIO | None = None,
+    output_format: str = "quiet",
+    verbosity: str = "info",
+    color: str = "auto",
 ) -> dict[str, Any]:
     return ProofLoopOrchestrator(
         host,
@@ -720,4 +1203,8 @@ def orchestrate(
         strategy_override=strategy_override,
         timeout_seconds=timeout_seconds,
         require_observed_routing=require_observed_routing,
+        stream=stream,
+        output_format=output_format,
+        verbosity=verbosity,
+        color=color,
     ).run()
