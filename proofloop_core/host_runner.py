@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
-from .hosts import capability, detect_model
-from .trace import summarize_trace
+from .events import EventEmitter
+from .hosts import capability
 from .io import write_json
+from .output_parsers import parser_for
+from .process_runner import ProcessRunner
+from .trace import summarize_trace
 
 
 def _append(path: Path, item: dict[str, Any]) -> None:
@@ -42,6 +44,11 @@ def invoke_role(
     task_path: str | None = None,
     binary: str | None = None,
     timeout_seconds: int = 1200,
+    *,
+    emitter: EventEmitter | None = None,
+    phase: str = "EXECUTE",
+    task_id: str | None = None,
+    attempt: int | None = None,
 ) -> dict[str, Any]:
     if role not in {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
@@ -81,22 +88,88 @@ def invoke_role(
     call_dir = root / "invocations" / invocation_id
     call_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    try:
-        completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, timeout=timeout_seconds, check=False)
-        timed_out = False
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        exit_code = 124
-        stdout = error.stdout or ""
-        stderr = error.stderr or ""
-        if isinstance(stdout, bytes): stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes): stderr = stderr.decode(errors="replace")
-    (call_dir / "stdout.log").write_text(stdout, encoding="utf-8")
-    (call_dir / "stderr.log").write_text(stderr, encoding="utf-8")
-    observed = detect_model(stdout) or detect_model(stderr)
+    parser = parser_for(host)
+    observed: str | None = None
+    evidence_level = "CLI_REQUESTED_ONLY"
+    model_event_emitted = False
+    parser_degraded = False
+
+    def on_line(stream_name: str, line: str) -> None:
+        nonlocal observed, evidence_level, model_event_emitted, parser_degraded
+        try:
+            normalized = parser.feed(stream_name, line)
+        except Exception as exc:
+            if parser_degraded:
+                return
+            parser_degraded = True
+            evidence_level = "UNAVAILABLE"
+            if emitter is not None:
+                emitter.emit(
+                    "capability.degraded",
+                    phase=phase,
+                    message="Host output parser failed.",
+                    level="warning",
+                    task_id=task_id,
+                    data={
+                        "role": role,
+                        "invocationId": invocation_id,
+                        "reasonCode": "OUTPUT_PARSER_FAILED",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            return
+        for item in normalized:
+            data = {
+                "role": role,
+                "attempt": attempt,
+                "requestedModel": model,
+                "invocationId": invocation_id,
+                "stream": stream_name,
+                **item.data,
+            }
+            if item.event_type == "role.model_observed":
+                candidate = data.get("observedModel")
+                if not isinstance(candidate, str) or not candidate or observed is not None:
+                    continue
+                observed = candidate
+                evidence_level = str(data.get("evidenceLevel") or "HOST_OUTPUT")
+            if emitter is not None:
+                emitter.emit(
+                    item.event_type,
+                    phase=phase,
+                    message=item.message,
+                    level=item.level,
+                    task_id=task_id,
+                    data=data,
+                )
+                if item.event_type == "role.model_observed":
+                    model_event_emitted = True
+
+    process_result = ProcessRunner().run(
+        command,
+        cwd=repo,
+        stdout_path=call_dir / "stdout.log",
+        stderr_path=call_dir / "stderr.log",
+        timeout_seconds=timeout_seconds,
+        on_line=on_line,
+    )
+    if observed is None and emitter is not None:
+        emitter.emit(
+            "role.model_observed",
+            phase=phase,
+            message="Requested model could not be observed.",
+            level="warning",
+            task_id=task_id,
+            data={
+                "role": role,
+                "attempt": attempt,
+                "requestedModel": model,
+                "observedModel": None,
+                "evidenceLevel": evidence_level,
+                "invocationId": invocation_id,
+            },
+        )
+        model_event_emitted = True
     event = {
         "invocationId": invocation_id,
         "timestampEpoch": started,
@@ -105,13 +178,14 @@ def invoke_role(
         "requestedModel": model,
         "expectedModel": model,
         "observedModel": observed,
-        "modelEvidence": "HOST_OUTPUT" if observed else "CLI_REQUESTED",
+        "modelEvidence": evidence_level,
         "command": command,
-        "exitCode": exit_code,
-        "timedOut": timed_out,
-        "durationSeconds": round(time.time() - started, 6),
-        "stdoutRef": str(call_dir / "stdout.log"),
-        "stderrRef": str(call_dir / "stderr.log"),
+        "exitCode": process_result.exit_code,
+        "timedOut": process_result.timed_out,
+        "cancelled": process_result.cancelled,
+        "durationSeconds": process_result.duration_seconds,
+        "stdoutRef": process_result.stdout_ref,
+        "stderrRef": process_result.stderr_ref,
     }
     trace = root / "model-trace.jsonl"
     _append(trace, event)
@@ -120,15 +194,18 @@ def invoke_role(
     summary["capabilityMode"] = "EXTERNAL_MODEL_ROUTING"
     write_json(root / "model-trace-summary.json", summary)
     result = {
-        "verdict": "PASS" if exit_code == 0 else "FAIL",
+        "verdict": "PASS" if process_result.exit_code == 0 else "FAIL",
         "role": role,
         "requestedModel": model,
         "observedModel": observed,
         "modelEvidence": event["modelEvidence"],
-        "exitCode": exit_code,
+        "exitCode": process_result.exit_code,
         "invocationDir": str(call_dir),
         "invocationId": invocation_id,
         "traceRecorded": True,
+        "modelEventEmitted": model_event_emitted,
+        "timedOut": process_result.timed_out,
+        "cancelled": process_result.cancelled,
     }
     write_json(call_dir / "invocation.json", {**event, **result})
     return result

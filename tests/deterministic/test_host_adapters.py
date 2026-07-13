@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -7,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from proofloop_core.adapters import ExternalCLIAdapter, RoleInvocation
+from proofloop_core.events import EventEmitter
 from proofloop_core.hosts import capability, role_only_trace_summary
 from proofloop_core.run_state import start_run
 
@@ -170,9 +173,81 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual(0, completed.returncode, completed.stderr)
             event = json.loads((run_dir / "model-trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual("Gemini 3.5 Flash (Low)", event["requestedModel"])
-            self.assertEqual("CLI_REQUESTED", event["modelEvidence"])
+            self.assertEqual("CLI_REQUESTED_ONLY", event["modelEvidence"])
             summary = json.loads((run_dir / "model-trace-summary.json").read_text(encoding="utf-8"))
             self.assertFalse(summary["routingObserved"])
+
+    def test_host_runner_streams_structured_model_evidence_to_emitter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "codex"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, time\n"
+                "print(json.dumps({'type':'thread.started','model':'gpt-5.6-terra'}), flush=True)\n"
+                "time.sleep(.1)\n"
+                "print(json.dumps({'type':'turn.completed'}), flush=True)\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            run_dir = root / "run"
+            emitter = EventEmitter("run-1", run_dir, io.StringIO(), "quiet")
+            adapter = ExternalCLIAdapter("codex", binary=str(fake))
+
+            result = adapter.invoke(
+                RoleInvocation(
+                    role="implementer_fast",
+                    prompt="Implement the task.",
+                    repository=root,
+                    run_dir=run_dir,
+                    emitter=emitter,
+                    phase="EXECUTE",
+                    task_id="TASK-001",
+                    attempt=1,
+                )
+            )
+
+            self.assertEqual("PASS", result["verdict"])
+            self.assertEqual("gpt-5.6-terra", result["observedModel"])
+            self.assertEqual("HOST_OUTPUT", result["modelEvidence"])
+            self.assertTrue(result["modelEventEmitted"])
+            events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+            observed = [event for event in events if event["type"] == "role.model_observed"]
+            self.assertEqual(1, len(observed))
+            self.assertEqual("TASK-001", observed[0]["taskId"])
+            self.assertEqual("gpt-5.6-terra", observed[0]["data"]["observedModel"])
+            invocation_dir = Path(result["invocationDir"])
+            self.assertIn("thread.started", (invocation_dir / "stdout.log").read_text())
+
+    def test_host_runner_emits_requested_only_when_model_is_unobserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "agy"
+            fake.write_text("#!/bin/sh\necho completed\n", encoding="utf-8")
+            fake.chmod(0o755)
+            run_dir = root / "run"
+            emitter = EventEmitter("run-1", run_dir, io.StringIO(), "quiet")
+            adapter = ExternalCLIAdapter("antigravity", binary=str(fake))
+
+            result = adapter.invoke(
+                RoleInvocation(
+                    role="implementer_fast",
+                    prompt="Implement the task.",
+                    repository=root,
+                    run_dir=run_dir,
+                    emitter=emitter,
+                    phase="EXECUTE",
+                    task_id="TASK-001",
+                    attempt=1,
+                )
+            )
+
+            self.assertIsNone(result["observedModel"])
+            self.assertEqual("CLI_REQUESTED_ONLY", result["modelEvidence"])
+            event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[-1])
+            self.assertEqual("role.model_observed", event["type"])
+            self.assertIsNone(event["data"]["observedModel"])
+            self.assertEqual("CLI_REQUESTED_ONLY", event["data"]["evidenceLevel"])
 
     def test_built_entry_skills_call_fixed_orchestrator_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

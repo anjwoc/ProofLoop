@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .events import EventEmitter
 from .host_runner import invoke_role
 from .hosts import probe
 
@@ -17,6 +18,10 @@ class RoleInvocation:
     task_path: Path | None = None
     result_path: Path | None = None
     timeout_seconds: int = 1200
+    emitter: EventEmitter | None = None
+    phase: str = "EXECUTE"
+    task_id: str | None = None
+    attempt: int | None = None
 
 
 class HostAdapter(Protocol):
@@ -66,4 +71,8 @@ class ExternalCLIAdapter:
             task_path=str(invocation.task_path) if invocation.task_path else None,
             binary=self.binary,
             timeout_seconds=invocation.timeout_seconds,
+            emitter=invocation.emitter,
+            phase=invocation.phase,
+            task_id=invocation.task_id,
+            attempt=invocation.attempt,
         )
