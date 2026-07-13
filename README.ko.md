@@ -53,6 +53,31 @@ $proofloop 결제 중복 요청 문제를 수정해줘. 공개 API는 유지하�
 
 `REPOSITORY_ANALYSIS` 전용 orchestration은 아직 구현하지 않았다. 분석 요청을 받으면 허술한 보고서를 생성하지 않고 `ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED`로 차단한다.
 
+## 실시간 실행 가시성
+
+설치된 호스트 스킬은 자동으로 human stream을 사용한다. 화면에는 현재 단계, 역할, 요청/관찰 모델, 시도 횟수, 실제 검사 결과, recovery 이유, 리뷰 finding, 최종 Truth 상태가 표시된다. 동일한 이벤트 객체가 `.proofloop/runs/<run-id>/events.jsonl`에도 저장된다.
+
+```bash
+proofloop-core orchestrate --host codex --repo . --request-file request.txt \
+  --output-format human --verbosity info --color auto
+```
+
+기계 소비자는 순수 JSON Lines를 선택할 수 있다. 하위 호환 기본값인 `quiet`은 최종 JSON 결과만 출력한다.
+
+```bash
+proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format jsonl
+proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format quiet
+```
+
+다른 터미널에서는 같은 이벤트 스트림을 재생하거나 계속 따라갈 수 있다.
+
+```bash
+proofloop-core watch --run latest --repo . --format human
+proofloop-core watch --run-dir .proofloop/runs/<run-id> --format jsonl --task TASK-001 --level warning
+```
+
+실제 모델이 관찰되지 않으면 requested-only로 표시하며 모델 라우팅은 `UNPROVEN`으로 유지한다. 전체 stdout/stderr는 run의 invocation 및 check artifact에 보존된다.
+
 ## 모델 역할
 
 | 역할 | Claude 예시 | Codex 예시 | Antigravity 외부 모드 예시 |

@@ -37,6 +37,31 @@ Mutation strategies implemented in this alpha:
 
 Repository-analysis orchestration is intentionally blocked with `ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED` rather than simulated.
 
+## Live execution visibility
+
+Installed host skills use the human stream automatically. The screen shows phases, roles, requested and observed models, attempts, real check results, recovery reasons, review findings, and the final truth state. The same event objects are appended to `.proofloop/runs/<run-id>/events.jsonl`.
+
+```bash
+proofloop-core orchestrate --host codex --repo . --request-file request.txt \
+  --output-format human --verbosity info --color auto
+```
+
+Machine consumers can request pure JSON Lines. The backward-compatible default `quiet` mode prints only the final JSON result.
+
+```bash
+proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format jsonl
+proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format quiet
+```
+
+Replay or follow a run from another terminal:
+
+```bash
+proofloop-core watch --run latest --repo . --format human
+proofloop-core watch --run-dir .proofloop/runs/<run-id> --format jsonl --task TASK-001 --level warning
+```
+
+An unobserved model is displayed as requested-only and keeps model routing `UNPROVEN`. Complete stdout and stderr remain in the run's invocation and check artifacts.
+
 ## Install
 
 ```bash

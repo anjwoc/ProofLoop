@@ -53,6 +53,10 @@ class HostAdapterTest(unittest.TestCase):
             self.assertTrue((output / "skills" / "using-proofloop" / "SKILL.md").exists())
             entry = (output / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("--host antigravity", entry)
+            self.assertIn("--output-format human", entry)
+            self.assertIn("--verbosity info", entry)
+            self.assertIn("--color auto", entry)
+            self.assertNotIn("invoke-role", entry)
 
     def test_codex_subagent_hook_records_active_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,7 +276,11 @@ class HostAdapterTest(unittest.TestCase):
                 text = skill.read_text(encoding="utf-8")
                 self.assertIn("proofloop-core orchestrate", text)
                 self.assertIn(expected, text)
+                self.assertIn("--output-format human", text)
+                self.assertIn("--verbosity info", text)
+                self.assertIn("--color auto", text)
                 self.assertNotIn("--host <current-host>", text)
+                self.assertNotIn("invoke-role", text)
 
     def test_antigravity_permission_bypass_is_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

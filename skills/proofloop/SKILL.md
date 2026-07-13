@@ -17,11 +17,14 @@ This skill is a thin bootstrap. The deterministic orchestrator owns the workflow
 $HOME/.proofloop/bin/proofloop-core orchestrate \
   --host <current-host> \
   --repo . \
-  --request-file <absolute-request-file>
+  --request-file <absolute-request-file> \
+  --output-format human \
+  --verbosity info \
+  --color auto
 ```
 
 4. Do not implement the task in the coordinator session while the command runs.
-5. Do not manually call `invoke-role`, `record-attempt`, `run-checks`, `diff-guard`, or `verify-run` unless the orchestrator explicitly reports an internal diagnostic instruction.
+5. Do not synthesize planning, role, verification, retry, recovery, review, or truth status. Display the orchestrator stream as the system status source.
 6. Present the returned `truth-report.json` status exactly. Never upgrade `UNPROVEN`, `FAILED`, or `BLOCKED` to success.
 
 ## Host invocation names
@@ -30,4 +33,4 @@ $HOME/.proofloop/bin/proofloop-core orchestrate \
 - Codex: select `proofloop` through `/skills` or invoke `$proofloop <request>`
 - Antigravity: `/proofloop <request>`
 
-The internal role commands are implementation details and must not be shown as normal user steps.
+Internal role execution is an orchestrator implementation detail and must not be shown as a user step.

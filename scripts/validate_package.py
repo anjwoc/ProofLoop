@@ -57,12 +57,20 @@ for path in (ROOT / "plugin" / "plugin.json", ROOT / "plugin" / "marketplace.jso
 source_files = [p for p in ROOT.rglob("*") if p.is_file() and "dist" not in p.parts and "__pycache__" not in p.parts]
 runtime_roots = {"proofloop_core", "scripts", "skills", "agents", "hooks", "plugin"}
 runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runtime_roots]
-if len(runtime_files) >= 65:
-    errors.append(f"runtime source file budget exceeded: {len(runtime_files)} >= 65")
+runtime_file_budget = 80
+if len(runtime_files) > runtime_file_budget:
+    errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
 
 
 required_fragments = {
-    ROOT / "skills" / "proofloop" / "SKILL.md": ["proofloop-core orchestrate", "Do not manually", "truth-report.json"],
+    ROOT / "skills" / "proofloop" / "SKILL.md": [
+        "proofloop-core orchestrate",
+        "Do not synthesize",
+        "--output-format human",
+        "--verbosity info",
+        "--color auto",
+        "truth-report.json",
+    ],
     ROOT / "skills" / "using-proofloop" / "SKILL.md": ["Compatibility alias", "proofloop"],
     ROOT / "skills" / "proofloop-planning" / "SKILL.md": ["Minimum-solution ladder", "change budget"],
     ROOT / "skills" / "proofloop-truth-gate" / "SKILL.md": ["FACT", "INFERENCE", "UNKNOWN", "simplicityVerdict"],

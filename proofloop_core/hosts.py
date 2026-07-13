@@ -200,11 +200,14 @@ Do not simulate the workflow in this Antigravity session.
 $HOME/.proofloop/bin/proofloop-core orchestrate \
   --host antigravity \
   --repo . \
-  --request-file <absolute-request-file>
+  --request-file <absolute-request-file> \
+  --output-format human \
+  --verbosity info \
+  --color auto
 ```
 
 3. The orchestrator will start isolated Antigravity CLI role processes, run actual checks, calculate failure fingerprints, retry or escalate, request review, and build the truth report.
-4. Do not call `invoke-role`, `record-attempt`, or `verify-run` manually.
+4. Do not synthesize progress messages. Treat the orchestrator stream as the only system status source.
 5. Report `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` exactly as returned. Requested model names are not proof of resolved models.
 """
 
