@@ -43,7 +43,8 @@ def snapshot_worktree(repository: str | Path) -> str:
         }
         head = _git(repo, "rev-parse", "--verify", "HEAD", env=env)
         _git(repo, "read-tree", head, env=env)
-        _git(repo, "add", "-A", "--", ".", ":(exclude).proofloop", ":(exclude).proofloop/**", env=env)
+        _git(repo, "add", "-A", "--", ".", env=env)
+        _git(repo, "rm", "-r", "--cached", "--ignore-unmatch", "--", ".proofloop", env=env)
         tree = _git(repo, "write-tree", env=env)
         commit = _git(repo, "commit-tree", tree, "-p", head, "-m", "ProofLoop ephemeral baseline", env=env)
         return commit
