@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import tempfile
 import threading
@@ -126,6 +128,64 @@ class ProcessRunnerTest(unittest.TestCase):
             self.assertEqual(7, result.exit_code)
             self.assertFalse(result.timed_out)
             self.assertFalse(result.cancelled)
+
+    @unittest.skipUnless(os.name == "posix", "process-group semantics require POSIX")
+    def test_timeout_kills_descendant_that_keeps_pipes_open(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_path = root / "leader.pid"
+            holder: dict[str, object] = {}
+            script = (
+                "import os, signal, subprocess, sys, time\n"
+                f"open({str(pid_path)!r}, 'w').write(str(os.getpid()))\n"
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+                "subprocess.Popen([sys.executable, '-c', "
+                "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                "print('leader-ready', flush=True)\n"
+                "time.sleep(30)\n"
+            )
+
+            def execute() -> None:
+                try:
+                    holder["result"] = ProcessRunner(terminate_grace_seconds=0.1).run(
+                        [sys.executable, "-u", "-c", script],
+                        cwd=root,
+                        stdout_path=root / "out.log",
+                        stderr_path=root / "err.log",
+                        timeout_seconds=0.2,
+                    )
+                except BaseException as exc:
+                    holder["error"] = exc
+
+            thread = threading.Thread(target=execute, daemon=True)
+            thread.start()
+            thread.join(timeout=1.5)
+            was_stuck = thread.is_alive()
+            if was_stuck and pid_path.exists():
+                os.killpg(int(pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                thread.join(timeout=2)
+
+            self.assertFalse(was_stuck, "timeout left a descendant holding stdout/stderr open")
+            self.assertNotIn("error", holder)
+            result = holder["result"]
+            self.assertEqual(124, result.exit_code)  # type: ignore[union-attr]
+
+    def test_invalid_utf8_is_preserved_in_raw_log_and_replaced_for_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            arrivals: list[str] = []
+            result = ProcessRunner().run(
+                [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'before\\xffafter\\n'); sys.stdout.flush()"],
+                cwd=root,
+                stdout_path=root / "out.log",
+                stderr_path=root / "err.log",
+                timeout_seconds=3,
+                on_line=lambda _stream, line: arrivals.append(line),
+            )
+
+            self.assertEqual(0, result.exit_code)
+            self.assertEqual(b"before\xffafter\n", (root / "out.log").read_bytes())
+            self.assertEqual(["before\ufffdafter\n"], arrivals)
 
 
 if __name__ == "__main__":

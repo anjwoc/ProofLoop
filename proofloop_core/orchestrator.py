@@ -467,6 +467,9 @@ class ProofLoopOrchestrator:
                     verdict="FAILED",
                 )
         if result.get("verdict") not in {"PASS", "PROVEN"}:
+            timed_out = bool(result.get("timedOut"))
+            cancelled = bool(result.get("cancelled"))
+            reason_code = "HOST_TIMEOUT" if timed_out else "HOST_CANCELLED" if cancelled else "HOST_EXIT_NONZERO"
             self._emit(
                 "role.failed",
                 phase=invocation_phase,
@@ -477,6 +480,11 @@ class ProofLoopOrchestrator:
                     **role_data,
                     "exitCode": result.get("exitCode"),
                     "reason": result.get("reason"),
+                    "reasonCode": reason_code,
+                    "timedOut": timed_out,
+                    "cancelled": cancelled,
+                    "invocationId": result.get("invocationId"),
+                    "invocationDir": result.get("invocationDir"),
                 },
             )
             raise OrchestrationError(
@@ -495,6 +503,7 @@ class ProofLoopOrchestrator:
                 "evidenceLevel": result.get("modelEvidence"),
                 "exitCode": result.get("exitCode"),
                 "invocationId": result.get("invocationId"),
+                "invocationDir": result.get("invocationDir"),
             },
         )
         return result
@@ -1113,20 +1122,26 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                     }
                 )
         write_json(self.run_dir / "claims.json", {"schemaVersion": "1.0", "claims": claims})
+
+    def _emit_audited_claims(self, assurance: dict[str, Any]) -> None:
+        audit = assurance.get("claimAudit") if isinstance(assurance.get("claimAudit"), dict) else {}
+        claims = audit.get("claims") if isinstance(audit.get("claims"), list) else []
         for claim in claims:
-            kind = claim.get("kind")
+            if not isinstance(claim, dict):
+                continue
+            status = claim.get("status")
             event_type = (
                 "claim.supported"
-                if kind == "FACT"
+                if status in {"SUPPORTED", "SUPPORTED_INFERENCE"}
                 else "claim.contradicted"
-                if kind == "CONTRADICTED"
+                if status == "CONTRADICTED"
                 else "claim.unproven"
             )
             self._emit(
                 event_type,
                 phase="TRUTH",
                 message=str(claim.get("statement") or claim.get("id")),
-                level="info" if kind == "FACT" else "warning",
+                level="info" if event_type == "claim.supported" else "error" if event_type == "claim.contradicted" else "warning",
                 data=claim,
             )
 
@@ -1137,6 +1152,7 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         self._write_claims(trace)
         assurance = build_assurance_report(self.run_dir)
         write_json(self.run_dir / "assurance-report.json", assurance)
+        self._emit_audited_claims(assurance)
         truth = build_truth_report(self.run_dir)
         write_json(self.run_dir / "truth-report.json", truth)
         self.transition(truth["verdict"])

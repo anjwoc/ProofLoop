@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,22 @@ from .task_brief import TaskBrief
 def _safe_name(index: int, name: str | None) -> str:
     raw = name or f"check-{index:02d}"
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in raw).strip("-") or f"check-{index:02d}"
+
+
+def _failure_evidence(stdout_path: Path, stderr_path: Path) -> tuple[list[str], list[str]]:
+    lines: list[str] = []
+    for path in (stdout_path, stderr_path):
+        lines.extend(
+            line.strip()
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        )
+    failed = [
+        line
+        for line in lines
+        if re.search(r"(?:^|\s)(?:FAIL|FAILED|ERROR)(?:\s|:|$)", line, re.IGNORECASE)
+    ]
+    return failed[-20:], lines[-20:]
 
 
 def run_checks(
@@ -100,6 +117,18 @@ def run_checks(
         results.append(result)
         if emitter is not None:
             event_type = "check.completed" if process_result.exit_code == 0 else "check.failed"
+            failed_tests, output_tail = (
+                ([], [])
+                if process_result.exit_code == 0
+                else _failure_evidence(stdout_path, stderr_path)
+            )
+            failure_reason = None
+            if process_result.timed_out:
+                failure_reason = f"timeout after {check.timeout_seconds}s"
+            elif process_result.cancelled:
+                failure_reason = "check cancelled"
+            elif process_result.exit_code != 0:
+                failure_reason = f"command exited with {process_result.exit_code}"
             emitter.emit(
                 event_type,
                 phase=phase,
@@ -116,7 +145,9 @@ def run_checks(
                     "durationSeconds": result["durationSeconds"],
                     "stdoutRef": str(stdout_path),
                     "stderrRef": str(stderr_path),
-                    "failedTests": [],
+                    "failedTests": failed_tests,
+                    "outputTail": output_tail,
+                    "failureReason": failure_reason,
                 },
             )
 

@@ -204,8 +204,45 @@ class OrchestratorTest(unittest.TestCase):
                 self.assertIn(required, types)
             self.assertEqual("run.completed", types[-1])
             self.assertEqual(list(range(1, len(events) + 1)), [event["sequence"] for event in events])
+            claims = [event for event in events if event["type"].startswith("claim.")]
+            self.assertTrue(claims)
+            self.assertTrue(all(event["type"] == "claim.supported" for event in claims))
+            self.assertTrue(all(str(event["data"].get("status", "")).startswith("SUPPORTED") for event in claims))
+            self.assertLess(max(events.index(event) for event in claims), types.index("truth.completed"))
             rendered = [json.loads(line) for line in stream.getvalue().splitlines()]
             self.assertEqual(events, rendered)
+
+    def test_role_timeout_is_preserved_as_a_distinct_failure_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+
+            def timeout_result(_invocation):
+                return {
+                    "verdict": "FAIL",
+                    "role": "planner_deep",
+                    "requestedModel": "deep-model",
+                    "observedModel": None,
+                    "modelEvidence": "CLI_REQUESTED_ONLY",
+                    "exitCode": 124,
+                    "timedOut": True,
+                    "cancelled": False,
+                    "traceRecorded": False,
+                }
+
+            adapter.invoke = timeout_result  # type: ignore[method-assign]
+            result = orchestrate(
+                "codex",
+                root,
+                "Implement the bounded value behavior",
+                adapter=adapter,
+                strategy_override="PLANNED_IMPLEMENTATION",
+            )
+            failed = next(event for event in load_events(result["runDir"]) if event["type"] == "role.failed")
+            self.assertTrue(failed["data"]["timedOut"])
+            self.assertFalse(failed["data"]["cancelled"])
+            self.assertEqual("HOST_TIMEOUT", failed["data"]["reasonCode"])
 
     def test_direct_strategy_skips_deep_planner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -99,6 +99,17 @@ class WatchTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "line 1"):
                 watch_events(run_dir, stream=io.StringIO(), output_format="jsonl", follow=False)
 
+    def test_watch_rejects_valid_json_missing_required_event_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir()
+            malformed = make_event(1, "run.started")
+            malformed.pop("message")
+            (run_dir / "events.jsonl").write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "line 1"):
+                watch_events(run_dir, stream=io.StringIO(), output_format="jsonl", follow=False)
+
 
 if __name__ == "__main__":
     unittest.main()

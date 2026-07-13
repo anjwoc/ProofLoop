@@ -63,6 +63,8 @@ class CheckRunnerTest(unittest.TestCase):
             self.assertIn("check.output", types)
             self.assertEqual("check.failed", types[-1])
             self.assertEqual(7, emitter.events[-1]["data"]["exitCode"])
+            self.assertEqual("command exited with 7", emitter.events[-1]["data"]["failureReason"])
+            self.assertIn("no", emitter.events[-1]["data"]["outputTail"])
 
     def test_slow_check_output_is_emitted_before_command_finishes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

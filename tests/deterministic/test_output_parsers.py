@@ -64,6 +64,17 @@ class HostOutputParserTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported host parser"):
             parser_for("other")
 
+    def test_unrelated_or_nested_model_json_is_not_trusted(self) -> None:
+        payloads = (
+            '{"type":"assistant.message","model":"spoofed-top-level"}\n',
+            '{"type":"result","result":{"model":"spoofed-nested"}}\n',
+            '{"event":"tool_result","metadata":{"resolvedModel":"spoofed-metadata"}}\n',
+        )
+        for parser in (CodexOutputParser(), ClaudeOutputParser(), AntigravityOutputParser()):
+            for payload in payloads:
+                events = parser.feed("stdout", payload)
+                self.assertFalse(any(item.event_type == "role.model_observed" for item in events))
+
 
 if __name__ == "__main__":
     unittest.main()

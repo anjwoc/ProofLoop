@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
+from .events import validate_event
 from .renderers import build_renderer
 
 
@@ -88,9 +89,10 @@ def _parse_event(line: str, line_number: int) -> dict[str, Any]:
         event = json.loads(line)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid event JSON at line {line_number}: {exc.msg}") from exc
-    if not isinstance(event, dict) or event.get("schemaVersion") != "1" or not isinstance(event.get("type"), str):
-        raise ValueError(f"invalid event schema at line {line_number}")
-    return event
+    try:
+        return validate_event(event)
+    except ValueError as exc:
+        raise ValueError(f"invalid event schema at line {line_number}: {exc}") from exc
 
 
 def _matches(

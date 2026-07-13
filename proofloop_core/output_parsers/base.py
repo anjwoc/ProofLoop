@@ -17,21 +17,11 @@ class HostOutputParser(Protocol):
     def feed(self, stream: str, line: str) -> list[NormalizedHostEvent]: ...
 
 
-_MODEL_KEYS = ("resolved_model", "resolvedModel", "model", "model_id", "modelId")
-_NESTED_KEYS = ("data", "payload", "result", "session", "metadata")
-
-
-def explicit_model(value: dict[str, Any]) -> str | None:
-    for key in _MODEL_KEYS:
+def explicit_model(value: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
         candidate = value.get(key)
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip()
-    for key in _NESTED_KEYS:
-        nested = value.get(key)
-        if isinstance(nested, dict):
-            candidate = explicit_model(nested)
-            if candidate:
-                return candidate
     return None
 
 
@@ -72,6 +62,10 @@ def normalize_known_error(value: dict[str, Any]) -> list[NormalizedHostEvent]:
 
 
 class StructuredOutputParser:
+    def model_from_event(self, value: dict[str, Any]) -> str | None:
+        del value
+        return None
+
     def feed(self, stream: str, line: str) -> list[NormalizedHostEvent]:
         del stream
         try:
@@ -81,7 +75,7 @@ class StructuredOutputParser:
         if not isinstance(value, dict):
             return []
         events: list[NormalizedHostEvent] = []
-        model = explicit_model(value)
+        model = self.model_from_event(value)
         if model:
             events.append(
                 NormalizedHostEvent(

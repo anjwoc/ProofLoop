@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from .base import StructuredOutputParser
+from typing import Any
+
+from .base import StructuredOutputParser, explicit_model
 
 
 class CodexOutputParser(StructuredOutputParser):
-    pass
+    def model_from_event(self, value: dict[str, Any]) -> str | None:
+        if value.get("type") not in {"thread.started", "session.started", "turn.started"}:
+            return None
+        return explicit_model(value, ("model", "model_id", "modelId", "resolved_model", "resolvedModel"))

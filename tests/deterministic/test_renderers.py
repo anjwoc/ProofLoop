@@ -105,6 +105,78 @@ class RendererTest(unittest.TestCase):
         build_renderer("quiet", stream, "info", "never").render(event("run.started"))
         self.assertEqual("", stream.getvalue())
 
+    def test_info_shows_diff_and_failure_evidence_while_verbose_adds_metrics(self) -> None:
+        info = io.StringIO()
+        info_renderer = build_renderer("human", info, "info", "never")
+        info_renderer.render(
+            event(
+                "diff_guard.failed",
+                phase="VERIFY",
+                level="error",
+                data={
+                    "verdict": "FAIL",
+                    "metrics": {"changedFiles": 3, "addedLines": 42, "newFiles": 1},
+                    "violations": [{"code": "SCOPE_VIOLATION", "path": "extra.py"}],
+                    "artifact": "/tmp/diff-guard.json",
+                },
+            )
+        )
+        info_renderer.render(
+            event(
+                "check.failed",
+                phase="VERIFY",
+                level="error",
+                data={
+                    "exitCode": 7,
+                    "failureReason": "command exited with 7",
+                    "outputTail": ["FAIL test_payment", "expected 1, got 2"],
+                    "stderrRef": "/tmp/check.stderr.log",
+                },
+            )
+        )
+        self.assertIn("DIFF GUARD FAIL", info.getvalue())
+        self.assertIn("SCOPE_VIOLATION", info.getvalue())
+        self.assertIn("command exited with 7", info.getvalue())
+        self.assertIn("expected 1, got 2", info.getvalue())
+
+        verbose = io.StringIO()
+        verbose_renderer = build_renderer("human", verbose, "verbose", "never")
+        verbose_renderer.render(
+            event(
+                "diff_guard.completed",
+                phase="VERIFY",
+                data={"verdict": "PASS", "metrics": {"changedFiles": 3, "addedLines": 42, "newFiles": 1}},
+            )
+        )
+        verbose_renderer.render(
+            event(
+                "review.overbuilt",
+                phase="REVIEW",
+                level="warning",
+                data={"deletionCandidates": ["unused abstraction"]},
+            )
+        )
+        self.assertIn("3 files", verbose.getvalue())
+        self.assertIn("+42 LOC", verbose.getvalue())
+        self.assertIn("unused abstraction", verbose.getvalue())
+
+    def test_debug_shows_invocation_and_artifact_references(self) -> None:
+        stream = io.StringIO()
+        renderer = build_renderer("human", stream, "debug", "never")
+        renderer.render(
+            event(
+                "role.completed",
+                data={
+                    "role": "implementer_fast",
+                    "exitCode": 0,
+                    "invocationId": "02-codex-implementer_fast",
+                    "invocationDir": "/tmp/invocations/02-codex-implementer_fast",
+                },
+            )
+        )
+        self.assertIn("02-codex-implementer_fast", stream.getvalue())
+        self.assertIn("/tmp/invocations/02-codex-implementer_fast", stream.getvalue())
+
     def test_unknown_format_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "output format"):
             build_renderer("xml", io.StringIO(), "info", "never")

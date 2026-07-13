@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,40 @@ from .renderers import build_renderer
 
 class EventStoreCorruptError(RuntimeError):
     pass
+
+
+_LEVELS = {"debug", "info", "warning", "error"}
+_EVENT_ID = re.compile(r"^evt-[0-9]{6,}$")
+
+
+def validate_event(event: Any, *, expected_run_id: str | None = None) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        raise ValueError("event must be an object")
+    required_strings = ("eventId", "runId", "timestamp", "type", "phase", "message")
+    if event.get("schemaVersion") != "1":
+        raise ValueError("schemaVersion must be '1'")
+    if any(not isinstance(event.get(key), str) or not event[key] for key in required_strings):
+        raise ValueError("required string field is missing")
+    if not _EVENT_ID.fullmatch(event["eventId"]):
+        raise ValueError("invalid eventId")
+    if expected_run_id is not None and event["runId"] != expected_run_id:
+        raise ValueError("runId mismatch")
+    sequence = event.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise ValueError("sequence must be a positive integer")
+    if event.get("level") not in _LEVELS:
+        raise ValueError("invalid event level")
+    if not isinstance(event.get("data"), dict):
+        raise ValueError("data must be an object")
+    if "taskId" in event and (not isinstance(event["taskId"], str) or not event["taskId"]):
+        raise ValueError("taskId must be a non-empty string")
+    try:
+        timestamp = datetime.fromisoformat(event["timestamp"])
+    except ValueError as exc:
+        raise ValueError("invalid timestamp") from exc
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("timestamp must include a timezone")
+    return event
 
 
 class EventEmitter:
@@ -103,10 +138,10 @@ class EventEmitter:
                 event = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise EventStoreCorruptError(f"invalid event JSON at line {line_number}: {exc.msg}") from exc
-            if not isinstance(event, dict) or not isinstance(event.get("sequence"), int):
-                raise EventStoreCorruptError(f"invalid event schema at line {line_number}")
-            if event.get("runId") != self.run_id:
-                raise EventStoreCorruptError(f"runId mismatch at line {line_number}")
+            try:
+                validate_event(event, expected_run_id=self.run_id)
+            except ValueError as exc:
+                raise EventStoreCorruptError(f"invalid event schema at line {line_number}: {exc}") from exc
             sequence = event["sequence"]
             if sequence <= last_sequence:
                 raise EventStoreCorruptError(f"non-monotonic sequence at line {line_number}")

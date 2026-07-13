@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, TextIO
+from typing import BinaryIO, Callable, Mapping
 
 
 LineCallback = Callable[[str, str], None]
@@ -27,12 +27,21 @@ class ProcessResult:
 
 
 class ProcessRunner:
-    def __init__(self, *, terminate_grace_seconds: float = 2.0, poll_interval: float = 0.05) -> None:
+    def __init__(
+        self,
+        *,
+        terminate_grace_seconds: float = 2.0,
+        drain_grace_seconds: float = 2.0,
+        poll_interval: float = 0.05,
+    ) -> None:
         if terminate_grace_seconds < 0:
             raise ValueError("terminate_grace_seconds must be non-negative")
+        if drain_grace_seconds < 0:
+            raise ValueError("drain_grace_seconds must be non-negative")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be positive")
         self.terminate_grace_seconds = terminate_grace_seconds
+        self.drain_grace_seconds = drain_grace_seconds
         self.poll_interval = poll_interval
 
     def run(
@@ -57,20 +66,17 @@ class ProcessRunner:
         stderr_file = Path(stderr_path)
         stdout_file.parent.mkdir(parents=True, exist_ok=True)
         stderr_file.parent.mkdir(parents=True, exist_ok=True)
-        messages: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        messages: queue.Queue[tuple[str, str | None, BaseException | None]] = queue.Queue()
         started = time.monotonic()
 
-        with stdout_file.open("w", encoding="utf-8") as stdout_handle, stderr_file.open(
-            "w", encoding="utf-8"
-        ) as stderr_handle:
+        with stdout_file.open("wb") as stdout_handle, stderr_file.open("wb") as stderr_handle:
             process = subprocess.Popen(
                 list(command),
                 cwd=root,
                 env=dict(env) if env is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
+                bufsize=0,
                 start_new_session=os.name == "posix",
             )
             assert process.stdout is not None and process.stderr is not None
@@ -94,8 +100,11 @@ class ProcessRunner:
             timed_out = False
             cancelled = False
             termination_started: float | None = None
+            kill_started: float | None = None
             killed = False
+            pipes_forced_closed = False
             callback_error: BaseException | None = None
+            reader_error: BaseException | None = None
 
             while len(finished_streams) < 2 or process.poll() is None:
                 now = time.monotonic()
@@ -109,16 +118,33 @@ class ProcessRunner:
                         termination_started = now
                         self._terminate(process)
                 elif (
-                    process.poll() is None
-                    and not killed
+                    not killed
                     and now - termination_started >= self.terminate_grace_seconds
                 ):
                     killed = True
+                    kill_started = now
                     self._kill(process)
+                elif (
+                    killed
+                    and not pipes_forced_closed
+                    and kill_started is not None
+                    and now - kill_started >= self.drain_grace_seconds
+                    and len(finished_streams) < 2
+                ):
+                    pipes_forced_closed = True
+                    self._close_pipe(process.stdout)
+                    self._close_pipe(process.stderr)
 
                 try:
-                    stream_name, line = messages.get(timeout=self.poll_interval)
+                    stream_name, line, stream_error = messages.get(timeout=self.poll_interval)
                 except queue.Empty:
+                    continue
+                if stream_error is not None:
+                    if not pipes_forced_closed and reader_error is None:
+                        reader_error = stream_error
+                        if termination_started is None:
+                            termination_started = time.monotonic()
+                            self._terminate(process)
                     continue
                 if line is None:
                     finished_streams.add(stream_name)
@@ -138,6 +164,8 @@ class ProcessRunner:
 
         if callback_error is not None:
             raise callback_error
+        if reader_error is not None:
+            raise reader_error
         exit_code = process.returncode
         if timed_out:
             exit_code = 124
@@ -157,21 +185,26 @@ class ProcessRunner:
     @staticmethod
     def _read_stream(
         name: str,
-        pipe: TextIO,
-        output: TextIO,
-        messages: queue.Queue[tuple[str, str | None]],
+        pipe: BinaryIO,
+        output: BinaryIO,
+        messages: queue.Queue[tuple[str, str | None, BaseException | None]],
     ) -> None:
         try:
-            for line in iter(pipe.readline, ""):
-                output.write(line)
+            for raw_line in iter(pipe.readline, b""):
+                output.write(raw_line)
                 output.flush()
-                messages.put((name, line))
+                messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+        except BaseException as exc:
+            messages.put((name, None, exc))
         finally:
-            pipe.close()
-            messages.put((name, None))
+            try:
+                pipe.close()
+            except OSError:
+                pass
+            messages.put((name, None, None))
 
     @staticmethod
-    def _terminate(process: subprocess.Popen[str]) -> None:
+    def _terminate(process: subprocess.Popen[bytes]) -> None:
         if process.poll() is not None:
             return
         try:
@@ -183,13 +216,20 @@ class ProcessRunner:
             pass
 
     @staticmethod
-    def _kill(process: subprocess.Popen[str]) -> None:
-        if process.poll() is not None:
-            return
+    def _kill(process: subprocess.Popen[bytes]) -> None:
         try:
             if os.name == "posix":
                 os.killpg(process.pid, signal.SIGKILL)
-            else:
+            elif process.poll() is None:
                 process.kill()
         except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _close_pipe(pipe: BinaryIO | None) -> None:
+        if pipe is None:
+            return
+        try:
+            os.close(pipe.fileno())
+        except OSError:
             pass

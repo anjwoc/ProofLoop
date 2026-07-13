@@ -117,6 +117,16 @@ class EventEmitterTest(unittest.TestCase):
             with self.assertRaisesRegex(EventStoreCorruptError, "line 2"):
                 EventEmitter("run-1", root, io.StringIO(), "quiet")
 
+    def test_complete_event_missing_required_fields_blocks_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            malformed = json.loads(event_line(1))
+            malformed.pop("data")
+            (root / "events.jsonl").write_text(json.dumps(malformed) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(EventStoreCorruptError, "line 1"):
+                EventEmitter("run-1", root, io.StringIO(), "quiet")
+
 
 if __name__ == "__main__":
     unittest.main()
