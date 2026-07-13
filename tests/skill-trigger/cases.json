@@ -1,0 +1,14 @@
+{
+  "shouldTrigger": [
+    "Implement this feature across the service and repository layers and add tests.",
+    "Fix this concurrency bug and prove it with a regression test.",
+    "Refactor this module without changing its public API and run the full checks.",
+    "Use ProofLoop to implement the issue in this repository."
+  ],
+  "shouldNotTrigger": [
+    "Explain what this function does.",
+    "Fix the typo in this comment.",
+    "Rename this local variable.",
+    "Format this Markdown paragraph."
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "description": "ProofLoop model trace capture and truth-gated stopping",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_trace_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/claude_stop_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

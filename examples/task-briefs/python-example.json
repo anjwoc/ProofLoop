@@ -1,0 +1,43 @@
+{
+  "id": "TASK-EXAMPLE-001",
+  "objective": "Make normalize_name return a trimmed lowercase value and reject non-string input.",
+  "allowedPaths": [
+    "src/**",
+    "tests/**"
+  ],
+  "protectedPaths": [
+    "pyproject.toml"
+  ],
+  "requiredChecks": [
+    {
+      "name": "unit-tests",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests"
+      ],
+      "timeoutSeconds": 120
+    }
+  ],
+  "budgets": {
+    "maxFastAttempts": 2,
+    "maxRecoveryAttempts": 1
+  },
+  "changeBudget": {
+    "maxChangedFiles": 4,
+    "maxAddedLines": 120,
+    "maxNewFiles": 1,
+    "allowDependencyChanges": false
+  },
+  "simplicity": {
+    "selectedRung": "DIRECT_CHANGE",
+    "rationale": "The behavior fits the existing function and test structure without a new abstraction or dependency.",
+    "considered": [
+      "reuse existing normalize_name function",
+      "standard string methods"
+    ]
+  }
+}

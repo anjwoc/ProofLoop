@@ -1,0 +1,3 @@
+"""ProofLoop automatic evidence-driven coding harness."""
+
+__version__ = "0.4.0a0"

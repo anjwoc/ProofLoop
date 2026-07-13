@@ -1,0 +1,11 @@
+[project]
+name = "proofloop-skill-first-core"
+version = "0.4.0a0"
+description = "Skill-first software engineering loop with truth and anti-bloat assurance"
+requires-python = ">=3.10"
+
+[project.scripts]
+proofloop-core = "proofloop_core.cli:main"
+
+[tool.setuptools]
+packages = ["proofloop_core"]

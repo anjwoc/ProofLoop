@@ -1,0 +1,15 @@
+{
+  "name": "proofloop-local",
+  "description": "Local marketplace for ProofLoop with truth, hallucination, and anti-bloat assurance.",
+  "owner": {
+    "name": "ProofLoop"
+  },
+  "plugins": [
+    {
+      "name": "proofloop",
+      "source": "./plugins/proofloop",
+      "description": "Deep planning, minimal implementation, deterministic checks, bounded repair, claim verification, and truth-gated completion.",
+      "version": "0.4.0-alpha"
+    }
+  ]
+}

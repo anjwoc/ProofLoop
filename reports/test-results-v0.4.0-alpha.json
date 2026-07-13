@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "discoveredTests": 49,
+  "passed": 49,
+  "failed": 0,
+  "executionMode": "GROUPED_BY_MODULE_DUE_TO_SINGLE_PROCESS_RUNTIME_LIMIT",
+  "groups": {
+    "deterministic.assurance": 3,
+    "deterministic.attempts": 1,
+    "deterministic.checks": 1,
+    "deterministic.diff_guard": 2,
+    "deterministic.hooks": 2,
+    "deterministic.host_adapters": 11,
+    "deterministic.live_runner": 3,
+    "deterministic.package": 3,
+    "deterministic.release_gate": 2,
+    "deterministic.repair": 2,
+    "deterministic.repository_context": 1,
+    "deterministic.strategy": 4,
+    "deterministic.truth": 3,
+    "orchestration.external_loop": 1,
+    "orchestration.orchestrate_cli": 3,
+    "orchestration.orchestrator": 7
+  },
+  "evidenceLabels": {
+    "orchestration": "SIMULATED_ORCHESTRATION",
+    "hostProcess": "SIMULATED_HOST_E2E",
+    "authenticatedLive": "MISSING"
+  }
+}

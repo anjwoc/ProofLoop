@@ -1,0 +1,21 @@
+{
+  "name": "proofloop",
+  "displayName": "ProofLoop Core",
+  "version": "0.4.0-alpha",
+  "description": "Skill-first coding workflow with deep planning, bounded implementation, deterministic verification, hallucination checks, anti-bloat budgets, repair, and evidence-based completion.",
+  "author": {
+    "name": "ProofLoop"
+  },
+  "license": "MIT",
+  "keywords": [
+    "anti-bloat",
+    "hallucination",
+    "repair-loop",
+    "skills",
+    "subagents",
+    "tdd",
+    "truth-gate",
+    "verification",
+    "yagni"
+  ]
+}
