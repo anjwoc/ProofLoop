@@ -64,7 +64,12 @@ class ProcessRunner:
         heartbeat_interval_seconds: float = 5.0,
         cancel_event: threading.Event | None = None,
     ) -> ProcessResult:
-        if not command or not all(isinstance(part, str) and part for part in command):
+        if (
+            not command
+            or not isinstance(command[0], str)
+            or not command[0]
+            or not all(isinstance(part, str) for part in command)
+        ):
             raise ValueError("command must be a non-empty sequence of strings")
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")

@@ -14,6 +14,8 @@ from .output_parsers import parser_for
 from .process_runner import ProcessRunner
 from .trace import summarize_trace
 
+_MAX_HOST_OUTPUT_EVENT_CHARS = 4000
+
 
 def _append(path: Path, item: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +51,7 @@ def invoke_role(
     phase: str = "EXECUTE",
     task_id: str | None = None,
     attempt: int | None = None,
+    heartbeat_interval_seconds: float = 5.0,
 ) -> dict[str, Any]:
     if role not in {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
@@ -76,7 +79,7 @@ def invoke_role(
         command = [str(executable)]
         if os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1":
             command.append("--dangerously-skip-permissions")
-        command.extend(["-p", message])
+        command.extend(["--prompt", ""])
     elif host == "claude-code":
         command = [
             str(executable), "-p", message, "--model", model,
@@ -97,6 +100,24 @@ def invoke_role(
 
     def on_line(stream_name: str, line: str) -> None:
         nonlocal observed, evidence_level, model_event_emitted, parser_degraded
+        visible_text = line.rstrip("\r\n")
+        if emitter is not None and host == "antigravity" and visible_text:
+            emitter.emit(
+                "role.output",
+                phase=phase,
+                message=f"{role} produced {stream_name} output.",
+                task_id=task_id,
+                data={
+                    "role": role,
+                    "attempt": attempt,
+                    "invocationId": invocation_id,
+                    "stream": stream_name,
+                    "text": visible_text[:_MAX_HOST_OUTPUT_EVENT_CHARS],
+                    "truncated": len(visible_text) > _MAX_HOST_OUTPUT_EVENT_CHARS,
+                    "stdoutRef": str(call_dir / "stdout.log"),
+                    "stderrRef": str(call_dir / "stderr.log"),
+                },
+            )
         try:
             normalized = parser.feed(stream_name, line)
         except Exception as exc:
@@ -146,6 +167,25 @@ def invoke_role(
                 if item.event_type == "role.model_observed":
                     model_event_emitted = True
 
+    def on_heartbeat(process_id: int, elapsed_seconds: float) -> None:
+        if emitter is None:
+            return
+        emitter.emit(
+            "role.progress",
+            phase=phase,
+            message=f"{role} is still running.",
+            task_id=task_id,
+            data={
+                "role": role,
+                "attempt": attempt,
+                "invocationId": invocation_id,
+                "processId": process_id,
+                "elapsedSeconds": round(elapsed_seconds, 1),
+                "stdoutRef": str(call_dir / "stdout.log"),
+                "stderrRef": str(call_dir / "stderr.log"),
+            },
+        )
+
     process_result = ProcessRunner().run(
         command,
         cwd=repo,
@@ -153,6 +193,9 @@ def invoke_role(
         stderr_path=call_dir / "stderr.log",
         timeout_seconds=timeout_seconds,
         on_line=on_line,
+        stdin_data=message if host == "antigravity" else None,
+        on_heartbeat=on_heartbeat if emitter is not None else None,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
     )
     if observed is None and emitter is not None:
         emitter.emit(

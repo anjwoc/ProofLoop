@@ -58,6 +58,20 @@ class HumanRenderer:
             suffix = f" · attempt {attempt}" if attempt is not None else ""
             return f"{prefix} ▶ {role}{suffix}"
 
+        if event_type == "role.progress":
+            role = data.get("role", "unknown-role")
+            elapsed = data.get("elapsedSeconds")
+            elapsed_text = f" · {elapsed:.1f}s" if isinstance(elapsed, (int, float)) else ""
+            process_id = data.get("processId")
+            pid_text = f" · pid {process_id}" if isinstance(process_id, int) else ""
+            return f"{prefix} … {role} running{elapsed_text}{pid_text}"
+
+        if event_type == "role.output":
+            role = data.get("role", "unknown-role")
+            stream = data.get("stream", "output")
+            text = str(data.get("text") or "").rstrip("\n")
+            return f"{prefix} {role} {stream}: {text}"
+
         if event_type in {"role.completed", "role.failed", "role.cancelled"}:
             role = data.get("role", "unknown-role")
             symbol = "✓" if event_type == "role.completed" else "✗"

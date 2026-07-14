@@ -29,6 +29,39 @@ def event(
 
 
 class RendererTest(unittest.TestCase):
+    def test_info_renders_live_role_progress_and_output(self) -> None:
+        stream = io.StringIO()
+        renderer = build_renderer("human", stream, "info", "never")
+        renderer.render(
+            event(
+                "role.progress",
+                phase="PLAN",
+                data={
+                    "role": "planner_deep",
+                    "processId": 12345,
+                    "elapsedSeconds": 5.0,
+                },
+            )
+        )
+        renderer.render(
+            event(
+                "role.output",
+                phase="PLAN",
+                data={
+                    "role": "planner_deep",
+                    "stream": "stdout",
+                    "text": "working on plan",
+                },
+            )
+        )
+
+        text = stream.getvalue()
+        self.assertIn("planner_deep running", text)
+        self.assertIn("5.0s", text)
+        self.assertIn("pid 12345", text)
+        self.assertIn("planner_deep stdout", text)
+        self.assertIn("working on plan", text)
+
     def test_human_renderer_separates_requested_and_unobserved_model(self) -> None:
         stream = io.StringIO()
         renderer = build_renderer("human", stream, "info", "never")

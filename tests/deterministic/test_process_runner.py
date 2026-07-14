@@ -55,6 +55,26 @@ class ProcessRunnerTest(unittest.TestCase):
                 [elapsed for _pid, elapsed in heartbeats],
             )
 
+    def test_empty_non_executable_argument_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = ProcessRunner().run(
+                [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import sys; print(repr(sys.argv[1]))",
+                    "",
+                ],
+                cwd=root,
+                stdout_path=root / "out.log",
+                stderr_path=root / "err.log",
+                timeout_seconds=3,
+            )
+
+            self.assertEqual(0, result.exit_code)
+            self.assertEqual("''", (root / "out.log").read_text().strip())
+
     def test_line_callback_runs_before_process_exits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

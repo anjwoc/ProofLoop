@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from proofloop_core.adapters import ExternalCLIAdapter, RoleInvocation
 from proofloop_core.events import EventEmitter
+from proofloop_core.host_runner import invoke_role
 from proofloop_core.hosts import capability, role_only_trace_summary
 from proofloop_core.run_state import start_run
 
@@ -195,23 +196,80 @@ class HostAdapterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fake = root / "agy"
-            fake.write_text("#!/bin/sh\necho completed\nexit 0\n", encoding="utf-8")
+            capture = root / "capture.json"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['AGY_CAPTURE']).write_text(json.dumps({\n"
+                "    'args': sys.argv[1:],\n"
+                "    'stdin': sys.stdin.read(),\n"
+                "}))\n"
+                "print('completed', flush=True)\n",
+                encoding="utf-8",
+            )
             fake.chmod(0o755)
             run_dir = root / "run"
+            env = dict(os.environ)
+            env["AGY_CAPTURE"] = str(capture)
             completed = subprocess.run(
                 ["python3", "-m", "proofloop_core.cli", "invoke-role", "--host", "antigravity", "--role", "implementer_fast", "--repo", str(root), "--run-dir", str(run_dir), "--binary", str(fake)],
-                cwd=ROOT, capture_output=True, text=True, check=False,
+                cwd=ROOT, env=env, capture_output=True, text=True, check=False,
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
+            captured = json.loads(capture.read_text(encoding="utf-8"))
+            prompt_index = captured["args"].index("--prompt")
+            self.assertEqual("", captured["args"][prompt_index + 1])
+            self.assertNotIn("-p", captured["args"])
+            self.assertNotIn("--model", captured["args"])
+            self.assertIn("implementer_fast", captured["stdin"])
             event = json.loads((run_dir / "model-trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual("current-session-model", event["requestedModel"])
             self.assertEqual("UNAVAILABLE", event["modelEvidence"])
             self.assertNotIn("--model", event["command"])
-            self.assertIn("-p", event["command"])
+            self.assertIn("--prompt", event["command"])
             summary = json.loads((run_dir / "model-trace-summary.json").read_text(encoding="utf-8"))
             self.assertFalse(summary["routingObserved"])
             self.assertFalse(summary["routingClaimed"])
             self.assertEqual("ROLE_ROUTING_ONLY", summary["capabilityMode"])
+
+    def test_antigravity_role_emits_output_and_heartbeat_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "agy"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys, time\n"
+                "sys.stdin.read()\n"
+                "print('working on plan', flush=True)\n"
+                "time.sleep(.15)\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            run_dir = root / "run"
+            emitter = EventEmitter("run-1", run_dir, io.StringIO(), "quiet")
+
+            result = invoke_role(
+                "antigravity",
+                "planner_deep",
+                root,
+                run_dir,
+                prompt="Plan the requested change.",
+                binary=str(fake),
+                emitter=emitter,
+                phase="PLAN",
+                heartbeat_interval_seconds=0.03,
+            )
+
+            self.assertEqual("PASS", result["verdict"])
+            events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
+            output = next(event for event in events if event["type"] == "role.output")
+            self.assertEqual("stdout", output["data"]["stream"])
+            self.assertEqual("working on plan", output["data"]["text"])
+            progress = [event for event in events if event["type"] == "role.progress"]
+            self.assertGreaterEqual(len(progress), 2)
+            self.assertGreater(progress[0]["data"]["processId"], 0)
+            self.assertGreater(progress[0]["data"]["elapsedSeconds"], 0)
 
     def test_host_runner_streams_structured_model_evidence_to_emitter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
