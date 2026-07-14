@@ -45,6 +45,8 @@ model = "unknown-model"
 if "--model" in args:
     model = args[args.index("--model") + 1]
 prompt = args[-1]
+if Path(sys.argv[0]).name == "agy" and not prompt:
+    prompt = sys.stdin.read()
 match = re.search(r"exact absolute path before finishing: (.+?)\. Do not write", prompt, re.S)
 result_path = Path(match.group(1).strip()) if match else None
 repo = Path.cwd()
