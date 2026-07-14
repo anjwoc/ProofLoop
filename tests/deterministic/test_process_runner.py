@@ -13,6 +13,48 @@ from proofloop_core.process_runner import ProcessRunner
 
 
 class ProcessRunnerTest(unittest.TestCase):
+    def test_stdin_payload_is_closed_after_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = ProcessRunner().run(
+                [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.stdout.flush()",
+                ],
+                cwd=root,
+                stdout_path=root / "out.log",
+                stderr_path=root / "err.log",
+                timeout_seconds=3,
+                stdin_data=b"planner prompt",
+            )
+
+            self.assertEqual(0, result.exit_code)
+            self.assertEqual(b"planner prompt", (root / "out.log").read_bytes())
+
+    def test_silent_process_emits_heartbeats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            heartbeats: list[tuple[int, float]] = []
+            result = ProcessRunner(poll_interval=0.005).run(
+                [sys.executable, "-u", "-c", "import time; time.sleep(.15)"],
+                cwd=root,
+                stdout_path=root / "out.log",
+                stderr_path=root / "err.log",
+                timeout_seconds=3,
+                on_heartbeat=lambda pid, elapsed: heartbeats.append((pid, elapsed)),
+                heartbeat_interval_seconds=0.03,
+            )
+
+            self.assertEqual(0, result.exit_code)
+            self.assertGreaterEqual(len(heartbeats), 2)
+            self.assertTrue(all(pid > 0 for pid, _elapsed in heartbeats))
+            self.assertEqual(
+                sorted(elapsed for _pid, elapsed in heartbeats),
+                [elapsed for _pid, elapsed in heartbeats],
+            )
+
     def test_line_callback_runs_before_process_exits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

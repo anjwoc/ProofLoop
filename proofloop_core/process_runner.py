@@ -12,6 +12,7 @@ from typing import BinaryIO, Callable, Mapping
 
 
 LineCallback = Callable[[str, str], None]
+HeartbeatCallback = Callable[[int, float], None]
 
 
 @dataclass(frozen=True)
@@ -58,12 +59,17 @@ class ProcessRunner:
         env: Mapping[str, str] | None = None,
         timeout_seconds: float | None = None,
         on_line: LineCallback | None = None,
+        stdin_data: str | bytes | None = None,
+        on_heartbeat: HeartbeatCallback | None = None,
+        heartbeat_interval_seconds: float = 5.0,
         cancel_event: threading.Event | None = None,
     ) -> ProcessResult:
         if not command or not all(isinstance(part, str) and part for part in command):
             raise ValueError("command must be a non-empty sequence of strings")
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if heartbeat_interval_seconds <= 0:
+            raise ValueError("heartbeat_interval_seconds must be positive")
 
         root = Path(cwd).resolve()
         stdout_file = Path(stdout_path)
@@ -75,12 +81,15 @@ class ProcessRunner:
         )
         stop_readers = threading.Event()
         started = time.monotonic()
+        payload = stdin_data.encode("utf-8") if isinstance(stdin_data, str) else stdin_data
+        stdin_errors: list[BaseException] = []
 
         with stdout_file.open("wb") as stdout_handle, stderr_file.open("wb") as stderr_handle:
             process = subprocess.Popen(
                 list(command),
                 cwd=root,
                 env=dict(env) if env is not None else None,
+                stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,
@@ -105,6 +114,15 @@ class ProcessRunner:
             ]
             for thread in threads:
                 thread.start()
+            stdin_thread: threading.Thread | None = None
+            if payload is not None:
+                assert process.stdin is not None
+                stdin_thread = threading.Thread(
+                    target=self._write_stdin,
+                    args=(process.stdin, payload, stdin_errors),
+                    daemon=True,
+                )
+                stdin_thread.start()
 
             finished_streams: set[str] = set()
             timed_out = False
@@ -115,9 +133,24 @@ class ProcessRunner:
             readers_stopped = False
             callback_error: BaseException | None = None
             reader_error: BaseException | None = None
+            next_heartbeat = started + heartbeat_interval_seconds
 
             while len(finished_streams) < 2 or process.poll() is None:
                 now = time.monotonic()
+                if (
+                    on_heartbeat is not None
+                    and callback_error is None
+                    and termination_started is None
+                    and process.poll() is None
+                    and now >= next_heartbeat
+                ):
+                    try:
+                        on_heartbeat(process.pid, now - started)
+                    except BaseException as exc:
+                        callback_error = exc
+                        termination_started = now
+                        self._terminate(process)
+                    next_heartbeat = now + heartbeat_interval_seconds
                 if termination_started is None:
                     if cancel_event is not None and cancel_event.is_set():
                         cancelled = True
@@ -168,6 +201,8 @@ class ProcessRunner:
                             self._terminate(process)
 
             process.wait()
+            if stdin_thread is not None:
+                stdin_thread.join(timeout=1)
             for thread in threads:
                 thread.join(timeout=1)
 
@@ -175,6 +210,8 @@ class ProcessRunner:
             raise callback_error
         if reader_error is not None:
             raise reader_error
+        if stdin_errors:
+            raise stdin_errors[0]
         exit_code = process.returncode
         if timed_out:
             exit_code = 124
@@ -190,6 +227,21 @@ class ProcessRunner:
             stdout_ref=str(stdout_file),
             stderr_ref=str(stderr_file),
         )
+
+    @staticmethod
+    def _write_stdin(pipe: BinaryIO, payload: bytes, errors: list[BaseException]) -> None:
+        try:
+            pipe.write(payload)
+            pipe.flush()
+        except BrokenPipeError:
+            pass
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
     @staticmethod
     def _read_stream(
