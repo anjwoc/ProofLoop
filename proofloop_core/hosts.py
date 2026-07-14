@@ -178,8 +178,8 @@ def parse_codex_transcript(path: str | Path | None) -> dict[str, Any]:
 
 
 def antigravity_workflow() -> str:
-    return """---
-description: Run the automatic ProofLoop coding harness. One workflow invocation launches the orchestrator, which owns role allocation, real verification, bounded repair, independent review, anti-bloat checks, and truth-gated completion.
+    return r"""---
+description: Run ProofLoop while continuously relaying observed planner, implementer, check, recovery, review, and truth progress in the Antigravity conversation.
 ---
 
 # ProofLoop
@@ -187,21 +187,44 @@ description: Run the automatic ProofLoop coding harness. One workflow invocation
 Do not simulate the workflow in this Antigravity session.
 
 1. Preserve the complete user request following `/proofloop` in `.proofloop/requests/` as a UTF-8 text file.
-2. Run exactly one bootstrap command:
+2. Tell the user that the external ProofLoop orchestrator is launching and that observed progress will be relayed.
+3. Start the `proofloop-core orchestrate` command in a detached background process. Replace `<absolute-request-file>` before running this block:
 
 ```bash
-$HOME/.proofloop/bin/proofloop-core orchestrate \
+RELAY_DIR="$(pwd)/.proofloop/relay/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -p "$RELAY_DIR"
+printf '1\n' > "$RELAY_DIR/next-line"
+nohup "$HOME/.proofloop/bin/proofloop-core" orchestrate \
   --host antigravity \
   --repo . \
   --request-file <absolute-request-file> \
   --output-format human \
   --verbosity info \
-  --color auto
+  --color never \
+  > "$RELAY_DIR/output.log" 2>&1 < /dev/null &
+printf '%s\n' "$!" > "$RELAY_DIR/pid"
+printf 'RELAY_DIR=%s\nPID=%s\n' "$RELAY_DIR" "$(cat "$RELAY_DIR/pid")"
 ```
 
-3. The orchestrator will start isolated Antigravity CLI role processes, run actual checks, calculate failure fingerprints, retry or escalate, request review, and build the truth report.
-4. Do not synthesize progress messages. Treat the orchestrator stream as the only system status source.
-5. Report `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` exactly as returned. Requested model names are not proof of resolved models.
+4. Retain the absolute `RELAY_DIR`. Re-run the following polling block in separate terminal tool calls until it prints `PROOFLOOP_RELAY_FINISHED`. Do not keep one terminal call blocked for the whole run:
+
+```bash
+sleep 5
+NEXT_LINE=$(cat "$RELAY_DIR/next-line")
+LAST_LINE=$(wc -l < "$RELAY_DIR/output.log" | tr -d ' ')
+if [ "$LAST_LINE" -ge "$NEXT_LINE" ]; then
+  sed -n "${NEXT_LINE},${LAST_LINE}p" "$RELAY_DIR/output.log"
+fi
+printf '%s\n' "$((LAST_LINE + 1))" > "$RELAY_DIR/next-line"
+if kill -0 "$(cat "$RELAY_DIR/pid")" 2>/dev/null; then
+  printf 'PROOFLOOP_RELAY_ACTIVE\n'
+else
+  printf 'PROOFLOOP_RELAY_FINISHED\n'
+fi
+```
+
+5. Relay every new `[ProofLoop]` line to the user between polling tool calls. Present the observed role, phase, elapsed time, PID, check, recovery, review, and host output lines. Do not invent progress or expose the submitted prompt.
+6. When the relay finishes, extract the run ID from the first `ProofLoop run` line in `output.log`, read `.proofloop/runs/<run-id>/truth-report.json`, and present its `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` status exactly. Requested model names are not proof of resolved models.
 """
 
 
