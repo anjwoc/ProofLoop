@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import NormalizedHostEvent, StructuredOutputParser, explicit_model, session_event
+from .base import (
+    NormalizedHostEvent,
+    StructuredOutputParser,
+    explicit_model,
+    session_event,
+    session_started_event,
+    usage_event,
+)
 
 
 class CodexOutputParser(StructuredOutputParser):
@@ -15,6 +22,29 @@ class CodexOutputParser(StructuredOutputParser):
         event_type = value.get("type")
         item = value.get("item") if isinstance(value.get("item"), dict) else {}
         item_type = item.get("type")
+        if event_type in {"thread.started", "session.started"}:
+            session_id = value.get("thread_id") or value.get("threadId") or value.get("session_id") or value.get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                return [session_started_event(session_id, value)]
+        if event_type == "turn.completed":
+            usage = value.get("usage")
+            event = usage_event(
+                usage,
+                session_id=str(value.get("thread_id") or value.get("threadId") or "") or None,
+                source_event_id=str(value.get("turn_id") or value.get("turnId") or event_type),
+                cache_read_is_subset=True,
+            ) if isinstance(usage, dict) else None
+            return [event] if event else []
+        payload = value.get("payload") if isinstance(value.get("payload"), dict) else {}
+        if event_type == "event_msg" and payload.get("type") == "token_count":
+            info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+            usage = info.get("last_token_usage")
+            event = usage_event(
+                usage,
+                measurement_kind="cumulative",
+                cache_read_is_subset=True,
+            ) if isinstance(usage, dict) else None
+            return [event] if event else []
         if event_type == "item.completed" and item_type in {"agent_message", "message"}:
             text = item.get("text") or item.get("content")
             if isinstance(text, str) and text:

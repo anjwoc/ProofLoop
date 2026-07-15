@@ -23,6 +23,9 @@ from .hosts import capability, probe
 from .host_runner import invoke_role
 from .orchestrator import converge_goal, orchestrate
 from .watch import resolve_run_dir, watch_events
+from .tokscale import TokScaleAdapter
+from .usage import build_usage_summary
+from .benchmark import compare_benchmark, run_benchmark
 
 
 def _print(value: object) -> None:
@@ -95,6 +98,28 @@ def main(argv: list[str] | None = None) -> int:
     p_watch.add_argument("--task")
     p_watch.add_argument("--level", choices=["debug", "info", "warning", "error"])
     p_watch.add_argument("--no-follow", action="store_true")
+
+    p_usage = sub.add_parser("usage")
+    usage_source = p_usage.add_mutually_exclusive_group(required=True)
+    usage_source.add_argument("--run")
+    usage_source.add_argument("--run-dir")
+    p_usage.add_argument("--repo", default=".")
+    p_usage.add_argument("--reconcile", action="store_true")
+    p_usage.add_argument("--tokscale-binary")
+
+    p_benchmark = sub.add_parser("benchmark")
+    p_benchmark.add_argument("--suite", required=True)
+    p_benchmark.add_argument("--repo", default=".")
+    p_benchmark.add_argument("--mode", choices=["routing", "system", "both"], default="both")
+    p_benchmark.add_argument("--repetitions", type=int, default=5)
+    p_benchmark.add_argument("--baseline-host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
+    p_benchmark.add_argument("--baseline-model", required=True)
+    p_benchmark.add_argument("--proofloop-host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_benchmark.add_argument("--timeout-seconds", type=int, default=1200)
+    p_benchmark.add_argument("--seed", type=int, default=0)
+
+    p_compare = sub.add_parser("compare")
+    p_compare.add_argument("--benchmark-dir", required=True)
 
     p_pre = sub.add_parser("preflight")
     p_pre.add_argument("--repo", default=".")
@@ -185,6 +210,34 @@ def main(argv: list[str] | None = None) -> int:
             )
         except KeyboardInterrupt:
             pass
+        return 0
+    if args.command == "usage":
+        selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
+        reconciliation = None
+        if args.reconcile:
+            reconciliation = TokScaleAdapter(args.tokscale_binary).reconcile(selected)
+        result = build_usage_summary(selected)
+        if reconciliation is not None:
+            result["reconciliation"] = reconciliation
+        _print(result)
+        return 0
+    if args.command == "benchmark":
+        result = run_benchmark(
+            args.suite,
+            args.repo,
+            mode=args.mode,
+            repetitions=args.repetitions,
+            baseline_host=args.baseline_host,
+            baseline_model=args.baseline_model,
+            proofloop_host=_resolve_host(args.proofloop_host),
+            timeout_seconds=args.timeout_seconds,
+            seed=args.seed,
+        )
+        _print(result)
+        return 0
+    if args.command == "compare":
+        result = compare_benchmark(args.benchmark_dir)
+        _print(result)
         return 0
     if args.command in {"orchestrate", "goal"}:
         host = _resolve_host(args.host)

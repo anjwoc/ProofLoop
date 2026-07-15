@@ -63,7 +63,23 @@ def normalize_acp_update(update: Any) -> tuple[str, str, dict[str, Any]]:
     kind = mapping.get(name, "unknown")
     text = _first_text(payload)
     message = text or name
-    return "session.update", message, {"kind": kind, "update": payload}
+    data = {"kind": kind, "update": payload}
+    if kind == "usage_updated" and isinstance(payload, dict):
+        used = payload.get("used")
+        size = payload.get("size")
+        if isinstance(used, (int, float)) and isinstance(size, (int, float)) and size > 0:
+            data["contextWindow"] = {
+                "used": int(used),
+                "size": int(size),
+                "ratio": round(float(used) / float(size), 6),
+            }
+        cost = payload.get("cost")
+        if isinstance(cost, dict) and isinstance(cost.get("amount"), (int, float)):
+            data["cumulativeCost"] = {
+                "amount": float(cost["amount"]),
+                "currency": str(cost.get("currency") or ""),
+            }
+    return "session.update", message, data
 
 
 def _select_permission(options: list[Any], access_mode: str) -> dict[str, Any]:

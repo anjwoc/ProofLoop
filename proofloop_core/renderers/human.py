@@ -99,6 +99,13 @@ class HumanRenderer:
             state = event_type.split(".", 1)[1]
             return f"{prefix} session {state} · {runtime}{suffix}"
 
+        if event_type == "usage.observed":
+            role = data.get("role", "agent")
+            tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+            total = sum(value for value in tokens.values() if isinstance(value, int))
+            model = data.get("observedModel") or data.get("requestedModel") or "unknown-model"
+            return f"{prefix} usage · {role} · {model} · {total:,} tokens"
+
         if event_type == "model.changed":
             previous = data.get("previousModel") or "none"
             active = data.get("activeModel") or "unavailable"
@@ -132,6 +139,9 @@ class HumanRenderer:
             reason = data.get("reasonCode") or data.get("reason") or data.get("error")
             if reason:
                 lines.append(f"  reason: {reason}")
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+            if usage and isinstance(usage.get("rawTotal"), int):
+                lines.append(f"  usage: {usage['rawTotal']:,} tokens · {usage.get('model') or 'unknown-model'}")
             if self.verbosity == "debug":
                 if data.get("invocationId"):
                     lines.append(f"  invocation: {data['invocationId']}")

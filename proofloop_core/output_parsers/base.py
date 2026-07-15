@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..usage import normalize_tokens
+
 
 @dataclass(frozen=True)
 class NormalizedHostEvent:
@@ -66,6 +68,39 @@ def session_event(kind: str, value: dict[str, Any], *, text: str | None = None) 
     if text:
         data["text"] = text
     return NormalizedHostEvent("session.update", text or kind.replace("_", " ").title(), data)
+
+
+def session_started_event(session_id: str, value: dict[str, Any]) -> NormalizedHostEvent:
+    return NormalizedHostEvent(
+        "session.started",
+        "Host session started.",
+        {"sessionId": session_id, "update": value},
+    )
+
+
+def usage_event(
+    value: dict[str, Any],
+    *,
+    measurement_kind: str = "final",
+    session_id: str | None = None,
+    source_event_id: str | None = None,
+    cache_read_is_subset: bool = False,
+) -> NormalizedHostEvent | None:
+    tokens = normalize_tokens(value)
+    if cache_read_is_subset and "input" in tokens and "cacheRead" in tokens:
+        tokens["input"] = max(0, tokens["input"] - tokens["cacheRead"])
+    if not tokens:
+        return None
+    data: dict[str, Any] = {
+        "tokens": tokens,
+        "measurementKind": measurement_kind,
+        "evidenceLevel": "PROVIDER_REPORTED",
+    }
+    if session_id:
+        data["sessionId"] = session_id
+    if source_event_id:
+        data["sourceEventId"] = source_event_id
+    return NormalizedHostEvent("usage.observed", "Host token usage observed.", data)
 
 
 def content_blocks(value: Any) -> list[dict[str, Any]]:

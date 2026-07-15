@@ -73,7 +73,15 @@ class PackageTest(unittest.TestCase):
             env["PROOFLOOP_FAKE_LOG"] = str(log)
             env["HOME"] = str(fake_dir / "home")
             env["PROOFLOOP_HOME"] = str(fake_dir / "home" / ".proofloop")
-            command = ["python3", "scripts/install.py", "--host", "claude-code", "--scope", "user"]
+            command = [
+                "python3",
+                "scripts/install.py",
+                "--host",
+                "claude-code",
+                "--scope",
+                "user",
+                "--without-tokscale",
+            ]
             for _ in range(2):
                 completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, check=False)
                 self.assertEqual(0, completed.returncode, completed.stderr)

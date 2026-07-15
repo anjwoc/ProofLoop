@@ -13,6 +13,7 @@ from .io import write_json
 from .output_parsers import parser_for
 from .process_runner import ProcessRunner
 from .trace import summarize_trace
+from .usage import TokenLedger, load_invocations, record_normalized_usage
 
 _MAX_HOST_OUTPUT_EVENT_CHARS = 4000
 
@@ -55,6 +56,7 @@ def invoke_role(
     model_override: str | None = None,
     access_mode: str | None = None,
     fixed_args: tuple[str, ...] = (),
+    invocation_id: str | None = None,
 ) -> dict[str, Any]:
     if role not in {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
@@ -98,7 +100,7 @@ def invoke_role(
     else:
         return {"verdict": "BLOCKED", "reason": "EXTERNAL_ROLE_RUNNER_NOT_SUPPORTED", "role": role}
     sequence = len(list((root / "invocations").glob("*"))) + 1 if (root / "invocations").exists() else 1
-    invocation_id = f"{sequence:02d}-{host}-{role}"
+    invocation_id = invocation_id or f"{sequence:02d}-{host}-{role}"
     call_dir = root / "invocations" / invocation_id
     call_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -107,9 +109,10 @@ def invoke_role(
     evidence_level = "UNAVAILABLE" if host == "antigravity" else "CLI_REQUESTED_ONLY"
     model_event_emitted = False
     parser_degraded = False
+    session_id: str | None = None
 
     def on_line(stream_name: str, line: str) -> None:
-        nonlocal observed, evidence_level, model_event_emitted, parser_degraded
+        nonlocal observed, evidence_level, model_event_emitted, parser_degraded, session_id
         visible_text = line.rstrip("\r\n")
         try:
             normalized = parser.feed(stream_name, line)
@@ -171,6 +174,25 @@ def invoke_role(
                     continue
                 observed = candidate
                 evidence_level = str(data.get("evidenceLevel") or "HOST_OUTPUT")
+            if item.event_type == "session.started" and isinstance(data.get("sessionId"), str):
+                session_id = data["sessionId"]
+            if item.event_type == "usage.observed":
+                if not data.get("sessionId") and session_id:
+                    data["sessionId"] = session_id
+                record_normalized_usage(
+                    root,
+                    run_id=emitter.run_id if emitter else root.name,
+                    invocation_id=invocation_id,
+                    role=role,
+                    runtime=host,
+                    model=observed or model,
+                    requested_model=model,
+                    task_id=task_id,
+                    phase=phase,
+                    attempt=attempt,
+                    data=data,
+                    source="host_stream",
+                )
             if emitter is not None:
                 emitter.emit(
                     item.event_type,
@@ -213,6 +235,10 @@ def invoke_role(
         on_heartbeat=on_heartbeat if emitter is not None else None,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
     )
+    if host == "codex":
+        headless = root / "usage" / "tokscale-headless" / "codex" / f"{invocation_id}.jsonl"
+        headless.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(call_dir / "stdout.log", headless)
     if observed is None and emitter is not None:
         emitter.emit(
             "role.model_observed",
@@ -245,6 +271,7 @@ def invoke_role(
         "cancelled": process_result.cancelled,
         "transport": "legacy-cli",
         "durationSeconds": process_result.duration_seconds,
+        "sessionId": session_id,
         "stdoutRef": process_result.stdout_ref,
         "stderrRef": process_result.stderr_ref,
     }
@@ -266,10 +293,21 @@ def invoke_role(
         "exitCode": process_result.exit_code,
         "invocationDir": str(call_dir),
         "invocationId": invocation_id,
+        "sessionId": session_id,
         "traceRecorded": True,
         "modelEventEmitted": model_event_emitted,
         "timedOut": process_result.timed_out,
         "cancelled": process_result.cancelled,
     }
     write_json(call_dir / "invocation.json", {**event, **result})
+    usage_summary = TokenLedger(root).summarize(
+        [*load_invocations(root), {"invocationId": invocation_id}]
+    )
+    usage = next(
+        (item for item in usage_summary["byInvocation"] if item["invocationId"] == invocation_id),
+        None,
+    )
+    if usage:
+        result["usage"] = usage
+        write_json(call_dir / "invocation.json", {**event, **result})
     return result

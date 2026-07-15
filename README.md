@@ -62,6 +62,29 @@ proofloop-core watch --run-dir .proofloop/runs/<run-id> --format jsonl --task TA
 
 An unobserved model is displayed as requested-only and keeps model routing `UNPROVEN`. Complete stdout and stderr remain in the run's invocation and check artifacts.
 
+## Token usage and benchmarks
+
+Provider-reported input, output, cache-read, cache-write, and reasoning tokens are attributed to the
+exact run, task, role, model, session, and invocation. ProofLoop stores the ledger under
+`.proofloop/runs/<run-id>/usage/` and uses the pinned local tokScale CLI to reconcile session totals and
+cost without uploading data.
+
+```bash
+proofloop-core usage --run latest --repo .
+proofloop-core usage --run-dir .proofloop/runs/<run-id> --reconcile
+```
+
+Benchmark suites are JSON documents with `tasks`, where every task has an `id`, `request`, and optional
+`checks` as arrays of command arguments. `routing` compares the same ProofLoop harness using one model
+against role routing. `system` compares a normal single-agent run against the full ProofLoop goal loop.
+Each trial runs in an isolated Git worktree and missing usage remains unknown rather than zero.
+
+```bash
+proofloop-core benchmark --suite benchmarks/core.json --repo . --mode both \
+  --repetitions 5 --baseline-host codex --baseline-model <model> --proofloop-host codex
+proofloop-core compare --benchmark-dir .proofloop/benchmarks/<benchmark-id>
+```
+
 ## Install
 
 ```bash
@@ -72,11 +95,14 @@ python3 scripts/doctor.py
 `./install.sh` selects `python3` automatically and clean-installs all hosts at user scope. Pass the
 same options as the Python installer to narrow the target, for example
 `./install.sh --host codex --scope user`. `make install` and
-`python3 ./scripts/install.py` are equivalent. An npm package is not required.
+`python3 ./scripts/install.py` are equivalent. ProofLoop itself does not require an npm package; npm is
+used to install the pinned tokScale companion under `~/.proofloop/tools/`. Pass `--without-tokscale` only
+when token-cost reconciliation is intentionally unavailable.
 
 Installation is a clean, idempotent reinstall. It validates generated adapters, removes only
 ProofLoop-managed runtime, plugin, agent, skill, workflow, and marketplace entries, then installs
-the fresh build. Unrelated host plugins, agents, skills, and settings are preserved.
+the fresh build. The ProofLoop-managed tokScale directory is also deleted and recreated at the pinned
+version. Unrelated host plugins, agents, skills, npm packages, and settings are preserved.
 
 Antigravity permission bypass is disabled by default. It can be explicitly enabled for isolated unattended testing:
 

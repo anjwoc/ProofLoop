@@ -27,6 +27,8 @@ from .hosts import role_only_trace_summary
 from .goal import GoalFSM, build_goal_contract
 from .memory import prepare_memory, write_memory
 from .runtime import ResolvedRuntime
+from .usage import build_usage_summary
+from .tokscale import TokScaleAdapter
 
 
 ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
@@ -422,6 +424,10 @@ class ProofLoopOrchestrator:
         )
         resolved_runtime = self._resolved_runtime_for_role(role)
         requested_model = resolved_runtime.model if resolved_runtime else self._requested_model_for_role(role)
+        invocation_root = self.run_dir / "invocations"
+        invocation_sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
+        invocation_runtime = resolved_runtime.runtime_id if resolved_runtime else self.host
+        invocation_id = f"{invocation_sequence:02d}-{invocation_runtime}-{role}"
         role_data = {
             "role": role,
             "attempt": attempt,
@@ -432,6 +438,7 @@ class ProofLoopOrchestrator:
             "transport": resolved_runtime.transport if resolved_runtime else "adapter",
             "reasoning": resolved_runtime.reasoning if resolved_runtime else None,
             "accessMode": resolved_runtime.access_mode if resolved_runtime else None,
+            "invocationId": invocation_id,
         }
         if resolved_runtime is not None:
             self._emit(
@@ -481,6 +488,7 @@ class ProofLoopOrchestrator:
             task_id=task_id,
             attempt=attempt,
             runtime=resolved_runtime,
+            invocation_id=invocation_id,
         )
         try:
             result = self.adapter.invoke(invocation)
@@ -502,14 +510,21 @@ class ProofLoopOrchestrator:
             "runtime": result.get("runtime") or role_data["runtime"],
             "transport": result.get("transport") or role_data["transport"],
             "role": role,
+            "taskId": task_id,
+            "phase": invocation_phase,
+            "attempt": attempt,
             "verdict": result.get("verdict"),
             "requestedModel": result.get("requestedModel"),
             "observedModel": result.get("observedModel"),
             "modelEvidence": result.get("modelEvidence"),
             "invocationDir": result.get("invocationDir"),
             "resultPath": str(result_path) if result_path else None,
+            "invocationId": result.get("invocationId") or invocation_id,
+            "sessionId": result.get("sessionId"),
+            "usage": result.get("usage"),
         }
         _append_jsonl(self.run_dir / "invocations.jsonl", event)
+        build_usage_summary(self.run_dir)
         if not result.get("traceRecorded"):
             trace_event = {
                 **event,
@@ -624,6 +639,7 @@ class ProofLoopOrchestrator:
                 "exitCode": result.get("exitCode"),
                 "invocationId": result.get("invocationId"),
                 "invocationDir": result.get("invocationDir"),
+                "usage": result.get("usage"),
             },
         )
         return result
@@ -1418,13 +1434,14 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
             data={"status": truth.get("verdict"), "verdict": truth.get("verdict"), "truthReport": truth},
         )
         finalize_run(self.repo, truth)
+        usage = self._finalize_usage()
         self._emit(
             "run.completed",
             phase="TRUTH",
             message="ProofLoop run completed.",
-            data={"verdict": truth.get("verdict"), "runDir": str(self.run_dir)},
+            data={"verdict": truth.get("verdict"), "runDir": str(self.run_dir), "usage": usage},
         )
-        return {"verdict": truth["verdict"], "runDir": str(self.run_dir), "truthReport": truth}
+        return {"verdict": truth["verdict"], "runDir": str(self.run_dir), "truthReport": truth, "usage": usage}
 
     def _finalize_terminal(self, verdict: str, code: str, message: str) -> dict[str, Any]:
         if self.run_dir is None:
@@ -1440,6 +1457,7 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         write_json(self.run_dir / "truth-report.json", report)
         self.transition(verdict, code=code, message=message)
         finalize_run(self.repo, report)
+        usage = self._finalize_usage()
         event_type = "run.failed" if verdict == "FAILED" else "run.blocked"
         self._emit(
             event_type,
@@ -1448,7 +1466,37 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
             level="error" if verdict == "FAILED" else "warning",
             data={"verdict": verdict, "code": code, "message": message, "runDir": str(self.run_dir)},
         )
-        return {"verdict": verdict, "code": code, "message": message, "runDir": str(self.run_dir), "truthReport": report}
+        return {
+            "verdict": verdict,
+            "code": code,
+            "message": message,
+            "runDir": str(self.run_dir),
+            "truthReport": report,
+            "usage": usage,
+        }
+
+    def _finalize_usage(self) -> dict[str, Any]:
+        assert self.run_dir is not None
+        summary = build_usage_summary(self.run_dir)
+        try:
+            reconciliation = TokScaleAdapter().reconcile(self.run_dir)
+            summary = build_usage_summary(self.run_dir)
+        except Exception as exc:
+            reconciliation = {
+                "schemaVersion": "1.0",
+                "status": "UNAVAILABLE",
+                "reason": "TOKSCALE_RECONCILIATION_FAILED",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            write_json(self.run_dir / "usage" / "usage-reconciliation.json", reconciliation)
+        self._emit(
+            "usage.finalized",
+            phase="TRUTH",
+            message="Token usage summary finalized.",
+            level="info" if summary["coverage"]["tokenCoverageRatio"] == 1.0 else "warning",
+            data={"summary": summary, "reconciliation": reconciliation},
+        )
+        return summary
 
 
 def orchestrate(

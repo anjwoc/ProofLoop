@@ -112,6 +112,31 @@ class RendererTest(unittest.TestCase):
         self.assertIn("haiku → pro", text)
         self.assertIn("ACP_SESSION_CONFIG", text)
 
+    def test_human_renderer_shows_live_and_completed_usage(self) -> None:
+        stream = io.StringIO()
+        renderer = build_renderer("human", stream, "info", "never")
+        renderer.render(
+            event(
+                "usage.observed",
+                data={
+                    "role": "implementer_fast",
+                    "requestedModel": "gpt-test",
+                    "tokens": {"input": 100, "output": 25},
+                },
+            )
+        )
+        renderer.render(
+            event(
+                "role.completed",
+                data={
+                    "role": "implementer_fast",
+                    "usage": {"rawTotal": 125, "model": "gpt-test"},
+                },
+            )
+        )
+        self.assertIn("125 tokens", stream.getvalue())
+        self.assertIn("gpt-test", stream.getvalue())
+
     def test_human_renderer_formats_role_check_recovery_review_and_truth(self) -> None:
         stream = io.StringIO()
         renderer = build_renderer("human", stream, "verbose", "never")

@@ -318,9 +318,9 @@ class HostAdapterTest(unittest.TestCase):
             fake.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json, time\n"
-                "print(json.dumps({'type':'thread.started','model':'gpt-5.6-terra'}), flush=True)\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'thread-1','model':'gpt-5.6-terra'}), flush=True)\n"
                 "time.sleep(.1)\n"
-                "print(json.dumps({'type':'turn.completed'}), flush=True)\n",
+                "print(json.dumps({'type':'turn.completed','thread_id':'thread-1','usage':{'input_tokens':100,'output_tokens':25}}), flush=True)\n",
                 encoding="utf-8",
             )
             fake.chmod(0o755)
@@ -344,6 +344,8 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual("PASS", result["verdict"])
             self.assertEqual("gpt-5.6-terra", result["observedModel"])
             self.assertEqual("HOST_OUTPUT", result["modelEvidence"])
+            self.assertEqual("thread-1", result["sessionId"])
+            self.assertEqual(125, result["usage"]["rawTotal"])
             self.assertTrue(result["modelEventEmitted"])
             events = [json.loads(line) for line in (run_dir / "events.jsonl").read_text().splitlines()]
             observed = [event for event in events if event["type"] == "role.model_observed"]
@@ -352,6 +354,10 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual("gpt-5.6-terra", observed[0]["data"]["observedModel"])
             invocation_dir = Path(result["invocationDir"])
             self.assertIn("thread.started", (invocation_dir / "stdout.log").read_text())
+            usage_summary = json.loads((run_dir / "usage" / "usage-summary.json").read_text())
+            self.assertEqual(125, usage_summary["totals"]["rawTotal"])
+            headless = run_dir / "usage" / "tokscale-headless" / "codex" / "01-codex-implementer_fast.jsonl"
+            self.assertIn("turn.completed", headless.read_text(encoding="utf-8"))
 
     def test_host_runner_emits_requested_only_when_model_is_unobserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

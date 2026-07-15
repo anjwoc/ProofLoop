@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from proofloop_core.hosts import probe, runtime_home  # noqa: E402
+from proofloop_core.tokscale import TokScaleAdapter  # noqa: E402
 
 
 def exists(path: Path) -> dict[str, object]:
@@ -22,6 +23,7 @@ result = {
     "proofloopHome": str(proofloop_home),
     "runtime": exists(proofloop_home / "runtime" / "proofloop_core"),
     "wrapper": exists(proofloop_home / "bin" / "proofloop-core"),
+    "tokscale": TokScaleAdapter().status(),
     "hosts": {
         "claude-code": {
             **probe("claude-code"),

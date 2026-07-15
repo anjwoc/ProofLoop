@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.acp_runner import invoke_acp_role
+from proofloop_core.acp_runner import invoke_acp_role, normalize_acp_update
 from proofloop_core.runtime import ResolvedRuntime
 
 
@@ -47,6 +47,22 @@ class ACPRunnerTest(unittest.TestCase):
         update = next(event for event in events if event[0] == "session.update")
         self.assertEqual("agent_message_chunk", update[2]["kind"])
         self.assertIn("fixture ACP output", update[1])
+
+
+class ACPNormalizationTest(unittest.TestCase):
+    def test_usage_update_is_context_state_not_billed_token_usage(self) -> None:
+        class UsageUpdate:
+            def model_dump(self, **kwargs):
+                del kwargs
+                return {"used": 500, "size": 2000, "cost": {"amount": 0.25, "currency": "USD"}}
+
+        event_type, _, data = normalize_acp_update(UsageUpdate())
+
+        self.assertEqual("session.update", event_type)
+        self.assertEqual("usage_updated", data["kind"])
+        self.assertEqual(0.25, data["contextWindow"]["ratio"])
+        self.assertEqual({"amount": 0.25, "currency": "USD"}, data["cumulativeCost"])
+        self.assertNotIn("tokens", data)
 
 
 if __name__ == "__main__":

@@ -94,6 +94,41 @@ class HostOutputParserTest(unittest.TestCase):
                 events = parser.feed("stdout", payload)
                 self.assertFalse(any(item.event_type == "role.model_observed" for item in events))
 
+    def test_provider_final_usage_is_normalized(self) -> None:
+        cases = (
+            (
+                CodexOutputParser(),
+                '{"type":"turn.completed","thread_id":"codex-s","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":30,"reasoning_output_tokens":4}}\n',
+            ),
+            (
+                ClaudeOutputParser(),
+                '{"type":"result","session_id":"claude-s","usage":{"input_tokens":101,"output_tokens":21,"cache_read_input_tokens":31}}\n',
+            ),
+            (
+                GeminiOutputParser(),
+                '{"type":"result","sessionId":"gemini-s","usageMetadata":{"promptTokenCount":102,"candidatesTokenCount":22,"cachedContentTokenCount":32,"thoughtsTokenCount":5}}\n',
+            ),
+            (
+                AntigravityOutputParser(),
+                '{"event":"result","sessionId":"ag-s","usage":{"input":103,"output":23,"cacheRead":33,"reasoning":6}}\n',
+            ),
+        )
+        expected_inputs = (70, 101, 70, 103)
+        for (parser, payload), expected_input in zip(cases, expected_inputs):
+            event = next(item for item in parser.feed("stdout", payload) if item.event_type == "usage.observed")
+            self.assertEqual(expected_input, event.data["tokens"]["input"])
+            self.assertEqual("final", event.data["measurementKind"])
+            self.assertTrue(event.data["sessionId"])
+
+    def test_host_session_ids_are_normalized(self) -> None:
+        events = (
+            CodexOutputParser().feed("stdout", '{"type":"thread.started","thread_id":"c1"}\n'),
+            ClaudeOutputParser().feed("stdout", '{"type":"system","subtype":"init","session_id":"c2"}\n'),
+            GeminiOutputParser().feed("stdout", '{"type":"init","sessionId":"c3"}\n'),
+            AntigravityOutputParser().feed("stdout", '{"event":"session_started","sessionId":"c4"}\n'),
+        )
+        self.assertEqual(["c1", "c2", "c3", "c4"], [items[0].data["sessionId"] for items in events])
+
 
 if __name__ == "__main__":
     unittest.main()

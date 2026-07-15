@@ -5,12 +5,14 @@ import argparse
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
+TOKSCALE_VERSION = "4.5.3"
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -59,6 +61,54 @@ def install_runtime(home: Path, dry_run: bool) -> dict[str, str]:
     )
     wrapper.chmod(0o755)
     return {"runtime": str(runtime), "wrapper": str(wrapper)}
+
+
+def install_tokscale(home: Path, dry_run: bool) -> dict[str, object]:
+    npm = shutil.which("npm")
+    tools_root = home / "tools" / "tokscale"
+    executable = tools_root / "node_modules" / ".bin" / "tokscale"
+    wrapper = home / "bin" / "tokscale"
+    if dry_run:
+        print(f"DRY remove ProofLoop-managed tokScale -> {tools_root}")
+        print(f"DRY npm install tokscale@{TOKSCALE_VERSION} -> {tools_root}")
+        print(f"DRY install tokScale wrapper -> {wrapper}")
+        return {
+            "status": "DRY_RUN",
+            "version": TOKSCALE_VERSION,
+            "root": str(tools_root),
+            "wrapper": str(wrapper),
+        }
+    if not npm:
+        return {"status": "NPM_MISSING", "version": TOKSCALE_VERSION}
+    remove_path(tools_root)
+    tools_root.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            npm,
+            "install",
+            "--prefix",
+            str(tools_root),
+            "--no-audit",
+            "--no-fund",
+            f"tokscale@{TOKSCALE_VERSION}",
+        ]
+    )
+    if not executable.exists():
+        raise RuntimeError(f"tokScale executable was not installed: {executable}")
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    remove_path(wrapper)
+    wrapper.write_text(
+        "#!/bin/sh\n" f"exec {shlex.quote(str(executable))} \"$@\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    version = run([str(wrapper), "--version"])
+    return {
+        "status": "PASS",
+        "version": (version.stdout or version.stderr).strip(),
+        "root": str(tools_root),
+        "wrapper": str(wrapper),
+    }
 
 
 def merge_marketplace(path: Path, plugin_path: Path) -> None:
@@ -233,10 +283,16 @@ def main() -> int:
     parser.add_argument("--target", default=".")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--without-tokscale", action="store_true")
     args = parser.parse_args()
     target = Path(args.target).resolve()
     home = Path(os.environ.get("PROOFLOOP_HOME", Path.home() / ".proofloop"))
     runtime = install_runtime(home, args.dry_run)
+    tokscale = (
+        {"status": "SKIPPED"}
+        if args.without_tokscale or args.build_only
+        else install_tokscale(home, args.dry_run)
+    )
     hosts: Iterable[str] = ("claude-code", "codex", "antigravity") if args.host == "all" else (args.host,)
     results: list[dict[str, object]] = []
     for host in hosts:
@@ -251,7 +307,7 @@ def main() -> int:
             results.append(install_antigravity(output, args.scope, target, args.dry_run))
         else:
             results.append(install_claude(output, args.scope, args.dry_run))
-    print(json.dumps({"runtime": runtime, "adapters": results}, indent=2))
+    print(json.dumps({"runtime": runtime, "tokscale": tokscale, "adapters": results}, indent=2))
     return 0
 
 

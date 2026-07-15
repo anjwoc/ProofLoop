@@ -9,6 +9,7 @@ from .events import EventEmitter
 from .host_runner import invoke_role
 from .hosts import probe
 from .runtime import ResolvedRuntime, RuntimeRegistry
+from .usage import record_normalized_usage
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class RoleInvocation:
     task_id: str | None = None
     attempt: int | None = None
     runtime: ResolvedRuntime | None = None
+    invocation_id: str | None = None
 
 
 class HostAdapter(Protocol):
@@ -84,13 +86,28 @@ class ExternalCLIAdapter:
                 f"{invocation.result_path}. Do not write the result anywhere else."
             )
         resolved = invocation.runtime or self.resolve_role(invocation.role)
+        invocation_root = invocation.run_dir / "invocations"
+        sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
+        invocation_id = invocation.invocation_id or f"{sequence:02d}-{resolved.runtime_id}-{invocation.role}"
         if resolved.transport == "acp":
-            invocation_root = invocation.run_dir / "invocations"
-            sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
-            invocation_id = f"{sequence:02d}-{resolved.runtime_id}-{invocation.role}"
             call_dir = invocation_root / invocation_id
 
             def on_event(event_type: str, message: str, data: dict[str, Any]) -> None:
+                if event_type == "usage.observed":
+                    record_normalized_usage(
+                        invocation.run_dir,
+                        run_id=invocation.emitter.run_id if invocation.emitter else invocation.run_dir.name,
+                        invocation_id=invocation_id,
+                        role=invocation.role,
+                        runtime=resolved.runtime_id,
+                        model=str(data.get("observedModel") or resolved.model),
+                        requested_model=resolved.model,
+                        task_id=invocation.task_id,
+                        phase=invocation.phase,
+                        attempt=invocation.attempt,
+                        data=data,
+                        source="acp",
+                    )
                 if invocation.emitter is None:
                     return
                 invocation.emitter.emit(
@@ -139,6 +156,7 @@ class ExternalCLIAdapter:
             model_override=resolved.model,
             access_mode=resolved.access_mode,
             fixed_args=resolved.fixed_args,
+            invocation_id=invocation_id,
         )
         result["runtime"] = resolved.runtime_id
         result["routingFallback"] = resolved.fallback
