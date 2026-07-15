@@ -50,7 +50,7 @@ class HostAdapterTest(unittest.TestCase):
             self.assertEqual(0, completed.returncode, completed.stderr)
             workflow = (output / "workflows" / "proofloop.md").read_text(encoding="utf-8")
             self.assertTrue(workflow.startswith("---\ndescription:"))
-            self.assertIn("proofloop-core orchestrate", workflow)
+            self.assertIn("proofloop-core\" goal", workflow)
             self.assertNotIn("invoke-role --host antigravity", workflow)
             self.assertIn("nohup", workflow)
             self.assertIn("< /dev/null", workflow)
@@ -120,6 +120,7 @@ class HostAdapterTest(unittest.TestCase):
     def test_codex_installer_uses_plain_mutating_commands_and_direct_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            home = root / "home"
             fake_bin = root / "bin"
             fake_bin.mkdir()
             log = root / "calls.log"
@@ -127,24 +128,44 @@ class HostAdapterTest(unittest.TestCase):
             codex.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROOFLOOP_FAKE_LOG\"\nexit 0\n", encoding="utf-8")
             codex.chmod(0o755)
             env = dict(os.environ)
-            env["HOME"] = str(root / "home")
+            env["HOME"] = str(home)
             env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
             env["PROOFLOOP_FAKE_LOG"] = str(log)
-            env["PROOFLOOP_HOME"] = str(root / "home" / ".proofloop")
-            completed = subprocess.run(
-                ["python3", "scripts/install.py", "--host", "codex", "--scope", "user"],
-                cwd=ROOT, env=env, capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(0, completed.returncode, completed.stderr)
-            calls = log.read_text(encoding="utf-8")
+            env["PROOFLOOP_HOME"] = str(home / ".proofloop")
+            agents = home / ".codex" / "agents"
+            agents.mkdir(parents=True)
+            (agents / "proofloop_stale.toml").write_text("stale", encoding="utf-8")
+            (agents / "user_agent.toml").write_text("keep", encoding="utf-8")
+            stale_plugin = home / ".codex" / "plugins" / "proofloop"
+            stale_plugin.mkdir(parents=True)
+            (stale_plugin / "stale.txt").write_text("stale", encoding="utf-8")
+            runtime = home / ".proofloop" / "runtime"
+            runtime.mkdir(parents=True)
+            (runtime / "stale.py").write_text("stale", encoding="utf-8")
+            command = ["python3", "scripts/install.py", "--host", "codex", "--scope", "user"]
+            for _ in range(2):
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT, env=env, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(0, completed.returncode, completed.stderr)
+            call_lines = log.read_text(encoding="utf-8").splitlines()
+            calls = "\n".join(call_lines)
             self.assertNotIn("--json", calls)
+            self.assertEqual("plugin remove proofloop@proofloop-local", call_lines[0])
+            self.assertEqual("plugin marketplace remove proofloop-local", call_lines[1])
             self.assertIn("plugin marketplace add", calls)
             self.assertIn("plugin add proofloop@proofloop-local", calls)
-            self.assertTrue((root / "home" / ".codex" / "agents" / "proofloop_planner_deep.toml").exists())
-            self.assertTrue((root / "home" / ".codex" / "plugins" / "proofloop" / ".codex-plugin" / "plugin.json").exists())
-            market = json.loads((root / "home" / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+            self.assertFalse((agents / "proofloop_stale.toml").exists())
+            self.assertEqual("keep", (agents / "user_agent.toml").read_text(encoding="utf-8"))
+            self.assertFalse((stale_plugin / "stale.txt").exists())
+            self.assertFalse((runtime / "stale.py").exists())
+            self.assertTrue((agents / "proofloop_planner_deep.toml").exists())
+            self.assertTrue((stale_plugin / ".codex-plugin" / "plugin.json").exists())
+            market = json.loads((home / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
             entry = next(item for item in market["plugins"] if item["name"] == "proofloop")
             self.assertEqual("./.codex/plugins/proofloop", entry["source"]["path"])
+            self.assertEqual(1, sum(item["name"] == "proofloop" for item in market["plugins"]))
 
     def test_antigravity_user_install_writes_both_skill_locations_and_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,12 +173,21 @@ class HostAdapterTest(unittest.TestCase):
             env = dict(os.environ)
             env["HOME"] = str(root / "home")
             env["PROOFLOOP_HOME"] = str(root / "home" / ".proofloop")
-            completed = subprocess.run(
-                ["python3", "scripts/install.py", "--host", "antigravity", "--scope", "user"],
-                cwd=ROOT, env=env, capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(0, completed.returncode, completed.stderr)
             home = root / "home"
+            skills_root = home / ".gemini" / "config" / "skills"
+            (skills_root / "proofloop-obsolete").mkdir(parents=True)
+            (skills_root / "proofloop-obsolete" / "stale.txt").write_text("stale", encoding="utf-8")
+            (skills_root / "user-skill").mkdir()
+            (skills_root / "user-skill" / "keep.txt").write_text("keep", encoding="utf-8")
+            command = ["python3", "scripts/install.py", "--host", "antigravity", "--scope", "user"]
+            for _ in range(2):
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT, env=env, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertFalse((skills_root / "proofloop-obsolete").exists())
+            self.assertEqual("keep", (skills_root / "user-skill" / "keep.txt").read_text(encoding="utf-8"))
             self.assertTrue((home / ".gemini" / "config" / "skills" / "using-proofloop" / "SKILL.md").exists())
             self.assertTrue((home / ".gemini" / "config" / "skills" / "proofloop" / "SKILL.md").exists())
             self.assertTrue((home / ".gemini" / "antigravity-cli" / "skills" / "using-proofloop" / "SKILL.md").exists())
@@ -165,6 +195,7 @@ class HostAdapterTest(unittest.TestCase):
             workflow = home / ".gemini" / "config" / "global_workflows" / "proofloop.md"
             self.assertTrue(workflow.exists())
             self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\ndescription:"))
+            self.assertIn("proofloop-core\" goal", workflow.read_text(encoding="utf-8"))
             self.assertTrue((home / ".proofloop" / "bin" / "proofloop-core").exists())
             result = json.loads(completed.stdout[completed.stdout.index('{\n  "runtime"'):])
             adapter = result["adapters"][0]
@@ -212,7 +243,6 @@ class HostAdapterTest(unittest.TestCase):
                 "from pathlib import Path\n"
                 "Path(os.environ['AGY_CAPTURE']).write_text(json.dumps({\n"
                 "    'args': sys.argv[1:],\n"
-                "    'stdin': sys.stdin.read(),\n"
                 "}))\n"
                 "print('completed', flush=True)\n",
                 encoding="utf-8",
@@ -227,16 +257,17 @@ class HostAdapterTest(unittest.TestCase):
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
             captured = json.loads(capture.read_text(encoding="utf-8"))
-            prompt_index = captured["args"].index("--prompt")
-            self.assertEqual("", captured["args"][prompt_index + 1])
-            self.assertNotIn("-p", captured["args"])
+            prompt_index = captured["args"].index("-p")
+            prompt_value = captured["args"][prompt_index + 1]
+            self.assertTrue(len(prompt_value) > 0, "prompt must be non-empty")
+            self.assertIn("implementer_fast", prompt_value)
             self.assertNotIn("--model", captured["args"])
-            self.assertIn("implementer_fast", captured["stdin"])
+            self.assertNotIn("--prompt", captured["args"])
             event = json.loads((run_dir / "model-trace.jsonl").read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual("current-session-model", event["requestedModel"])
             self.assertEqual("UNAVAILABLE", event["modelEvidence"])
             self.assertNotIn("--model", event["command"])
-            self.assertIn("--prompt", event["command"])
+            self.assertIn("-p", event["command"])
             summary = json.loads((run_dir / "model-trace-summary.json").read_text(encoding="utf-8"))
             self.assertFalse(summary["routingObserved"])
             self.assertFalse(summary["routingClaimed"])
@@ -355,6 +386,36 @@ class HostAdapterTest(unittest.TestCase):
             invocation = json.loads((Path(result["invocationDir"]) / "invocation.json").read_text(encoding="utf-8"))
             self.assertNotIn("--model", invocation["command"])
 
+    def test_gemini_read_only_role_uses_plan_approval_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "gemini"
+            capture = root / "args.json"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['GEMINI_ARGS']).write_text(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with patch.dict(os.environ, {"GEMINI_ARGS": str(capture)}):
+                result = invoke_role(
+                    "gemini",
+                    "explorer_fast",
+                    root,
+                    root / "run",
+                    prompt="Inspect only.",
+                    binary=str(fake),
+                    access_mode="read-only",
+                )
+
+            self.assertEqual("PASS", result["verdict"])
+            args = json.loads(capture.read_text(encoding="utf-8"))
+            approval_index = args.index("--approval-mode")
+            self.assertEqual("plan", args[approval_index + 1])
+            self.assertIn("stream-json", args)
+
     def test_built_entry_skills_call_fixed_orchestrator_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -376,7 +437,7 @@ class HostAdapterTest(unittest.TestCase):
                 else:
                     skill = output / "skills" / "proofloop" / "SKILL.md"
                 text = skill.read_text(encoding="utf-8")
-                self.assertIn("proofloop-core orchestrate", text)
+                self.assertIn("proofloop-core goal", text)
                 self.assertIn(expected, text)
                 self.assertIn("--output-format human", text)
                 self.assertIn("--verbosity info", text)

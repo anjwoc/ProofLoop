@@ -64,7 +64,7 @@ if len(runtime_files) > runtime_file_budget:
 
 required_fragments = {
     ROOT / "skills" / "proofloop" / "SKILL.md": [
-        "proofloop-core orchestrate",
+        "proofloop-core goal",
         "Do not synthesize",
         "--output-format human",
         "--verbosity info",

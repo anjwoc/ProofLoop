@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cosmic Solar System Simulation</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap');
+    body { margin: 0; overflow: hidden; background: #030307; font-family: 'Outfit', sans-serif; color: #fff; user-select: none; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #ui {
+      position: absolute; top: 20px; left: 20px;
+      background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px);
+      padding: 16px 20px; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37); pointer-events: none;
+    }
+    h1 {
+      margin: 0 0 4px; font-size: 1.25rem; font-weight: 600; letter-spacing: 0.5px;
+      background: linear-gradient(45deg, #ffaa00, #ff4400); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    p { margin: 0; font-size: 0.8rem; font-weight: 300; opacity: 0.7; }
+    #ctrls {
+      position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 12px; background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px);
+      padding: 8px 12px; border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+    }
+    button {
+      background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.05); color: #fff;
+      padding: 8px 18px; border-radius: 20px; cursor: pointer; font-family: 'Outfit', sans-serif;
+      font-weight: 500; font-size: 0.8rem; transition: all 0.2s ease;
+    }
+    button:hover { background: rgba(255, 255, 255, 0.18); transform: translateY(-2px); }
+    button:active { transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <h1>Cosmos Sandbox</h1>
+    <p>Click space to launch custom planets</p>
+  </div>
+  <div id="ctrls">
+    <button id="clear">Clear Custom</button>
+    <button id="pause">Pause</button>
+  </div>
+  <script>
+    const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+    let w = canvas.width = window.innerWidth, h = canvas.height = window.innerHeight, paused = false;
+    window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+    const stars = Array.from({ length: 120 }, () => ({
+      x: Math.random() * 2000 - 1000, y: Math.random() * 2000 - 1000,
+      r: Math.random() * 1.2 + 0.3, color: `hsl(${Math.random() * 40 + 200}, 80%, 85%)`
+    }));
+
+    const sun = { x: 0, y: 0, r: 28, color: '#ffe066', glow: '#ff6b00' };
+    const planets = [
+      { name: 'Mercury', d: 65, r: 3.5, s: 0.035, color: '#a5a5a5', a: Math.random() * 6.28 },
+      { name: 'Venus', d: 100, r: 6, s: 0.022, color: '#e3bb76', a: Math.random() * 6.28 },
+      { name: 'Earth', d: 145, r: 7.5, s: 0.016, color: '#4b9cd3', a: Math.random() * 6.28, moon: { r: 1.8, d: 12, s: 0.07, a: 0 } },
+      { name: 'Mars', d: 195, r: 5, s: 0.012, color: '#c1440e', a: Math.random() * 6.28 },
+      { name: 'Jupiter', d: 270, r: 14, s: 0.007, color: '#b07f35', a: Math.random() * 6.28 }
+    ], custom = [];
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left - w / 2, y = e.clientY - rect.top - h / 2;
+      const d = Math.hypot(x, y);
+      if (d < 35 || d > 600) return;
+      custom.push({
+        d, r: Math.random() * 4 + 3,
+        s: (0.85 / Math.pow(d, 1.3)) * (Math.random() > 0.45 ? 1 : -1),
+        color: `hsl(${Math.random() * 360}, 85%, 65%)`, a: Math.atan2(y, x)
+      });
+    });
+
+    document.getElementById('clear').onclick = () => custom.length = 0;
+    document.getElementById('pause').onclick = (e) => { paused = !paused; e.target.innerText = paused ? 'Resume' : 'Pause'; };
+
+    function draw() {
+      requestAnimationFrame(draw);
+      ctx.fillStyle = 'rgba(3, 3, 7, 0.15)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+
+      stars.forEach(s => {
+        ctx.fillStyle = s.color;
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.28); ctx.fill();
+      });
+
+      ctx.shadowBlur = 40; ctx.shadowColor = sun.glow;
+      ctx.fillStyle = sun.color;
+      ctx.beginPath(); ctx.arc(sun.x, sun.y, sun.r, 0, 6.28); ctx.fill();
+      ctx.shadowBlur = 0;
+
+      [...planets, ...custom].forEach(p => {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(0, 0, p.d, 0, 6.28); ctx.stroke();
+
+        if (!paused) p.a += p.s;
+        const px = Math.cos(p.a) * p.d, py = Math.sin(p.a) * p.d;
+
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(px, py, p.r, 0, 6.28); ctx.fill();
+
+        if (p.moon) {
+          if (!paused) p.moon.a += p.moon.s;
+          const mx = px + Math.cos(p.moon.a) * p.moon.d, my = py + Math.sin(p.moon.a) * p.moon.d;
+          ctx.fillStyle = '#aaa';
+          ctx.beginPath(); ctx.arc(mx, my, p.moon.r, 0, 6.28); ctx.fill();
+        }
+      });
+      ctx.restore();
+    }
+    draw();
+  </script>
+</body>
+</html>

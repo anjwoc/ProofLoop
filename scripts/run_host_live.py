@@ -170,7 +170,7 @@ def main() -> int:
         "Invoke the installed proofloop skill for this exact request: "
         + (workspace / "README.md").read_text(encoding="utf-8")
         + " Do not simulate ProofLoop states and do not call internal invoke-role or record-attempt commands manually. "
-        "The skill must launch proofloop-core orchestrate and report the resulting truth verdict exactly."
+        "The skill must launch proofloop-core goal and report the resulting truth verdict exactly."
     )
     if args.host == "codex":
         setup_codex_project(workspace)

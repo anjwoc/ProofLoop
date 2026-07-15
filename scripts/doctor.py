@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from proofloop_core.hosts import probe, runtime_home
+from proofloop_core.hosts import probe, runtime_home  # noqa: E402
 
 
 def exists(path: Path) -> dict[str, object]:
@@ -37,7 +37,7 @@ result = {
             "agents": exists(home / ".codex" / "agents" / "proofloop_planner_deep.toml"),
             "marketplace": exists(home / ".agents" / "plugins" / "marketplace.json"),
             "invocation": "$proofloop <request> or /skills",
-            "note": "The default skill calls proofloop-core orchestrate, which launches isolated Codex role processes. Custom agents remain optional native integration artifacts.",
+            "note": "The default skill calls proofloop-core goal, which launches isolated role sessions until the goal contract converges or exhausts its budget. Custom agents remain optional native integration artifacts.",
         },
         "antigravity": {
             **probe("antigravity"),

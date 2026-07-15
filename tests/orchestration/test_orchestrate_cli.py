@@ -51,7 +51,14 @@ match = re.search(r"exact absolute path before finishing: (.+?)\. Do not write",
 result_path = Path(match.group(1).strip()) if match else None
 repo = Path.cwd()
 
-if "deep planner" in prompt:
+if "read-only ProofLoop explorer" in prompt:
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps({
+        "schemaVersion": "1.0", "entryPoints": ["src/value.py"],
+        "impactedFiles": ["src/value.py"], "tests": ["tests/test_value.py"],
+        "constraints": ["bounded fixture"], "openRisks": []
+    }), encoding="utf-8")
+elif "deep planner" in prompt:
     plan = {
         "schemaVersion": "1.0", "verdict": "READY", "summary": "bounded fixture plan",
         "tasks": [{
@@ -79,14 +86,23 @@ elif "Role: implementer_recovery" in prompt:
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps({"status":"DONE","classification":"LOCAL_IMPLEMENTATION"}), encoding="utf-8")
 elif "final reviewer" in prompt:
+    contracts = sorted((repo / ".proofloop" / "runs").glob("*/goal-contract.json"))
+    criteria = []
+    if contracts:
+        contract = json.loads(contracts[-1].read_text(encoding="utf-8"))
+        criteria = [
+            {"id": item["criterion_id"], "status": "SATISFIED", "evidence": ["fixture"]}
+            for item in contract.get("criteria", [])
+        ]
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({"verdict":"APPROVED","simplicityVerdict":"MINIMAL","findings":[],"deletionCandidates":[]}), encoding="utf-8")
+    result_path.write_text(json.dumps({"verdict":"APPROVED","simplicityVerdict":"MINIMAL","criteria":criteria,"findings":[],"deletionCandidates":[]}), encoding="utf-8")
 else:
     print("unknown role prompt", file=sys.stderr)
     raise SystemExit(3)
 
 if Path(sys.argv[0]).name == "codex":
     print(json.dumps({"type": "thread.started", "model": model}))
+    print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "fixture live output"}}))
 else:
     print(json.dumps({"event": "model_resolved", "resolvedModel": model}))
 '''
@@ -100,6 +116,7 @@ class OrchestrateCLITest(unittest.TestCase):
         host: str,
         recovery: bool = False,
         output_format: str | None = None,
+        command_name: str = "orchestrate",
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -118,7 +135,19 @@ class OrchestrateCLITest(unittest.TestCase):
         env["PYTHONPATH"] = str(ROOT)
         if recovery:
             env["FAKE_PROOFLOOP_RECOVERY"] = "1"
-        command = [sys.executable, "-m", "proofloop_core.cli", "orchestrate", "--host", host, "--repo", str(repo), "--request", "Implement the bounded value behavior", "--strategy", "planned", "--timeout-seconds", "30"]
+        if command_name == "goal":
+            routes = {
+                role: [{"runtime": "codex", "model": model, "reasoning": "high", "accessMode": access}]
+                for role, model, access in (
+                    ("planner_deep", "gpt-5.6", "read-only"),
+                    ("explorer_fast", "gpt-5.6-terra", "read-only"),
+                    ("implementer_fast", "gpt-5.6-terra", "workspace-write"),
+                    ("implementer_recovery", "gpt-5.6", "workspace-write"),
+                    ("reviewer_deep", "gpt-5.6", "read-only"),
+                )
+            }
+            env["PROOFLOOP_ROLE_ROUTING_JSON"] = json.dumps(routes)
+        command = [sys.executable, "-m", "proofloop_core.cli", command_name, "--host", host, "--repo", str(repo), "--request", "Implement the bounded value behavior", "--strategy", "planned", "--timeout-seconds", "30"]
         if output_format is not None:
             command.extend(["--output-format", output_format, "--verbosity", "info", "--color", "never"])
         completed = subprocess.run(
@@ -126,6 +155,18 @@ class OrchestrateCLITest(unittest.TestCase):
             cwd=ROOT, env=env, capture_output=True, text=True, check=False, timeout=90,
         )
         return completed, repo
+
+    def test_goal_command_explores_and_converges(self) -> None:
+        completed, repo = self._run("codex", output_format="human", command_name="goal")
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        run = sorted((repo / ".proofloop" / "runs").iterdir())[-1]
+        state = json.loads((run / "goal-state.json").read_text(encoding="utf-8"))
+        roles = [json.loads(line)["role"] for line in (run / "invocations.jsonl").read_text().splitlines()]
+        self.assertEqual("CONVERGED", state["state"])
+        self.assertEqual(["explorer_fast", "planner_deep", "implementer_fast", "reviewer_deep"], roles)
+        self.assertTrue((run / "goal-contract.json").exists())
+        self.assertIn("explorer_fast: fixture live output", completed.stdout)
+        self.assertIn("model changed", completed.stdout)
 
     def test_codex_one_command_runs_full_normal_loop(self) -> None:
         completed, repo = self._run("codex")

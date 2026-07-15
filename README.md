@@ -18,7 +18,7 @@ The user never runs `invoke-role`, `record-attempt`, or `verify-run` manually.
 
 ```text
 visible proofloop skill
-→ proofloop-core orchestrate
+→ proofloop-core goal
 → preflight and Git snapshot
 → strategy selection
 → isolated role processes
@@ -42,15 +42,15 @@ Repository-analysis orchestration is intentionally blocked with `ANALYSIS_ORCHES
 Installed host skills use the human stream automatically. The screen shows phases, roles, requested and observed models, attempts, real check results, recovery reasons, review findings, and the final truth state. The same event objects are appended to `.proofloop/runs/<run-id>/events.jsonl`.
 
 ```bash
-proofloop-core orchestrate --host codex --repo . --request-file request.txt \
+proofloop-core goal --host codex --repo . --request-file request.txt \
   --output-format human --verbosity info --color auto
 ```
 
 Machine consumers can request pure JSON Lines. The backward-compatible default `quiet` mode prints only the final JSON result.
 
 ```bash
-proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format jsonl
-proofloop-core orchestrate --host codex --repo . --request-file request.txt --output-format quiet
+proofloop-core goal --host codex --repo . --request-file request.txt --output-format jsonl
+proofloop-core goal --host codex --repo . --request-file request.txt --output-format quiet
 ```
 
 Replay or follow a run from another terminal:
@@ -65,11 +65,18 @@ An unobserved model is displayed as requested-only and keeps model routing `UNPR
 ## Install
 
 ```bash
-python3 scripts/validate_package.py
-python3 scripts/install.py --host codex --scope user
-python3 scripts/install.py --host antigravity --scope user
+./install.sh
 python3 scripts/doctor.py
 ```
+
+`./install.sh` selects `python3` automatically and clean-installs all hosts at user scope. Pass the
+same options as the Python installer to narrow the target, for example
+`./install.sh --host codex --scope user`. `make install` and
+`python3 ./scripts/install.py` are equivalent. An npm package is not required.
+
+Installation is a clean, idempotent reinstall. It validates generated adapters, removes only
+ProofLoop-managed runtime, plugin, agent, skill, workflow, and marketplace entries, then installs
+the fresh build. Unrelated host plugins, agents, skills, and settings are preserved.
 
 Antigravity permission bypass is disabled by default. It can be explicitly enabled for isolated unattended testing:
 

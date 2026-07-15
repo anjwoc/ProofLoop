@@ -37,6 +37,10 @@ class HumanRenderer:
             return _VERBOSITY["debug"]
         if event.get("type") == "budget.updated":
             return _VERBOSITY["verbose"]
+        if event.get("type") == "model.requested":
+            return _VERBOSITY["verbose"]
+        if event.get("type") == "session.update" and (event.get("data") or {}).get("kind") == "agent_thought_chunk":
+            return _VERBOSITY["debug"]
         return _VERBOSITY["info"]
 
     def _prefix(self, event: dict[str, Any]) -> str:
@@ -72,6 +76,54 @@ class HumanRenderer:
             text = str(data.get("text") or "").rstrip("\n")
             return f"{prefix} {role} {stream}: {text}"
 
+        if event_type == "session.update":
+            kind = str(data.get("kind") or "unknown")
+            role = data.get("role", "agent")
+            text = str(data.get("text") or event.get("message") or "").rstrip("\n")
+            if kind == "agent_message_chunk":
+                return f"{prefix} {role}: {text}"
+            if kind == "tool_call_started":
+                return f"{prefix} {role} tool ▶ {text}"
+            if kind == "tool_call_updated":
+                return f"{prefix} {role} tool ✓ {text}"
+            if kind == "plan_updated":
+                return f"{prefix} {role} plan: {text}"
+            if kind == "agent_thought_chunk":
+                return f"{prefix} {role} thought: {text}"
+            return f"{prefix} {role} {kind}: {text}"
+
+        if event_type in {"session.started", "session.completed", "session.failed"}:
+            runtime = data.get("runtime") or data.get("role") or "agent"
+            session_id = data.get("sessionId")
+            suffix = f" · {session_id}" if session_id else ""
+            state = event_type.split(".", 1)[1]
+            return f"{prefix} session {state} · {runtime}{suffix}"
+
+        if event_type == "model.changed":
+            previous = data.get("previousModel") or "none"
+            active = data.get("activeModel") or "unavailable"
+            evidence = data.get("evidenceLevel") or "UNAVAILABLE"
+            reason = data.get("reason") or event.get("message")
+            return (
+                f"{prefix} model changed\n"
+                f"  {previous} → {active}\n"
+                f"  evidence: {evidence}\n"
+                f"  reason: {reason}"
+            )
+
+        if event_type in {"runtime.selected", "runtime.fallback"}:
+            runtime = data.get("runtime") or "unavailable"
+            transport = data.get("transport") or "unavailable"
+            reason = data.get("reason")
+            suffix = f" · {reason}" if event_type == "runtime.fallback" and reason else ""
+            return f"{prefix} runtime {runtime} · {transport}{suffix}"
+
+        if event_type == "goal.state_changed":
+            return f"{prefix} goal {data.get('previous')} → {data.get('state')} · {data.get('reason')}"
+
+        if event_type == "memory.prepared":
+            return f"{prefix} memory ready · {data.get('taskPath')}"
+
         if event_type in {"role.completed", "role.failed", "role.cancelled"}:
             role = data.get("role", "unknown-role")
             symbol = "✓" if event_type == "role.completed" else "✗"
@@ -91,7 +143,12 @@ class HumanRenderer:
             requested = data.get("requestedModel") or "unavailable"
             observed = data.get("observedModel") or "unavailable"
             evidence = data.get("evidenceLevel") or "UNAVAILABLE"
-            proof = "VERIFIED" if evidence in {"HOST_RESOLVED", "HOST_OUTPUT"} and data.get("observedModel") else "UNPROVEN"
+            proof = (
+                "VERIFIED"
+                if evidence in {"HOST_RESOLVED", "HOST_OUTPUT", "ACP_SESSION_CONFIG"}
+                and data.get("observedModel")
+                else "UNPROVEN"
+            )
             return (
                 f"{prefix} model evidence\n"
                 f"  requested: {requested}\n"

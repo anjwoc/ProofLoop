@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +12,10 @@ from .fingerprint import fingerprint_check_report
 from .io import write_json
 from .repair import decide_next
 from .task_brief import load_task_brief
+from .process_runner import ProcessRunner
+
+
+_MAX_LIVE_OUTPUT_EVENT_CHARS = 8_000
 
 
 def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
@@ -22,38 +24,59 @@ def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
         handle.write(json.dumps(value, ensure_ascii=False) + "\n")
 
 
-def _invoke(command: list[str], repo: Path, env: dict[str, str], timeout: int) -> dict[str, Any]:
-    started = time.time()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=repo,
-            env={**os.environ, **env},
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-        exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-        timed_out = False
-    except subprocess.TimeoutExpired as error:
-        exit_code = 124
-        stdout = error.stdout or ""
-        stderr = error.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode(errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode(errors="replace")
-        timed_out = True
+def _invoke(
+    command: list[str],
+    repo: Path,
+    env: dict[str, str],
+    timeout: int,
+    call_dir: Path,
+    role: str,
+    sequence: int,
+    emitter: EventEmitter | None,
+) -> dict[str, Any]:
+    def on_line(stream: str, line: str) -> None:
+        if emitter is not None and line.strip():
+            visible = line.rstrip("\r\n")
+            emitter.emit(
+                "role.output",
+                phase="EXECUTE",
+                message=f"{role} produced {stream} output.",
+                data={
+                    "role": role,
+                    "attempt": sequence,
+                    "stream": stream,
+                    "text": visible[:_MAX_LIVE_OUTPUT_EVENT_CHARS],
+                    "truncated": len(visible) > _MAX_LIVE_OUTPUT_EVENT_CHARS,
+                },
+            )
+
+    def on_heartbeat(process_id: int, elapsed: float) -> None:
+        if emitter is not None:
+            emitter.emit(
+                "role.progress",
+                phase="EXECUTE",
+                message=f"{role} is still running.",
+                data={"role": role, "attempt": sequence, "processId": process_id, "elapsedSeconds": elapsed},
+            )
+
+    completed = ProcessRunner().run(
+        command,
+        cwd=repo,
+        env={**os.environ, **env},
+        stdout_path=call_dir / "stdout.log",
+        stderr_path=call_dir / "stderr.log",
+        timeout_seconds=timeout,
+        on_line=on_line,
+        on_heartbeat=on_heartbeat if emitter is not None else None,
+    )
     return {
         "command": command,
-        "exitCode": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-        "timedOut": timed_out,
-        "durationSeconds": round(time.time() - started, 6),
+        "exitCode": completed.exit_code,
+        "timedOut": completed.timed_out,
+        "cancelled": completed.cancelled,
+        "durationSeconds": completed.duration_seconds,
+        "stdoutRef": completed.stdout_ref,
+        "stderrRef": completed.stderr_ref,
     }
 
 
@@ -84,6 +107,8 @@ def run_external_loop(
             final = {"verdict": "BLOCKED", "reason": f"no command configured for {role}", "attempts": attempts}
             write_json(root / "loop-result.json", final)
             return final
+        call_dir = root / "invocations" / f"{sequence:02d}-{role}"
+        call_dir.mkdir(parents=True, exist_ok=True)
         invocation = _invoke(
             command,
             repo,
@@ -94,13 +119,11 @@ def run_external_loop(
                 "PROOFLOOP_ROLE": role,
             },
             timeout_seconds,
+            call_dir,
+            role,
+            sequence,
+            emitter,
         )
-        call_dir = root / "invocations" / f"{sequence:02d}-{role}"
-        call_dir.mkdir(parents=True, exist_ok=True)
-        (call_dir / "stdout.log").write_text(invocation.pop("stdout"), encoding="utf-8")
-        (call_dir / "stderr.log").write_text(invocation.pop("stderr"), encoding="utf-8")
-        invocation["stdoutRef"] = str(call_dir / "stdout.log")
-        invocation["stderrRef"] = str(call_dir / "stderr.log")
 
         checks = run_checks(
             task,

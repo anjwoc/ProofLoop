@@ -6,6 +6,7 @@ from proofloop_core.output_parsers import parser_for
 from proofloop_core.output_parsers.antigravity import AntigravityOutputParser
 from proofloop_core.output_parsers.claude import ClaudeOutputParser
 from proofloop_core.output_parsers.codex import CodexOutputParser
+from proofloop_core.output_parsers.gemini import GeminiOutputParser
 
 
 class HostOutputParserTest(unittest.TestCase):
@@ -38,6 +39,24 @@ class HostOutputParserTest(unittest.TestCase):
     def test_free_form_success_sentence_is_ignored(self) -> None:
         self.assertEqual([], ClaudeOutputParser().feed("stdout", "All tests passed.\n"))
         self.assertEqual([], CodexOutputParser().feed("stdout", "Using gpt-5.6-terra now.\n"))
+
+    def test_codex_claude_and_gemini_stream_semantic_session_updates(self) -> None:
+        codex = CodexOutputParser().feed(
+            "stdout",
+            '{"type":"item.completed","item":{"type":"agent_message","text":"implemented"}}\n',
+        )
+        claude = ClaudeOutputParser().feed(
+            "stdout",
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read"}]}}\n',
+        )
+        gemini = GeminiOutputParser().feed(
+            "stdout",
+            '{"type":"tool_result","tool_name":"write_file","status":"success"}\n',
+        )
+        self.assertEqual("agent_message_chunk", codex[0].data["kind"])
+        self.assertEqual("tool_call_started", claude[0].data["kind"])
+        self.assertEqual("tool_call_updated", gemini[0].data["kind"])
+        self.assertIsInstance(parser_for("gemini"), GeminiOutputParser)
 
     def test_structured_rate_limit_permission_and_host_errors_are_normalized(self) -> None:
         rate = CodexOutputParser().feed(

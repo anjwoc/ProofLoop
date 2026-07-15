@@ -68,6 +68,31 @@ class TruthGateTest(unittest.TestCase):
             summary = summarize_trace(trace)
             self.assertFalse(summary["routingObserved"])
 
+    def test_acp_session_configuration_is_strong_model_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / "trace.jsonl"
+            trace.write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "role": role,
+                            "observedModel": model,
+                            "modelEvidence": "ACP_SESSION_CONFIG",
+                        }
+                    )
+                    for role, model in (
+                        ("planner_deep", "opus"),
+                        ("implementer_fast", "haiku"),
+                        ("reviewer_deep", "fable"),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            summary = summarize_trace(trace)
+            self.assertTrue(summary["routingObserved"])
+            self.assertEqual([], summary["weakEvidenceRoles"])
+
 
 if __name__ == "__main__":
     unittest.main()

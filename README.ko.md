@@ -121,16 +121,23 @@ unzip proofloop-skill-first-core-v0.4.0-alpha.zip
 cd proofloop-skill-first-core-v0.4.0-alpha
 
 python3 scripts/validate_package.py
-python3 scripts/install.py --host codex --scope user
-python3 scripts/install.py --host antigravity --scope user
+./install.sh
 python3 scripts/doctor.py
 ```
 
 전체 호스트 설치:
 
 ```bash
-python3 scripts/install.py --host all --scope user
+./install.sh
 ```
+
+`./install.sh`는 `python3`를 자동으로 찾아 사용자 범위의 전체 호스트를 clean install한다.
+특정 호스트만 설치하려면 `./install.sh --host codex --scope user`처럼 기존 옵션을 그대로
+전달하면 된다. `make install`과 `python3 ./scripts/install.py`도 같은 동작이며 npm 패키지는 필요 없다.
+
+설치는 clean reinstall 방식이며 반복 실행해도 같은 결과를 낸다. 생성된 어댑터를 검증한 뒤
+ProofLoop가 관리하는 런타임·플러그인·에이전트·스킬·워크플로·marketplace 항목만 제거하고
+새 빌드를 설치한다. 다른 호스트 플러그인, 에이전트, 스킬과 사용자 설정은 보존한다.
 
 Antigravity는 기본적으로 위험한 permission bypass를 사용하지 않는다. 무인 실행에 반드시 필요한 환경에서만 명시적으로 활성화한다.
 

@@ -61,10 +61,32 @@ def normalize_known_error(value: dict[str, Any]) -> list[NormalizedHostEvent]:
     return []
 
 
+def session_event(kind: str, value: dict[str, Any], *, text: str | None = None) -> NormalizedHostEvent:
+    data: dict[str, Any] = {"kind": kind, "update": value}
+    if text:
+        data["text"] = text
+    return NormalizedHostEvent("session.update", text or kind.replace("_", " ").title(), data)
+
+
+def content_blocks(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        content = value.get("content")
+        if isinstance(content, list):
+            return [item for item in content if isinstance(item, dict)]
+        message = value.get("message")
+        if isinstance(message, dict):
+            return content_blocks(message)
+    return []
+
+
 class StructuredOutputParser:
     def model_from_event(self, value: dict[str, Any]) -> str | None:
         del value
         return None
+
+    def session_events_from_event(self, value: dict[str, Any]) -> list[NormalizedHostEvent]:
+        del value
+        return []
 
     def feed(self, stream: str, line: str) -> list[NormalizedHostEvent]:
         del stream
@@ -84,5 +106,6 @@ class StructuredOutputParser:
                     {"observedModel": model, "evidenceLevel": "HOST_OUTPUT"},
                 )
             )
+        events.extend(self.session_events_from_event(value))
         events.extend(normalize_known_error(value))
         return events

@@ -87,6 +87,31 @@ class RendererTest(unittest.TestCase):
         self.assertIn("routing proof: UNPROVEN", text)
         self.assertNotIn("\x1b[", text)
 
+    def test_human_renderer_shows_session_activity_and_model_change(self) -> None:
+        stream = io.StringIO()
+        renderer = build_renderer("human", stream, "info", "never")
+        renderer.render(
+            event(
+                "session.update",
+                data={"role": "implementer_fast", "kind": "tool_call_started", "text": "write_file"},
+            )
+        )
+        renderer.render(
+            event(
+                "model.changed",
+                data={
+                    "previousModel": "haiku",
+                    "activeModel": "pro",
+                    "evidenceLevel": "ACP_SESSION_CONFIG",
+                    "reason": "recovery",
+                },
+            )
+        )
+        text = stream.getvalue()
+        self.assertIn("tool ▶ write_file", text)
+        self.assertIn("haiku → pro", text)
+        self.assertIn("ACP_SESSION_CONFIG", text)
+
     def test_human_renderer_formats_role_check_recovery_review_and_truth(self) -> None:
         stream = io.StringIO()
         renderer = build_renderer("human", stream, "verbose", "never")

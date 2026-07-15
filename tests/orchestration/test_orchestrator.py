@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from proofloop_core.adapters import RoleInvocation
-from proofloop_core.orchestrator import orchestrate
+from proofloop_core.orchestrator import converge_goal, orchestrate
 
 
 def git(root: Path, *args: str) -> None:
@@ -73,6 +73,18 @@ class ScriptedAdapter:
 
     def invoke(self, invocation: RoleInvocation) -> dict[str, Any]:
         self.calls.append(invocation.role)
+        if invocation.role == "explorer_fast":
+            if invocation.result_path:
+                invocation.result_path.parent.mkdir(parents=True, exist_ok=True)
+                invocation.result_path.write_text(json.dumps({
+                    "schemaVersion": "1.0",
+                    "entryPoints": ["src/value.py"],
+                    "impactedFiles": ["src/value.py", "tests/test_value.py"],
+                    "tests": ["tests/test_value.py"],
+                    "constraints": ["bounded change"],
+                    "openRisks": [],
+                }), encoding="utf-8")
+            return self._result("explorer_fast", "fast-model")
         if invocation.role == "planner_deep":
             if self.planner_mutates:
                 (invocation.repository / "src" / "value.py").write_text("# planner mutation\n", encoding="utf-8")
@@ -142,9 +154,18 @@ class ScriptedAdapter:
             needs_fix = self.review_fix and self.reviewer_calls == 1
             if invocation.result_path:
                 invocation.result_path.parent.mkdir(parents=True, exist_ok=True)
+                goal_contract = invocation.run_dir / "goal-contract.json"
+                criteria = []
+                if goal_contract.exists():
+                    contract = json.loads(goal_contract.read_text(encoding="utf-8"))
+                    criteria = [
+                        {"id": item["criterion_id"], "status": "SATISFIED", "evidence": []}
+                        for item in contract.get("criteria", [])
+                    ]
                 invocation.result_path.write_text(json.dumps({
                     "verdict": "FIX_REQUIRED" if needs_fix else "APPROVED",
                     "simplicityVerdict": "OVERBUILT" if needs_fix else "MINIMAL",
+                    "criteria": criteria,
                     "findings": [{"severity": "important", "message": "simplify final change"}] if needs_fix else [],
                     "deletionCandidates": ["unused abstraction"] if needs_fix else [],
                 }), encoding="utf-8")
@@ -217,6 +238,32 @@ class OrchestratorTest(unittest.TestCase):
             self.assertLess(max(events.index(event) for event in claims), types.index("truth.completed"))
             rendered = [json.loads(line) for line in stream.getvalue().splitlines()]
             self.assertEqual(events, rendered)
+
+    def test_goal_mode_explores_streams_models_and_converges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+            result = converge_goal(
+                "codex",
+                root,
+                "Implement the bounded value behavior across source and tests",
+                adapter=adapter,
+                strategy_override="PLANNED_IMPLEMENTATION",
+                max_goal_cycles=6,
+            )
+            self.assertEqual("PROVEN", result["verdict"], result)
+            self.assertEqual(
+                ["explorer_fast", "planner_deep", "implementer_fast", "reviewer_deep"],
+                adapter.calls,
+            )
+            run = Path(result["runDir"])
+            self.assertEqual("CONVERGED", json.loads((run / "goal-state.json").read_text())["state"])
+            self.assertTrue((run / "goal-contract.json").exists())
+            event_types = [item["type"] for item in load_events(run)]
+            self.assertIn("model.changed", event_types)
+            self.assertIn("memory.prepared", event_types)
+            self.assertTrue((root / ".proofloop" / "memory" / "MEMORY.md").exists())
 
     def test_role_timeout_is_preserved_as_a_distinct_failure_reason(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

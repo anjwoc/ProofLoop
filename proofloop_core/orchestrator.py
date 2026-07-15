@@ -4,7 +4,6 @@ import hashlib
 import json
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
@@ -25,9 +24,12 @@ from .trace import summarize_trace
 from .truth import build_truth_report
 from .assurance import build_assurance_report
 from .hosts import role_only_trace_summary
+from .goal import GoalFSM, build_goal_contract
+from .memory import prepare_memory, write_memory
+from .runtime import ResolvedRuntime
 
 
-ROLE_SET = {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}
+ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
 
 
 class OrchestrationError(RuntimeError):
@@ -163,11 +165,17 @@ class ProofLoopOrchestrator:
         output_format: str = "quiet",
         verbosity: str = "info",
         color: str = "auto",
+        goal_mode: bool = False,
+        max_goal_cycles: int = 8,
+        max_replans: int = 2,
     ):
         self.host = host
         self.repo = Path(repository).resolve()
         self.request = request.strip()
-        self.adapter = adapter or ExternalCLIAdapter(host)
+        self.goal_mode = goal_mode
+        self.max_goal_cycles = max_goal_cycles
+        self.max_replans = max_replans
+        self.adapter = adapter or ExternalCLIAdapter(host, routing_policy="goal" if goal_mode else "controller")
         self.strategy_override = strategy_override
         self.timeout_seconds = timeout_seconds
         self.require_observed_routing = require_observed_routing
@@ -182,6 +190,9 @@ class ProofLoopOrchestrator:
         self.original_baseline: str | None = None
         self.used_roles: list[str] = []
         self.tasks: list[TaskBrief] = []
+        self.goal_fsm: GoalFSM | None = None
+        self.active_model: str | None = None
+        self.goal_cycles = 0
 
     def _emit(
         self,
@@ -205,12 +216,24 @@ class ProofLoopOrchestrator:
         )
 
     def _requested_model_for_role(self, role: str) -> str | None:
+        resolver = getattr(self.adapter, "resolve_role", None)
+        if callable(resolver):
+            return resolver(role).model
         roles = self.capability.get("roles") or {}
         if self.capability.get("mode") != "ROLE_ROUTING_ONLY":
             roles = self.capability.get("externalRoles") or roles
         value = roles.get(role) if isinstance(roles, dict) else None
         model = value.get("model") if isinstance(value, dict) else None
         return model if isinstance(model, str) and model else None
+
+    def _resolved_runtime_for_role(self, role: str) -> ResolvedRuntime | None:
+        resolver = getattr(self.adapter, "resolve_role", None)
+        return resolver(role) if callable(resolver) else None
+
+    def _goal_transition(self, target: str, reason: str, **data: Any) -> None:
+        if self.goal_fsm is None or self.goal_fsm.state == target:
+            return
+        self.goal_fsm.transition(target, reason=reason, **data)
 
     def transition(self, state: str, **details: Any) -> None:
         if self.run_dir is None:
@@ -232,6 +255,8 @@ class ProofLoopOrchestrator:
             self.verbosity,
             self.color,
         )
+        if self.goal_mode:
+            self.goal_fsm = GoalFSM(self.run_dir, emit=self._emit)
         self._emit(
             "run.started",
             phase="INIT",
@@ -318,11 +343,43 @@ class ProofLoopOrchestrator:
             )
 
             if self.strategy.planner_required:
+                if self.goal_mode:
+                    self._goal_transition("EXPLORE", "repository context is ready")
+                    self._run_explorer()
+                    self._goal_transition("DESIGN", "exploration evidence is ready")
                 self.tasks = self._run_planner()
                 if self.strategy.strategy == "HIGH_RISK_ENGINEERING":
+                    if self.goal_mode:
+                        self._goal_transition("PLAN_REVIEW", "high-risk plan requires independent review")
                     self._run_plan_review()
             else:
+                if self.goal_mode:
+                    self._goal_transition("IMPLEMENT", "direct goal implementation started")
                 self.tasks = self._run_direct_bootstrap()
+
+            if self.goal_mode:
+                contract = build_goal_contract(
+                    self.request,
+                    self.tasks,
+                    max_cycles=self.max_goal_cycles,
+                    max_replans=self.max_replans,
+                )
+                write_json(self.run_dir / "goal-contract.json", contract.to_dict())
+                for task in self.tasks:
+                    memory = prepare_memory(self.repo, task.task_id)
+                    self._emit(
+                        "memory.prepared",
+                        phase="MEMORY",
+                        message=f"Memory prepared for {task.task_id}.",
+                        task_id=task.task_id,
+                        data={
+                            "workflowPath": str(memory.workflow_path),
+                            "taskPath": str(memory.task_path),
+                            "workflowNeedsCompaction": memory.workflow_needs_compaction,
+                            "taskNeedsCompaction": memory.task_needs_compaction,
+                        },
+                    )
+                self._goal_transition("IMPLEMENT", "goal contract is ready")
 
             for task in self.tasks:
                 try:
@@ -363,14 +420,39 @@ class ProofLoopOrchestrator:
         invocation_phase = phase or (
             "PLAN" if role == "planner_deep" else "REVIEW" if role == "reviewer_deep" else "EXECUTE"
         )
-        requested_model = self._requested_model_for_role(role)
+        resolved_runtime = self._resolved_runtime_for_role(role)
+        requested_model = resolved_runtime.model if resolved_runtime else self._requested_model_for_role(role)
         role_data = {
             "role": role,
             "attempt": attempt,
             "host": self.host,
             "requestedModel": requested_model,
             "routingMode": self.capability.get("mode"),
+            "runtime": resolved_runtime.runtime_id if resolved_runtime else self.host,
+            "transport": resolved_runtime.transport if resolved_runtime else "adapter",
+            "reasoning": resolved_runtime.reasoning if resolved_runtime else None,
+            "accessMode": resolved_runtime.access_mode if resolved_runtime else None,
         }
+        if resolved_runtime is not None:
+            self._emit(
+                "runtime.fallback" if resolved_runtime.fallback else "runtime.selected",
+                phase=invocation_phase,
+                message=(
+                    f"Fallback runtime {resolved_runtime.runtime_id} selected for {role}."
+                    if resolved_runtime.fallback
+                    else f"Runtime {resolved_runtime.runtime_id} selected for {role}."
+                ),
+                level="warning" if resolved_runtime.fallback else "info",
+                task_id=task_id,
+                data={**role_data, "reason": resolved_runtime.reason},
+            )
+        self._emit(
+            "model.requested",
+            phase=invocation_phase,
+            message=f"Model {requested_model or 'unavailable'} requested for {role}.",
+            task_id=task_id,
+            data={**role_data, "previousModel": self.active_model},
+        )
         self._emit(
             "role.queued",
             phase=invocation_phase,
@@ -398,6 +480,7 @@ class ProofLoopOrchestrator:
             phase=invocation_phase,
             task_id=task_id,
             attempt=attempt,
+            runtime=resolved_runtime,
         )
         try:
             result = self.adapter.invoke(invocation)
@@ -416,6 +499,8 @@ class ProofLoopOrchestrator:
             "timestampEpoch": time.time(),
             "sequence": len(self.used_roles),
             "host": self.host,
+            "runtime": result.get("runtime") or role_data["runtime"],
+            "transport": result.get("transport") or role_data["transport"],
             "role": role,
             "verdict": result.get("verdict"),
             "requestedModel": result.get("requestedModel"),
@@ -450,6 +535,38 @@ class ProofLoopOrchestrator:
                     "observedModel": observed,
                     "evidenceLevel": evidence_level,
                     "invocationId": result.get("invocationId"),
+                },
+            )
+        observed_model = result.get("observedModel")
+        effective_model = observed_model or result.get("requestedModel") or requested_model
+        if observed_model and result.get("transport") != "acp":
+            self._emit(
+                "model.resolved",
+                phase=invocation_phase,
+                message=f"Runtime resolved model {observed_model}.",
+                task_id=task_id,
+                data={
+                    **role_data,
+                    "observedModel": observed_model,
+                    "evidenceLevel": result.get("modelEvidence"),
+                    "invocationId": result.get("invocationId"),
+                },
+            )
+        if effective_model and effective_model != self.active_model:
+            previous_model = self.active_model
+            self.active_model = str(effective_model)
+            self._emit(
+                "model.changed",
+                phase=invocation_phase,
+                message=f"Active model changed from {previous_model or 'none'} to {effective_model}.",
+                task_id=task_id,
+                data={
+                    **role_data,
+                    "previousModel": previous_model,
+                    "activeModel": effective_model,
+                    "observedModel": observed_model,
+                    "evidenceLevel": result.get("modelEvidence") or "UNAVAILABLE",
+                    "reason": f"role changed to {role}",
                 },
             )
         if immutable_source and baseline is not None:
@@ -511,6 +628,30 @@ class ProofLoopOrchestrator:
         )
         return result
 
+    def _run_explorer(self) -> None:
+        assert self.run_dir is not None and self.strategy is not None
+        result_path = self.run_dir / "exploration.json"
+        prompt = (
+            "Act as the read-only ProofLoop explorer.\n"
+            f"User request: {self.request}\n"
+            f"Strategy: {self.strategy.strategy}\n"
+            f"Repository: {self.repo}\n"
+            f"Repository context: {self.run_dir / 'repository-context.json'}\n"
+            "Map only the relevant entry points, callers, tests, constraints, and open risks. "
+            "Do not edit source and do not design speculative features.\n"
+            f"Write JSON to {result_path} exactly:\n"
+            '{"schemaVersion":"1.0","entryPoints":[],"impactedFiles":[],"tests":[],"constraints":[],"openRisks":[]}\n'
+        )
+        self._invoke(
+            "explorer_fast",
+            prompt,
+            result_path=result_path,
+            immutable_source=True,
+            phase="EXPLORE",
+        )
+        if not result_path.exists():
+            raise OrchestrationError("EXPLORATION_ARTIFACT_MISSING", "explorer did not produce exploration.json")
+
     def _run_planner(self) -> list[TaskBrief]:
         assert self.run_dir is not None and self.strategy is not None
         self.transition("PLAN")
@@ -523,6 +664,7 @@ User request:
 Strategy: {self.strategy.strategy}
 Repository: {self.repo}
 Repository evidence: {self.run_dir / 'repository-context.json'}
+Exploration evidence: {self.run_dir / 'exploration.json' if (self.run_dir / 'exploration.json').exists() else 'not requested'}
 
 Do not edit production or test source. Inspect real files and create the smallest sufficient implementation plan.
 Write JSON to {result_path} with exactly this shape:
@@ -684,6 +826,12 @@ Approve only if acceptance criteria, checks, scope, and escalation conditions ar
         replan_count = 0
 
         while True:
+            if self.goal_mode:
+                self.goal_cycles += 1
+                if self.goal_cycles > self.max_goal_cycles:
+                    self._goal_transition("EXHAUSTED", "goal cycle budget exhausted", taskId=task.task_id)
+                    raise OrchestrationError("GOAL_CYCLE_BUDGET_EXHAUSTED", f"{task.task_id} exceeded goal cycle budget")
+                self._goal_transition("IMPLEMENT", "implementation cycle started", taskId=task.task_id)
             sequence = len(attempts) + 1
             self.transition("EXECUTE", taskId=task.task_id, role=role, attempt=sequence)
             result_path = task_dir / f"attempt-{sequence:02d}-{role}-result.json"
@@ -695,11 +843,19 @@ Approve only if acceptance criteria, checks, scope, and escalation conditions ar
                         f"\nPrevious attempt evidence: {last['checksRef']} and {last['diffGuardRef']}. "
                         f"Failure fingerprint: {last.get('failureFingerprint')}."
                     )
+                memory_note = ""
+                if self.goal_mode:
+                    memory = prepare_memory(self.repo, task.task_id)
+                    memory_note = (
+                        f"\nRead workflow memory at {memory.workflow_path} and task memory at {memory.task_path}. "
+                        "Treat memory as context, not proof."
+                    )
                 prompt = f"""Execute exactly one ProofLoop task from {task_path}.
 Role: {role}
 Repository: {self.repo}
 Evidence run: {self.run_dir}
 {evidence_note}
+{memory_note}
 Use TDD for behavior changes. Make the smallest change inside allowed paths. Do not weaken tests or expand the contract.
 Write optional JSON to {result_path}: {{"status":"DONE|BLOCKED","classification":"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE","summary":"..."}}.
 Do not decide whether tests passed; ProofLoop will run them.
@@ -716,6 +872,8 @@ Do not decide whether tests passed; ProofLoop will run them.
             preinvoked = False
 
             checks_dir = task_dir / f"attempt-{sequence:02d}-checks"
+            if self.goal_mode:
+                self._goal_transition("VERIFY", "deterministic verification started", taskId=task.task_id)
             self.transition("VERIFY", taskId=task.task_id, attempt=sequence)
             checks = run_checks(task, self.repo, checks_dir, emitter=self.emitter)
             diff = inspect_diff(task, self.repo, baseline)
@@ -759,6 +917,19 @@ Do not decide whether tests passed; ProofLoop will run them.
                 task_id=task.task_id,
                 data=attempt,
             )
+            if self.goal_mode:
+                memory = prepare_memory(self.repo, task.task_id)
+                write_memory(
+                    memory.task_path,
+                    (
+                        f"## Cycle {sequence}\n\n"
+                        f"- Role: {role}\n"
+                        f"- Checks: {checks.get('verdict')}\n"
+                        f"- Diff guard: {diff.get('verdict')}\n"
+                        f"- Failure fingerprint: {attempt.get('failureFingerprint') or 'none'}\n"
+                    ),
+                    append=True,
+                )
             if len(attempts) >= 2 and attempt.get("failureFingerprint") and (
                 attempt.get("failureFingerprint") == attempts[-2].get("failureFingerprint")
             ):
@@ -812,6 +983,8 @@ Do not decide whether tests passed; ProofLoop will run them.
                 )
                 return
             if action in {"RETRY_FAST", "RUN_FAST"}:
+                if self.goal_mode:
+                    self._goal_transition("TRIAGE", "fast implementation requires another cycle", taskId=task.task_id)
                 self._emit(
                     "retry.scheduled",
                     phase="REPAIR",
@@ -829,6 +1002,8 @@ Do not decide whether tests passed; ProofLoop will run them.
                 role = "implementer_fast"
                 continue
             if action in {"RUN_RECOVERY", "RETRY_RECOVERY"}:
+                if self.goal_mode:
+                    self._goal_transition("TRIAGE", "recovery implementation required", taskId=task.task_id)
                 self._emit(
                     "recovery.scheduled" if action == "RUN_RECOVERY" else "retry.scheduled",
                     phase="REPAIR",
@@ -849,7 +1024,8 @@ Do not decide whether tests passed; ProofLoop will run them.
                 role = "implementer_recovery"
                 continue
             if action == "RETURN_TO_PLANNER":
-                if replan_count >= 1:
+                replan_limit = self.max_replans if self.goal_mode else 1
+                if replan_count >= replan_limit:
                     raise OrchestrationError("REPLAN_BUDGET_EXHAUSTED", f"{task.task_id} still requires redesign")
                 self._emit(
                     "replan.scheduled",
@@ -859,10 +1035,15 @@ Do not decide whether tests passed; ProofLoop will run them.
                     task_id=task.task_id,
                     data={"reasonCode": attempt.get("classification"), "reason": decision.get("reason")},
                 )
+                if self.goal_mode:
+                    self._goal_transition("TRIAGE", "implementation evidence requires redesign", taskId=task.task_id)
+                    self._goal_transition("DESIGN", "task returned to planner", taskId=task.task_id)
                 task = self._replan_task(task, task_path, attempts[-1])
                 replan_count += 1
                 role = "implementer_fast"
                 continue
+            if self.goal_mode:
+                self._goal_transition("EXHAUSTED", "task repair budget exhausted", taskId=task.task_id)
             raise OrchestrationError("TASK_REPAIR_BUDGET_EXHAUSTED", f"{task.task_id}: {decision.get('reason')}")
 
     def _replan_task(self, task: TaskBrief, task_path: Path, attempt: dict[str, Any]) -> TaskBrief:
@@ -897,6 +1078,8 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
 
         for review_cycle in range(1, 3):
             self.transition("FINAL_VERIFY", reviewCycle=review_cycle)
+            if self.goal_mode:
+                self._goal_transition("VERIFY", "final deterministic verification started", reviewCycle=review_cycle)
             checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
             diff = inspect_diff(aggregate, self.repo, self.original_baseline)
             write_json(self.run_dir / "diff-guard.json", diff)
@@ -935,9 +1118,13 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
                 )
                 pending_repair = False
             if checks.get("verdict") != "PASS" or diff.get("verdict") != "PASS":
+                if self.goal_mode:
+                    self._goal_transition("EXHAUSTED", "final deterministic verification failed", reviewCycle=review_cycle)
                 raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
 
             self.transition("REVIEW", reviewCycle=review_cycle)
+            if self.goal_mode:
+                self._goal_transition("DEEP_REVIEW", "deterministic evidence passed", reviewCycle=review_cycle)
             self._emit(
                 "review.started",
                 phase="REVIEW",
@@ -951,11 +1138,13 @@ Plan: {self.run_dir / 'plan.json'}
 Task briefs: {self.run_dir / 'tasks'}
 Checks: {self.run_dir / 'checks' / 'checks.json'}
 Diff guard: {self.run_dir / 'diff-guard.json'}
+Goal contract: {self.run_dir / 'goal-contract.json' if self.goal_mode else 'legacy orchestrate mode'}
 Review the real source diff from baseline {self.original_baseline}. Do not edit source.
 Write JSON to {cycle_path} exactly:
 {{
   "verdict": "APPROVED|FIX_REQUIRED|DESIGN_CONFLICT|CANNOT_VERIFY",
   "simplicityVerdict": "MINIMAL|OVERBUILT|CANNOT_VERIFY",
+  "criteria": [{{"id":"SC-...","status":"SATISFIED|UNSATISFIED|UNKNOWN","evidence":[]}}],
   "findings": [],
   "deletionCandidates": []
 }}
@@ -971,6 +1160,11 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
             review = _read_optional_json(cycle_path)
             if not review:
                 raise OrchestrationError("REVIEW_ARTIFACT_MISSING", "reviewer did not produce a review artifact")
+            if self.goal_mode and review.get("verdict") == "APPROVED" and not self._goal_review_satisfied(review):
+                review["verdict"] = "FIX_REQUIRED"
+                findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+                findings.append({"severity": "important", "message": "goal criteria are missing or unsatisfied"})
+                review["findings"] = findings
             write_json(self.run_dir / "review.json", review)
             if review.get("verdict") == "APPROVED" and review.get("simplicityVerdict") == "MINIMAL":
                 self._emit(
@@ -984,10 +1178,25 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                         "findings": review.get("findings", []),
                     },
                 )
+                if self.goal_mode:
+                    self._goal_transition("CONVERGED", "deep review approved every goal criterion")
+                    workflow_memory = prepare_memory(self.repo, "RUN-HANDOFF").workflow_path
+                    write_memory(
+                        workflow_memory,
+                        (
+                            f"## Approved run {self.run_dir.name}\n\n"
+                            f"- Request: {self.request}\n"
+                            f"- Review: {self.run_dir / 'review.json'}\n"
+                            f"- Truth evidence: {self.run_dir / 'truth-report.json'}\n"
+                        ),
+                        append=True,
+                    )
                 return
             if review_cycle == 1 and (
                 review.get("verdict") == "FIX_REQUIRED" or review.get("simplicityVerdict") == "OVERBUILT"
             ):
+                if self.goal_mode:
+                    self._goal_transition("TRIAGE", "deep review requires repair", reviewCycle=review_cycle)
                 self.transition("REVIEW_REPAIR", findings=review.get("findings", []))
                 findings = review.get("findings") if isinstance(review.get("findings"), list) else []
                 finding = None
@@ -1042,16 +1251,54 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                     task_id="FINAL-REVIEW-REPAIR",
                     attempt=review_cycle,
                 )
+                if self.goal_mode:
+                    self._goal_transition("IMPLEMENT", "review repair completed", reviewCycle=review_cycle)
                 pending_repair = True
                 continue
             if review.get("verdict") == "DESIGN_CONFLICT":
+                if self.goal_mode and review_cycle == 1:
+                    self._goal_transition("DESIGN", "deep review found a design conflict", reviewCycle=review_cycle)
+                    self.tasks = self._run_planner()
+                    contract = build_goal_contract(
+                        self.request,
+                        self.tasks,
+                        max_cycles=self.max_goal_cycles,
+                        max_replans=self.max_replans,
+                    )
+                    write_json(self.run_dir / "goal-contract.json", contract.to_dict())
+                    self._goal_transition("IMPLEMENT", "replanned goal contract is ready")
+                    for task in self.tasks:
+                        self._execute_task(task)
+                    aggregate = aggregate_task(self.tasks)
+                    aggregate_path = self.run_dir / "tasks" / "ALL-TASKS.json"
+                    write_json(aggregate_path, task_to_dict(aggregate))
+                    continue
+                if self.goal_mode:
+                    self._goal_transition("EXHAUSTED", "design conflict remained after replan")
                 raise OrchestrationError("FINAL_REVIEW_DESIGN_CONFLICT", str(review.get("findings") or "design conflict"))
+            if self.goal_mode:
+                self._goal_transition("EXHAUSTED", "deep review did not approve the goal")
             raise OrchestrationError(
                 "REVIEW_NOT_APPROVED",
                 str(review.get("findings") or review.get("simplicityVerdict") or review.get("verdict")),
                 verdict="FAILED",
             )
         raise OrchestrationError("REVIEW_LOOP_EXHAUSTED", "review remained unapproved after one bounded repair", verdict="FAILED")
+
+    def _goal_review_satisfied(self, review: dict[str, Any]) -> bool:
+        assert self.run_dir is not None
+        contract = _read_optional_json(self.run_dir / "goal-contract.json") or {}
+        expected = {
+            item.get("criterion_id")
+            for item in contract.get("criteria", [])
+            if isinstance(item, dict) and isinstance(item.get("criterion_id"), str)
+        }
+        observed = {
+            item.get("id"): item.get("status")
+            for item in review.get("criteria", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        return bool(expected) and all(observed.get(criterion) == "SATISFIED" for criterion in expected)
 
     def _attempt_count(self) -> int:
         assert self.run_dir is not None
@@ -1230,4 +1477,38 @@ def orchestrate(
         output_format=output_format,
         verbosity=verbosity,
         color=color,
+    ).run()
+
+
+def converge_goal(
+    host: str,
+    repository: str | Path,
+    request: str,
+    *,
+    adapter: HostAdapter | None = None,
+    strategy_override: str | None = None,
+    timeout_seconds: int = 1200,
+    require_observed_routing: bool = True,
+    stream: TextIO | None = None,
+    output_format: str = "quiet",
+    verbosity: str = "info",
+    color: str = "auto",
+    max_goal_cycles: int = 8,
+    max_replans: int = 2,
+) -> dict[str, Any]:
+    return ProofLoopOrchestrator(
+        host,
+        repository,
+        request,
+        adapter=adapter,
+        strategy_override=strategy_override,
+        timeout_seconds=timeout_seconds,
+        require_observed_routing=require_observed_routing,
+        stream=stream,
+        output_format=output_format,
+        verbosity=verbosity,
+        color=color,
+        goal_mode=True,
+        max_goal_cycles=max_goal_cycles,
+        max_replans=max_replans,
     ).run()

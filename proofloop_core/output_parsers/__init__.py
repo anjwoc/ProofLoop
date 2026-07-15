@@ -4,6 +4,7 @@ from .antigravity import AntigravityOutputParser
 from .base import HostOutputParser, NormalizedHostEvent
 from .claude import ClaudeOutputParser
 from .codex import CodexOutputParser
+from .gemini import GeminiOutputParser
 
 
 def parser_for(host: str) -> HostOutputParser:
@@ -13,6 +14,8 @@ def parser_for(host: str) -> HostOutputParser:
         return AntigravityOutputParser()
     if host == "claude-code":
         return ClaudeOutputParser()
+    if host == "gemini":
+        return GeminiOutputParser()
     raise ValueError(f"unsupported host parser: {host}")
 
 

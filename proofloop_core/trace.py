@@ -32,7 +32,7 @@ def summarize_trace(path: str | Path, required_roles: list[str] | None = None) -
     by_role: dict[str, list[str]] = {}
     requested_by_role: dict[str, list[str]] = {}
     weak_evidence_roles: list[str] = []
-    strong_evidence = {"HOST_RESOLVED", "HOST_ACTIVE_MODEL", "HOST_OUTPUT"}
+    strong_evidence = {"HOST_RESOLVED", "HOST_ACTIVE_MODEL", "HOST_OUTPUT", "ACP_SESSION_CONFIG"}
     for event in events:
         raw_role = event.get("role")
         role = canonical_role(raw_role) if isinstance(raw_role, str) else None

@@ -25,9 +25,15 @@ def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProces
     return completed
 
 
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 def copy_tree(source: Path, target: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target)
+    remove_path(target)
     shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "dist"))
 
 
@@ -36,13 +42,16 @@ def install_runtime(home: Path, dry_run: bool) -> dict[str, str]:
     bin_dir = home / "bin"
     wrapper = bin_dir / "proofloop-core"
     if dry_run:
+        print(f"DRY remove runtime -> {runtime}")
         print(f"DRY install runtime -> {runtime}")
         print(f"DRY install wrapper -> {wrapper}")
         return {"runtime": str(runtime), "wrapper": str(wrapper)}
+    remove_path(runtime)
     runtime.mkdir(parents=True, exist_ok=True)
     for name in ("proofloop_core", "references"):
         copy_tree(ROOT / name, runtime / name)
     bin_dir.mkdir(parents=True, exist_ok=True)
+    remove_path(wrapper)
     wrapper.write_text(
         "#!/bin/sh\n"
         f'PYTHONPATH="{runtime}:$PYTHONPATH" exec "{sys.executable}" -m proofloop_core.cli "$@"\n',
@@ -88,32 +97,39 @@ def install_codex(output: Path, scope: str, target: Path, dry_run: bool) -> dict
         plugin_target = target / "plugins" / "proofloop"
         agents_target = target / ".codex" / "agents"
         marketplace_target = target / ".agents" / "plugins" / "marketplace.json"
+    codex = shutil.which("codex")
+    commands = [
+        [codex, "plugin", "remove", "proofloop@proofloop-local"],
+        [codex, "plugin", "marketplace", "remove", "proofloop-local"],
+        [codex, "plugin", "marketplace", "add", str(output)],
+        [codex, "plugin", "add", "proofloop@proofloop-local"],
+    ] if scope == "user" and codex else []
     if dry_run:
+        print(f"DRY remove Codex ProofLoop plugin -> {plugin_target}")
+        print(f"DRY remove Codex ProofLoop agents -> {agents_target / 'proofloop_*.toml'}")
         print(f"DRY copy Codex plugin -> {plugin_target}")
         print(f"DRY copy Codex agents -> {agents_target}")
+        for command in commands:
+            print("DRY", " ".join(command))
     else:
+        if commands:
+            run(commands[0], check=False)
+            run(commands[1], check=False)
         copy_tree(output / "plugins" / "proofloop", plugin_target)
         agents_target.mkdir(parents=True, exist_ok=True)
+        for stale in agents_target.glob("proofloop_*.toml"):
+            remove_path(stale)
         for source in (output / "agents").glob("*.toml"):
             shutil.copy2(source, agents_target / source.name)
         merge_marketplace(marketplace_target, plugin_target)
 
     cli_status = "NOT_ATTEMPTED"
-    codex = shutil.which("codex")
-    if scope == "user" and codex:
-        commands = [
-            [codex, "plugin", "marketplace", "remove", "proofloop-local"],
-            [codex, "plugin", "marketplace", "add", str(output)],
-            [codex, "plugin", "add", "proofloop@proofloop-local"],
-        ]
+    if commands:
         if dry_run:
-            for command in commands:
-                print("DRY", " ".join(command))
             cli_status = "DRY_RUN"
         else:
-            run(commands[0], check=False)
-            add_market = run(commands[1], check=False)
-            add_plugin = run(commands[2], check=False) if add_market.returncode == 0 else add_market
+            add_market = run(commands[2], check=False)
+            add_plugin = run(commands[3], check=False) if add_market.returncode == 0 else add_market
             cli_status = "PASS" if add_market.returncode == 0 and add_plugin.returncode == 0 else "FALLBACK_DIRECT_COPY"
     elif not codex:
         cli_status = "CLI_MISSING_DIRECT_COPY_USED"
@@ -145,6 +161,15 @@ def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -
         workflow_target = target / ".agent" / "workflows" / "proofloop.md"
     installed_skills: list[str] = []
     for source_root, destination_root in destinations:
+        if dry_run:
+            print(
+                "DRY remove Antigravity ProofLoop skills -> "
+                f"{destination_root}/proofloop* and {destination_root / 'using-proofloop'}"
+            )
+        if not dry_run and destination_root.exists():
+            for stale in destination_root.glob("proofloop*"):
+                remove_path(stale)
+            remove_path(destination_root / "using-proofloop")
         for source in source_root.iterdir():
             destination = destination_root / source.name
             installed_skills.append(str(destination))
@@ -154,9 +179,11 @@ def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -
                 destination_root.mkdir(parents=True, exist_ok=True)
                 copy_tree(source, destination)
     if dry_run:
+        print(f"DRY remove Antigravity workflow -> {workflow_target}")
         print(f"DRY copy Antigravity workflow -> {workflow_target}")
     else:
         workflow_target.parent.mkdir(parents=True, exist_ok=True)
+        remove_path(workflow_target)
         shutil.copy2(output / "workflows" / "proofloop.md", workflow_target)
     return {
         "host": "antigravity",
@@ -176,6 +203,8 @@ def install_claude(output: Path, scope: str, dry_run: bool) -> dict[str, object]
         return {"host": "claude-code", "mode": "EXTERNAL_MODEL_ROUTING", "status": "CLI_MISSING", "built": str(output)}
     commands = [
         [claude, "plugin", "validate", str(output), "--strict"],
+        [claude, "plugin", "uninstall", "proofloop@proofloop-local", "--scope", scope, "--yes"],
+        [claude, "plugin", "marketplace", "remove", "proofloop-local", "--scope", scope],
         [claude, "plugin", "marketplace", "add", str(output), "--scope", scope],
         [claude, "plugin", "install", "proofloop@proofloop-local", "--scope", scope],
     ]
@@ -183,8 +212,11 @@ def install_claude(output: Path, scope: str, dry_run: bool) -> dict[str, object]
         for command in commands:
             print("DRY", " ".join(command))
     else:
-        for command in commands:
-            run(command)
+        run(commands[0])
+        run(commands[1], check=False)
+        run(commands[2], check=False)
+        run(commands[3])
+        run(commands[4])
     return {
         "host": "claude-code",
         "mode": "EXTERNAL_MODEL_ROUTING",
@@ -196,7 +228,7 @@ def install_claude(output: Path, scope: str, dry_run: bool) -> dict[str, object]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and install ProofLoop Core adapters")
-    parser.add_argument("--host", choices=["claude-code", "codex", "antigravity", "all"], default="claude-code")
+    parser.add_argument("--host", choices=["claude-code", "codex", "antigravity", "all"], default="all")
     parser.add_argument("--scope", choices=["user", "project", "local"], default="user")
     parser.add_argument("--target", default=".")
     parser.add_argument("--dry-run", action="store_true")

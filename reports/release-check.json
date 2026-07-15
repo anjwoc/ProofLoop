@@ -18,32 +18,32 @@
     "codexNormal": {
       "name": "codex-normal",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/codex-normal/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/codex-normal/truth-report.json"
     },
     "codexRecovery": {
       "name": "codex-recovery",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/codex-recovery/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/codex-recovery/truth-report.json"
     },
     "antigravityNormal": {
       "name": "antigravity-normal",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/antigravity-normal/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/antigravity-normal/truth-report.json"
     },
     "antigravityRecovery": {
       "name": "antigravity-recovery",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/antigravity-recovery/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/antigravity-recovery/truth-report.json"
     },
     "claudeNormal": {
       "name": "claude-normal",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/claude-normal/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/claude-normal/truth-report.json"
     },
     "claudeRecovery": {
       "name": "claude-recovery",
       "status": "MISSING",
-      "path": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/reports/live/claude-recovery/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/claude-recovery/truth-report.json"
     }
   },
   "observedAuthenticatedModelRouting": "UNPROVEN",
@@ -53,44 +53,44 @@
   "commands": [
     {
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
         "scripts/validate_package.py"
       ],
       "exitCode": 0,
-      "stdout": "PACKAGE VALIDATION: PASS (60 runtime files, 108 total files)\n",
+      "stdout": "PACKAGE VALIDATION: PASS (77 runtime files, 307 total files)\n",
       "stderr": ""
     },
     {
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
         "scripts/build_host_adapter.py",
         "--host",
         "claude-code"
       ],
       "exitCode": 0,
-      "stdout": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/dist/claude\n",
+      "stdout": "/Users/jaecjeong/lab/ProofLoop/dist/claude\n",
       "stderr": ""
     },
     {
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
         "scripts/build_host_adapter.py",
         "--host",
         "codex"
       ],
       "exitCode": 0,
-      "stdout": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/dist/codex\n",
+      "stdout": "/Users/jaecjeong/lab/ProofLoop/dist/codex\n",
       "stderr": ""
     },
     {
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
         "scripts/build_host_adapter.py",
         "--host",
         "antigravity"
       ],
       "exitCode": 0,
-      "stdout": "/mnt/data/proofloop-skill-first-core-v0.4.0-alpha/dist/antigravity\n",
+      "stdout": "/Users/jaecjeong/lab/ProofLoop/dist/antigravity\n",
       "stderr": ""
     }
   ]

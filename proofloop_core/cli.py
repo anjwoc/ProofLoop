@@ -21,7 +21,7 @@ from .run_state import start_run, abort_run, finalize_run
 from .attempts import record_attempt
 from .hosts import capability, probe
 from .host_runner import invoke_role
-from .orchestrator import orchestrate
+from .orchestrator import converge_goal, orchestrate
 from .watch import resolve_run_dir, watch_events
 
 
@@ -69,6 +69,20 @@ def main(argv: list[str] | None = None) -> int:
     p_orchestrate.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="quiet")
     p_orchestrate.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_orchestrate.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+
+    p_goal = sub.add_parser("goal")
+    p_goal.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_goal.add_argument("--repo", default=".")
+    goal_request_group = p_goal.add_mutually_exclusive_group(required=True)
+    goal_request_group.add_argument("--request")
+    goal_request_group.add_argument("--request-file")
+    p_goal.add_argument("--strategy", choices=["direct", "planned", "high-risk"])
+    p_goal.add_argument("--timeout-seconds", type=int, default=1200)
+    p_goal.add_argument("--max-cycles", type=int, default=8)
+    p_goal.add_argument("--max-replans", type=int, default=2)
+    p_goal.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="human")
+    p_goal.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
+    p_goal.add_argument("--color", choices=["auto", "always", "never"], default="auto")
 
     p_watch = sub.add_parser("watch")
     watch_source = p_watch.add_mutually_exclusive_group(required=True)
@@ -138,12 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     p_trace.add_argument("--output", required=True)
 
     p_host = sub.add_parser("host-capabilities")
-    p_host.add_argument("--host", choices=["claude-code", "codex", "antigravity"], required=True)
+    p_host.add_argument("--host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
     p_host.add_argument("--probe", action="store_true")
 
     p_invoke = sub.add_parser("invoke-role")
-    p_invoke.add_argument("--host", choices=["claude-code", "codex", "antigravity"], required=True)
-    p_invoke.add_argument("--role", choices=["planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"], required=True)
+    p_invoke.add_argument("--host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
+    p_invoke.add_argument("--role", choices=["planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"], required=True)
     p_invoke.add_argument("--repo", default=".")
     p_invoke.add_argument("--run-dir", required=True)
     p_invoke.add_argument("--task")
@@ -172,13 +186,18 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         return 0
-    if args.command == "orchestrate":
+    if args.command in {"orchestrate", "goal"}:
         host = _resolve_host(args.host)
         request = args.request
         if args.request_file:
             request = Path(args.request_file).read_text(encoding="utf-8")
         strategy_map = {"direct": "DIRECT_VERIFIED_CHANGE", "planned": "PLANNED_IMPLEMENTATION", "high-risk": "HIGH_RISK_ENGINEERING", "analysis": "REPOSITORY_ANALYSIS"}
-        result = orchestrate(
+        runner = converge_goal if args.command == "goal" else orchestrate
+        extra = {
+            "max_goal_cycles": args.max_cycles,
+            "max_replans": args.max_replans,
+        } if args.command == "goal" else {}
+        result = runner(
             host,
             args.repo,
             request or "",
@@ -187,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             output_format=args.output_format,
             verbosity=args.verbosity,
             color=args.color,
+            **extra,
         )
     elif args.command == "host-capabilities":
         result = probe(args.host) if args.probe else capability(args.host)
@@ -239,9 +259,9 @@ def main(argv: list[str] | None = None) -> int:
             repo = repo.parent
         if (repo / ".proofloop").exists():
             finalize_run(repo, result)
-    if args.command != "orchestrate" or args.output_format == "quiet":
+    if args.command not in {"orchestrate", "goal"} or args.output_format == "quiet":
         _print(result)
-    if args.command == "orchestrate":
+    if args.command in {"orchestrate", "goal"}:
         return 0 if result.get("verdict") == "PROVEN" else 2
     return 0 if result.get("verdict") not in {"FAIL", "FAILED"} else 1
 

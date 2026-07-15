@@ -8,37 +8,32 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .runtime import CONTROLLER_ROUTES, RuntimeRegistry, runtime_spec
+
+
+def _host_capability(host: str) -> dict[str, Any]:
+    spec = runtime_spec(host)
+    mode = "ROLE_ROUTING_ONLY" if host == "antigravity" else "NATIVE_MODEL_ROUTING"
+    roles = {
+        role: {
+            "model": route.model,
+            "reasoning": route.reasoning,
+            "sandbox": route.access_mode,
+            "runtime": route.runtime_id,
+        }
+        for role, route in CONTROLLER_ROUTES[host].items()
+    }
+    return {
+        "binary": spec.launcher.command,
+        "mode": mode,
+        "transport": "auto" if spec.supports_acp else "legacy-cli",
+        "supportsACP": spec.supports_acp,
+        "roles": roles,
+    }
+
+
 HOST_CAPABILITIES: dict[str, dict[str, Any]] = {
-    "claude-code": {
-        "binary": "claude",
-        "mode": "NATIVE_MODEL_ROUTING",
-        "roles": {
-            "planner_deep": {"model": "opus", "reasoning": "high", "sandbox": "read-only"},
-            "implementer_fast": {"model": "haiku", "reasoning": "medium", "sandbox": "workspace-write"},
-            "implementer_recovery": {"model": "sonnet", "reasoning": "high", "sandbox": "workspace-write"},
-            "reviewer_deep": {"model": "fable", "reasoning": "high", "sandbox": "read-only"},
-        },
-    },
-    "codex": {
-        "binary": "codex",
-        "mode": "NATIVE_MODEL_ROUTING",
-        "roles": {
-            "planner_deep": {"model": "gpt-5.6", "reasoning": "high", "sandbox": "read-only"},
-            "implementer_fast": {"model": "gpt-5.6-terra", "reasoning": "medium", "sandbox": "workspace-write"},
-            "implementer_recovery": {"model": "gpt-5.6", "reasoning": "high", "sandbox": "workspace-write"},
-            "reviewer_deep": {"model": "gpt-5.6", "reasoning": "high", "sandbox": "read-only"},
-        },
-    },
-    "antigravity": {
-        "binary": "agy",
-        "mode": "ROLE_ROUTING_ONLY",
-        "roles": {
-            "planner_deep": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},
-            "implementer_fast": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},
-            "implementer_recovery": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},
-            "reviewer_deep": {"model": "current-session-model", "reasoning": None, "sandbox": "host-managed"},
-        },
-    },
+    host: _host_capability(host) for host in CONTROLLER_ROUTES
 }
 
 
@@ -61,6 +56,7 @@ def probe(host: str) -> dict[str, Any]:
         "path": executable,
         "version": None,
         "modelRoutingStatus": "CONFIGURED_UNPROVEN" if config["mode"] == "NATIVE_MODEL_ROUTING" else "ROLE_ROUTING_ONLY",
+        "runtimeCatalog": RuntimeRegistry().catalog(),
     }
     if executable:
         completed = subprocess.run([executable, "--version"], text=True, capture_output=True, check=False)
@@ -71,6 +67,7 @@ def probe(host: str) -> dict[str, Any]:
 
 _AGENT_INSTRUCTIONS = {
     "planner_deep": """Act only as ProofLoop's deep planner. Inspect real repository evidence, choose the smallest sufficient solution, define acceptance criteria, required checks, allowed paths, protected paths, change budgets, and explicit escalation conditions. Do not edit production code. Create an executable task brief and distinguish facts, inferences, and unknowns.""",
+    "explorer_fast": """Act only as ProofLoop's read-only explorer. Map the smallest relevant execution path, impacted callers, existing tests, constraints, and open risks. Do not edit source and do not propose implementation beyond evidence.""",
     "implementer_fast": """Act only as ProofLoop's bounded fast implementer. Work on one approved task brief. Use TDD for behavior changes, make the minimum change inside allowed paths, do not broaden scope, and never claim checks passed. Run ProofLoop deterministic checks and leave evidence for the coordinator.""",
     "implementer_recovery": """Act as ProofLoop's recovery implementer after repeated objective failures. Use the task brief, exact failing command output, fingerprint, and current diff. Fix the root cause without expanding the contract. Return to the planner instead of redesigning public APIs, schemas, or architecture without approval.""",
     "reviewer_deep": """Act as an isolated ProofLoop owner-level reviewer. Review the task brief, source diff, deterministic check evidence, test integrity, and simplicity budget. Return APPROVED, FIX_REQUIRED, DESIGN_CONFLICT, or CANNOT_VERIFY plus simplicityVerdict MINIMAL, OVERBUILT, or CANNOT_VERIFY. Never trust the implementer's summary.""",
@@ -81,6 +78,7 @@ def render_codex_agent(role: str) -> str:
     config = capability("codex")["roles"][role]
     description = {
         "planner_deep": "Deep read-only planner for evidence-based minimal implementation plans.",
+        "explorer_fast": "Fast read-only explorer for repository and impact evidence.",
         "implementer_fast": "Fast bounded implementer for one approved ProofLoop task.",
         "implementer_recovery": "High-capability recovery implementer for repeated objective failures.",
         "reviewer_deep": "Independent owner-level reviewer for correctness, evidence, and simplicity.",
@@ -140,7 +138,7 @@ def role_from_agent_type(value: str | None) -> str | None:
     if not value:
         return None
     normalized = value.lower().replace("-", "_")
-    for role in ("planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"):
+    for role in ("planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"):
         if role in normalized:
             return role
     if "planner" in normalized:
@@ -194,7 +192,7 @@ Do not simulate the workflow in this Antigravity session.
 RELAY_DIR="$(pwd)/.proofloop/relay/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$RELAY_DIR"
 printf '1\n' > "$RELAY_DIR/next-line"
-nohup "$HOME/.proofloop/bin/proofloop-core" orchestrate \
+nohup "$HOME/.proofloop/bin/proofloop-core" goal \
   --host antigravity \
   --repo . \
   --request-file <absolute-request-file> \

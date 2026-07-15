@@ -7,4 +7,4 @@ description: Compatibility alias for the ProofLoop automatic coding harness. Use
 
 Invoke the `proofloop` skill with the user's complete request.
 
-Do not manually simulate role routing, repair loops, checks, reviews, or truth decisions. The `proofloop` skill must launch `proofloop-core orchestrate`, which owns the complete workflow.
+Do not manually simulate role routing, repair loops, checks, reviews, or truth decisions. The `proofloop` skill must launch `proofloop-core goal`, which owns the complete workflow.

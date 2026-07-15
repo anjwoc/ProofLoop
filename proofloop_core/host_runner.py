@@ -52,13 +52,16 @@ def invoke_role(
     task_id: str | None = None,
     attempt: int | None = None,
     heartbeat_interval_seconds: float = 5.0,
+    model_override: str | None = None,
+    access_mode: str | None = None,
+    fixed_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    if role not in {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
+    if role not in {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
     config = capability(host)
     role_table = config["roles"] if host == "antigravity" else config.get("externalRoles", config["roles"])
     role_config = role_table[role]
-    model = role_config["model"]
+    model = model_override or role_config["model"]
     executable_name = binary or config["binary"]
     executable = shutil.which(executable_name) if os.path.sep not in executable_name else executable_name
     root = Path(run_dir).resolve()
@@ -72,18 +75,25 @@ def invoke_role(
         # orchestrator snapshots source before read-only roles and rejects any
         # production mutation, so workspace-write is safe and observable.
         command = [
-            str(executable), "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
+            str(executable), *fixed_args, "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
             "--model", model, message,
         ]
     elif host == "antigravity":
-        command = [str(executable)]
+        command = [str(executable), *fixed_args]
         if os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1":
             command.append("--dangerously-skip-permissions")
-        command.extend(["--prompt", ""])
+        command.extend(["-p", message])
     elif host == "claude-code":
         command = [
-            str(executable), "-p", message, "--model", model,
-            "--output-format", "json", "--permission-mode", "bypassPermissions",
+            str(executable), *fixed_args, "-p", message, "--model", model,
+            "--output-format", "stream-json", "--verbose",
+            "--permission-mode", "plan" if access_mode == "read-only" else "bypassPermissions",
+        ]
+    elif host == "gemini":
+        command = [
+            str(executable), *fixed_args, "-p", message, "--model", model,
+            "--output-format", "stream-json", "--approval-mode",
+            "plan" if access_mode == "read-only" else "yolo",
         ]
     else:
         return {"verdict": "BLOCKED", "reason": "EXTERNAL_ROLE_RUNNER_NOT_SUPPORTED", "role": role}
@@ -101,23 +111,6 @@ def invoke_role(
     def on_line(stream_name: str, line: str) -> None:
         nonlocal observed, evidence_level, model_event_emitted, parser_degraded
         visible_text = line.rstrip("\r\n")
-        if emitter is not None and host == "antigravity" and visible_text:
-            emitter.emit(
-                "role.output",
-                phase=phase,
-                message=f"{role} produced {stream_name} output.",
-                task_id=task_id,
-                data={
-                    "role": role,
-                    "attempt": attempt,
-                    "invocationId": invocation_id,
-                    "stream": stream_name,
-                    "text": visible_text[:_MAX_HOST_OUTPUT_EVENT_CHARS],
-                    "truncated": len(visible_text) > _MAX_HOST_OUTPUT_EVENT_CHARS,
-                    "stdoutRef": str(call_dir / "stdout.log"),
-                    "stderrRef": str(call_dir / "stderr.log"),
-                },
-            )
         try:
             normalized = parser.feed(stream_name, line)
         except Exception as exc:
@@ -140,6 +133,29 @@ def invoke_role(
                     },
                 )
             return
+        if emitter is not None and visible_text and not normalized:
+            structured = False
+            try:
+                structured = isinstance(json.loads(visible_text), dict)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if not structured:
+                emitter.emit(
+                    "role.output",
+                    phase=phase,
+                    message=f"{role} produced {stream_name} output.",
+                    task_id=task_id,
+                    data={
+                        "role": role,
+                        "attempt": attempt,
+                        "invocationId": invocation_id,
+                        "stream": stream_name,
+                        "text": visible_text[:_MAX_HOST_OUTPUT_EVENT_CHARS],
+                        "truncated": len(visible_text) > _MAX_HOST_OUTPUT_EVENT_CHARS,
+                        "stdoutRef": str(call_dir / "stdout.log"),
+                        "stderrRef": str(call_dir / "stderr.log"),
+                    },
+                )
         for item in normalized:
             data = {
                 "role": role,
@@ -193,7 +209,7 @@ def invoke_role(
         stderr_path=call_dir / "stderr.log",
         timeout_seconds=timeout_seconds,
         on_line=on_line,
-        stdin_data=message if host == "antigravity" else None,
+        stdin_data=None,
         on_heartbeat=on_heartbeat if emitter is not None else None,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
     )
@@ -227,6 +243,7 @@ def invoke_role(
         "exitCode": process_result.exit_code,
         "timedOut": process_result.timed_out,
         "cancelled": process_result.cancelled,
+        "transport": "legacy-cli",
         "durationSeconds": process_result.duration_seconds,
         "stdoutRef": process_result.stdout_ref,
         "stderrRef": process_result.stderr_ref,

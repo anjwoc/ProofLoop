@@ -14,7 +14,7 @@ This skill is a thin bootstrap. The deterministic orchestrator owns the workflow
 3. Run one command:
 
 ```bash
-$HOME/.proofloop/bin/proofloop-core orchestrate \
+$HOME/.proofloop/bin/proofloop-core goal \
   --host <current-host> \
   --repo . \
   --request-file <absolute-request-file> \
