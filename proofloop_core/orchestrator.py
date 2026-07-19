@@ -4,6 +4,7 @@ import hashlib
 import json
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
@@ -18,7 +19,7 @@ from .preflight import preflight
 from .repair import decide_next
 from .repository_context import ensure_codegraph
 from .run_state import finalize_run, start_run
-from .strategy import StrategyDecision, classify_request
+from .strategy import StrategyDecision, classify_request, reclassify_after_diff
 from .task_brief import CheckSpec, ChangeBudget, SimplicityPlan, TaskBrief, load_task_brief
 from .trace import summarize_trace
 from .truth import build_truth_report
@@ -29,6 +30,11 @@ from .memory import prepare_memory, write_memory
 from .runtime import ResolvedRuntime
 from .usage import build_usage_summary
 from .tokscale import TokScaleAdapter
+from .intent import IntentContract, compile_intent
+from .proof_graph import Evidence, ProofGraph, ProofObligation
+from .skill_registry import ResolutionContext, SkillContract, SkillRegistry
+from .workload import probe_repository_signals
+from .domain_runtime import build_repository_fingerprint, select_reference_slices
 
 
 ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
@@ -170,11 +176,19 @@ class ProofLoopOrchestrator:
         goal_mode: bool = False,
         max_goal_cycles: int = 8,
         max_replans: int = 2,
+        mode: str = "orchestrate",
+        skills_enabled: bool = True,
+        experimental_domain_packs: bool = False,
     ):
+        if mode not in {"orchestrate", "adaptive", "goal", "audit"}:
+            raise ValueError(f"unsupported ProofLoop mode: {mode}")
         self.host = host
         self.repo = Path(repository).resolve()
         self.request = request.strip()
-        self.goal_mode = goal_mode
+        self.mode = mode
+        self.skills_enabled = skills_enabled
+        self.experimental_domain_packs = experimental_domain_packs
+        self.goal_mode = goal_mode or mode == "goal"
         self.max_goal_cycles = max_goal_cycles
         self.max_replans = max_replans
         self.adapter = adapter or ExternalCLIAdapter(host, routing_policy="goal" if goal_mode else "controller")
@@ -195,6 +209,14 @@ class ProofLoopOrchestrator:
         self.goal_fsm: GoalFSM | None = None
         self.active_model: str | None = None
         self.goal_cycles = 0
+        self.intent: IntentContract | None = None
+        self.proof_graph: ProofGraph | None = None
+        self.selected_skills: list[SkillContract] = []
+        self.selected_skill_references: dict[str, list[dict[str, Any]]] = {}
+        self.repository_fingerprint: dict[str, Any] | None = None
+        self.token_budget: int | None = None
+        self.consumed_tokens = 0
+        self.diff_reclassified = False
 
     def _emit(
         self,
@@ -268,6 +290,19 @@ class ProofLoopOrchestrator:
         try:
             self.transition("INIT")
             write_json(self.run_dir / "request.json", {"schemaVersion": "1.0", "request": self.request})
+            self.intent = compile_intent(self.request)
+            write_json(self.run_dir / "intent-contract.json", self.intent.to_dict())
+            self._emit(
+                "intent.compiled",
+                phase="INIT",
+                message="Original request compiled into a scope-preserving intent contract.",
+                data={
+                    "originalRequestHash": self.intent.original_request_hash,
+                    "acceptanceCriteria": len(self.intent.acceptance_criteria),
+                    "unknowns": list(self.intent.unknowns),
+                    "artifact": str(self.run_dir / "intent-contract.json"),
+                },
+            )
 
             self.transition("PREFLIGHT")
             self._emit("context.started", phase="PREFLIGHT", message="Repository preflight started.")
@@ -306,15 +341,40 @@ class ProofLoopOrchestrator:
             )
 
             self.transition("CLASSIFY")
-            self.strategy = classify_request(self.request, self.strategy_override)
+            repository_signals = probe_repository_signals(
+                self.repo,
+                self.intent.target_artifacts if self.intent is not None else (),
+            )
+            self.strategy = classify_request(
+                self.request,
+                self.strategy_override,
+                repository_signals=repository_signals,
+            )
+            if self.strategy.strategy == "PLANNED_IMPLEMENTATION" and self.mode in {"orchestrate", "goal"}:
+                self.strategy = replace(
+                    self.strategy,
+                    planner_required=True,
+                    reviewer_required=True,
+                    explorer_required=self.mode == "goal" or self.strategy.explorer_required,
+                )
             write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
+            self.repository_fingerprint = build_repository_fingerprint(
+                self.repo,
+                self.request,
+                self.intent.target_artifacts if self.intent is not None else (),
+            )
+            write_json(self.run_dir / "repository-fingerprint.json", self.repository_fingerprint)
             self._emit(
                 "strategy.selected",
                 phase="CLASSIFY",
                 message=f"Strategy {self.strategy.strategy} selected.",
                 data=self.strategy.to_dict(),
             )
+            self._initialize_proof_graph()
+            self._resolve_skills()
             if self.strategy.strategy == "REPOSITORY_ANALYSIS":
+                if self.mode == "audit":
+                    return self._run_audit()
                 raise OrchestrationError(
                     "ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED",
                     "v0.4 kernel currently proves mutation workflows; repository analysis remains blocked rather than simulated",
@@ -349,6 +409,8 @@ class ProofLoopOrchestrator:
                     self._goal_transition("EXPLORE", "repository context is ready")
                     self._run_explorer()
                     self._goal_transition("DESIGN", "exploration evidence is ready")
+                elif self.strategy.explorer_required:
+                    self._run_explorer()
                 self.tasks = self._run_planner()
                 if self.strategy.strategy == "HIGH_RISK_ENGINEERING":
                     if self.goal_mode:
@@ -358,6 +420,8 @@ class ProofLoopOrchestrator:
                 if self.goal_mode:
                     self._goal_transition("IMPLEMENT", "direct goal implementation started")
                 self.tasks = self._run_direct_bootstrap()
+
+            self._maybe_reclassify_after_diff()
 
             if self.goal_mode:
                 contract = build_goal_contract(
@@ -386,6 +450,7 @@ class ProofLoopOrchestrator:
             for task in self.tasks:
                 try:
                     self._execute_task(task)
+                    self._maybe_reclassify_after_diff()
                 except Exception as exc:
                     self._emit(
                         "task.failed",
@@ -475,6 +540,7 @@ class ProofLoopOrchestrator:
             data=role_data,
         )
         baseline = snapshot_worktree(self.repo) if immutable_source else None
+        prompt = self._prompt_with_selected_skills(role, prompt)
         invocation = RoleInvocation(
             role=role,
             prompt=prompt,
@@ -482,7 +548,7 @@ class ProofLoopOrchestrator:
             run_dir=self.run_dir,
             task_path=task_path,
             result_path=result_path,
-            timeout_seconds=self.timeout_seconds,
+            timeout_seconds=min(self.timeout_seconds, self._role_time_budget_seconds()),
             emitter=self.emitter,
             phase=invocation_phase,
             task_id=task_id,
@@ -502,6 +568,7 @@ class ProofLoopOrchestrator:
                 data={**role_data, "error": f"{type(exc).__name__}: {exc}"},
             )
             raise
+        self._account_role_budget(role, result, invocation_phase, task_id)
         self.used_roles.append(role)
         event = {
             "timestampEpoch": time.time(),
@@ -667,6 +734,389 @@ class ProofLoopOrchestrator:
         )
         if not result_path.exists():
             raise OrchestrationError("EXPLORATION_ARTIFACT_MISSING", "explorer did not produce exploration.json")
+
+    def _initialize_proof_graph(self) -> None:
+        assert self.run_dir is not None and self.intent is not None and self.strategy is not None
+        review_authority = "MODEL_REVIEW" if self.strategy.tier in {"T2", "T3"} else "DIFF_GUARD"
+        obligations = [
+            ProofObligation("intent-alignment", "The final diff satisfies the original intent.", review_authority),
+            ProofObligation("deterministic-checks", "All required deterministic checks pass.", "DETERMINISTIC_CHECK"),
+            ProofObligation("scope-integrity", "The final diff remains inside the authorized scope.", "DIFF_GUARD"),
+            ProofObligation("simplicity", "The implementation is the smallest sufficient change.", review_authority),
+        ]
+        obligations.extend(
+            ProofObligation(item.criterion_id, item.statement, "DETERMINISTIC_CHECK")
+            for item in self.intent.acceptance_criteria
+        )
+        self.proof_graph = ProofGraph(obligations)
+        self._persist_proof_graph("proof obligations initialized")
+
+    def _resolve_skills(self) -> None:
+        assert self.run_dir is not None and self.strategy is not None and self.proof_graph is not None
+        protocols_root = Path(__file__).resolve().parents[1] / "proofloop_protocols"
+        domain_root = Path(__file__).resolve().parents[1] / "proofloop_domain_packs"
+        protocol_registry = SkillRegistry.discover(protocols_root) if protocols_root.exists() else SkillRegistry([])
+        domain_registry = SkillRegistry.discover(domain_root) if domain_root.exists() else SkillRegistry([])
+        registry = SkillRegistry([*protocol_registry.skills, *domain_registry.skills])
+        write_json(self.run_dir / "skill-registry.json", registry.to_dict())
+        token_budgets = {"T0": 20_000, "T1": 60_000, "T2": 180_000, "T3": 360_000}
+        budget = token_budgets[self.strategy.tier]
+        self.token_budget = budget
+        resolution_mode = "goal" if self.goal_mode or self.mode == "orchestrate" else self.mode
+        fingerprint = self.repository_fingerprint or {
+            "taskTypes": [], "signals": [], "languages": [], "frameworks": {}, "tools": {}
+        }
+        common_context = {
+            "mode": resolution_mode,
+            "host": self.host,
+            "tier": self.strategy.tier,
+            "open_obligations": tuple(item.obligation_id for item in self.proof_graph.obligations),
+            "repository_signals": tuple(str(item) for item in fingerprint.get("signals", [])),
+            "languages": tuple(str(item) for item in fingerprint.get("languages", [])),
+            "frameworks": tuple(
+                (str(name), str(version))
+                for name, version in (fingerprint.get("frameworks") or {}).items()
+            ),
+            "tools": tuple(
+                (str(name), str(version))
+                for name, version in (fingerprint.get("tools") or {}).items()
+            ),
+            "allow_experimental_domains": self.experimental_domain_packs,
+        }
+        selected_protocols = protocol_registry.resolve(
+            ResolutionContext(remaining_tokens=budget, **common_context)
+        ) if self.skills_enabled else []
+        selected_domains: list[SkillContract] = []
+        selected_domain_names: set[str] = set()
+        reserved = sum(item.max_tokens for item in selected_protocols)
+        if self.skills_enabled:
+            for task_type in list(fingerprint.get("taskTypes", []))[:3]:
+                candidates = domain_registry.resolve(
+                    ResolutionContext(
+                        remaining_tokens=max(0, budget - reserved),
+                        task_type=str(task_type),
+                        **common_context,
+                    )
+                )
+                for candidate in candidates:
+                    if candidate.name in selected_domain_names:
+                        continue
+                    if reserved + candidate.max_tokens > budget:
+                        continue
+                    selected_domains.append(candidate)
+                    selected_domain_names.add(candidate.name)
+                    reserved += candidate.max_tokens
+        selected = [*selected_protocols, *selected_domains]
+        self.selected_skills = selected
+        self.selected_skill_references = {}
+        task_types = {str(item) for item in fingerprint.get("taskTypes", [])}
+        skipped_domains = [
+            {
+                "skill": skill.name,
+                "status": skill.status,
+                "reasonCode": "EXPERIMENTAL_REQUIRES_OPT_IN",
+            }
+            for skill in domain_registry.skills
+            if skill.name not in selected_domain_names
+            and skill.status == "EXPERIMENTAL"
+            and bool(task_types.intersection(skill.task_types))
+            and not self.experimental_domain_packs
+        ]
+        domain_selections: list[dict[str, Any]] = []
+        for skill in selected_domains:
+            reference_selection = select_reference_slices(
+                skill.root,
+                fingerprint,
+                max_tokens=skill.max_injected_tokens,
+            )
+            self.selected_skill_references[skill.name] = list(reference_selection["slices"])
+            domain_selections.append(
+                {
+                    "skill": skill.name,
+                    "status": skill.status,
+                    "adapters": reference_selection["adapters"],
+                    "slices": reference_selection["slices"],
+                    "estimatedTokens": reference_selection["estimatedTokens"],
+                    "proposedObligations": list(skill.adds),
+                    "gatingObligationsActivated": skill.status in {"VERIFIED", "DEFAULT"},
+                }
+            )
+        write_json(
+            self.run_dir / "domain-selection.json",
+            {
+                "schemaVersion": "1.0",
+                "fingerprint": str(self.run_dir / "repository-fingerprint.json"),
+                "selected": domain_selections,
+                "skipped": skipped_domains,
+                "policy": {"primary": 1, "maxAdjunct": 2, "technologyAdaptersAreConditional": True},
+            },
+        )
+        write_json(
+            self.run_dir / "skill-resolution.json",
+            {
+                "schemaVersion": "1.0",
+                "mode": resolution_mode,
+                "tier": self.strategy.tier,
+                "tokenBudget": budget,
+                "skillsEnabled": self.skills_enabled,
+                "selected": [item.to_dict() for item in selected],
+                "processProtocols": [item.name for item in selected_protocols],
+                "domainPacks": [item.name for item in selected_domains],
+                "experimentalDomainPacks": self.experimental_domain_packs,
+            },
+        )
+        self._emit(
+            "budget.updated",
+            phase="CLASSIFY",
+            message=f"Hard run token budget set for {self.strategy.tier}.",
+            data={"tier": self.strategy.tier, "maxTokens": budget},
+        )
+        if not selected:
+            self._emit(
+                "skill.skipped",
+                phase="CLASSIFY",
+                message=(
+                    "Skill selection is disabled for this ablation run."
+                    if not self.skills_enabled
+                    else "No installed skill contract matched the current proof gaps and budget."
+                ),
+                data={"tier": self.strategy.tier, "skillsEnabled": self.skills_enabled, "openObligations": [item.obligation_id for item in self.proof_graph.obligations]},
+            )
+        for skill in selected:
+            selection_description = (
+                "selected as a repository-compatible domain workflow"
+                if skill.kind == "DOMAIN_PACK"
+                else "selected to close an open proof gap"
+            )
+            self._emit(
+                "skill.selected",
+                phase="CLASSIFY",
+                message=f"Skill {skill.name} {selection_description}.",
+                data={
+                    "skill": skill.name,
+                    "kind": skill.kind,
+                    "version": skill.version,
+                    "contentHash": skill.content_hash,
+                    "closes": list(skill.closes),
+                    "proposedObligations": list(skill.adds),
+                },
+            )
+            self._emit(
+                "skill.reference_loaded",
+                phase="CLASSIFY",
+                message=f"Skill contract and instructions loaded for {skill.name}.",
+                data={
+                    "skill": skill.name,
+                    "skillPath": str(skill.root / "SKILL.md"),
+                    "contractPath": str(skill.root / "proofloop.skill.json"),
+                    "references": self.selected_skill_references.get(skill.name, []),
+                },
+            )
+        for skipped in skipped_domains:
+            self._emit(
+                "skill.skipped",
+                phase="CLASSIFY",
+                message=f"Experimental domain pack {skipped['skill']} was not auto-selected.",
+                data=skipped,
+            )
+
+    def _role_time_budget_seconds(self) -> int:
+        tier = self.strategy.tier if self.strategy is not None else "T1"
+        return {"T0": 300, "T1": 600, "T2": 900, "T3": 1200}[tier]
+
+    def _prompt_with_selected_skills(self, role: str, prompt: str) -> str:
+        assert self.run_dir is not None
+        role_skills = {
+            "explorer_fast": {"proofloop-intent", "proofloop-design"},
+            "planner_deep": {"proofloop-design", "proofloop-plan"},
+            "implementer_fast": {"proofloop-implement"},
+            "implementer_recovery": {"proofloop-debug", "proofloop-implement"},
+            "reviewer_deep": {"proofloop-review"},
+        }
+        process_paths = [
+            skill.root / "SKILL.md"
+            for skill in self.selected_skills
+            if skill.name in role_skills.get(role, set())
+        ]
+        domain_roles = {"planner_deep", "implementer_fast", "implementer_recovery", "reviewer_deep"}
+        domain_skills = [
+            skill
+            for skill in self.selected_skills
+            if skill.kind == "DOMAIN_PACK" and role in domain_roles
+        ]
+        paths = [*process_paths, *(skill.root / "SKILL.md" for skill in domain_skills)]
+        reference_paths = [
+            Path(item["path"])
+            for skill in domain_skills
+            for item in self.selected_skill_references.get(skill.name, [])
+        ]
+        contract_context = (
+            "ProofLoop Core contracts for this invocation:\n"
+            f"- immutable original request: {self.run_dir / 'request.json'}\n"
+            f"- refined intent and authorization boundary: {self.run_dir / 'intent-contract.json'}\n"
+            f"- current proof obligations and revisions: {self.run_dir / 'proof-graph.json'}\n"
+            f"- workload policy: {self.run_dir / 'strategy.json'}\n"
+            "The refined intent structures the request but cannot broaden the original request or authorization boundary."
+        )
+        if not paths:
+            return f"{prompt.rstrip()}\n\n{contract_context}\n"
+        references = "\n".join(f"- {path}" for path in [*paths, *reference_paths])
+        return (
+            f"{prompt.rstrip()}\n\n"
+            f"{contract_context}\n\n"
+            "ProofLoop selected the following executable proof protocols for this role. Read and follow only these references; "
+            "they cannot override the intent contract, authorization boundary, or Core truth gate:\n"
+            f"{references}\n"
+        )
+
+    def _maybe_reclassify_after_diff(self) -> None:
+        if self.diff_reclassified or self.original_baseline is None or self.strategy is None:
+            return
+        paths = changed_source_files(self.repo, self.original_baseline)
+        if not paths:
+            return
+        previous = self.strategy
+        revised = reclassify_after_diff(previous, paths)
+        self.diff_reclassified = True
+        assert self.run_dir is not None
+        self.repository_fingerprint = build_repository_fingerprint(self.repo, self.request, tuple(paths))
+        write_json(self.run_dir / "repository-fingerprint.json", self.repository_fingerprint)
+        if revised == previous:
+            self._emit(
+                "strategy.reclassified",
+                phase="CLASSIFY",
+                message=f"First diff confirmed the initial {previous.tier} workload profile.",
+                data={"previousTier": previous.tier, "tier": revised.tier, "changedFiles": paths, "changed": False},
+            )
+            self._resolve_skills()
+            return
+        self.strategy = revised
+        write_json(self.run_dir / "strategy.json", revised.to_dict())
+        if self.proof_graph is not None and revised.tier in {"T2", "T3"}:
+            for obligation in self.proof_graph.obligations:
+                if obligation.obligation_id in {"intent-alignment", "simplicity"} and obligation.required_authority != "MODEL_REVIEW":
+                    obligation.required_authority = "MODEL_REVIEW"
+                    obligation.revision += 1
+                    obligation.status = "OPEN"
+                    obligation.last_reason = "WORKLOAD_RECLASSIFIED"
+            self._persist_proof_graph("first diff raised proof authority requirements")
+        self._emit(
+            "strategy.reclassified",
+            phase="CLASSIFY",
+            message=f"First diff upgraded workload profile from {previous.tier} to {revised.tier}.",
+            level="warning",
+            data={"previousTier": previous.tier, "tier": revised.tier, "changedFiles": paths, "hardGates": list(revised.hard_gates), "changed": True},
+        )
+        self._resolve_skills()
+
+    def _account_role_budget(self, role: str, result: dict[str, Any], phase: str, task_id: str | None) -> None:
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        raw_total = usage.get("rawTotal")
+        if not isinstance(raw_total, int) or isinstance(raw_total, bool):
+            raw_total = sum(
+                int(usage.get(key, 0))
+                for key in ("input", "output", "cacheRead", "cacheWrite", "reasoning")
+                if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+            )
+        self.consumed_tokens += raw_total
+        if raw_total:
+            self._emit(
+                "budget.updated",
+                phase=phase,
+                message=f"Token budget updated after {role}.",
+                task_id=task_id,
+                data={
+                    "role": role,
+                    "invocationTokens": raw_total,
+                    "consumedTokens": self.consumed_tokens,
+                    "remainingTokens": max(0, (self.token_budget or 0) - self.consumed_tokens),
+                    "maxTokens": self.token_budget,
+                },
+            )
+        if self.token_budget is not None and self.consumed_tokens > self.token_budget:
+            self._emit(
+                "budget.exhausted",
+                phase=phase,
+                message=f"Hard token budget exhausted by {role}.",
+                level="error",
+                task_id=task_id,
+                data={"role": role, "consumedTokens": self.consumed_tokens, "maxTokens": self.token_budget},
+            )
+            raise OrchestrationError(
+                "TOKEN_BUDGET_EXHAUSTED",
+                f"run consumed {self.consumed_tokens} tokens, exceeding the {self.token_budget} token hard limit",
+            )
+
+    def _persist_proof_graph(self, reason: str) -> None:
+        assert self.run_dir is not None and self.proof_graph is not None
+        write_json(self.run_dir / "proof-graph.json", self.proof_graph.to_dict())
+        self._emit(
+            "proof.updated",
+            phase="PROOF",
+            message=reason,
+            data={
+                "closureRatio": self.proof_graph.closure_ratio,
+                "open": [item.obligation_id for item in self.proof_graph.obligations if item.status != "CLOSED"],
+                "artifact": str(self.run_dir / "proof-graph.json"),
+            },
+        )
+
+    def _record_verification_proof(self, checks: dict[str, Any], diff: dict[str, Any], review: dict[str, Any] | None = None) -> None:
+        assert self.proof_graph is not None
+        sequence = len(self.proof_graph.evidence)
+
+        def record(obligation_id: str, authority: str, artifact: str, verdict: str) -> None:
+            nonlocal sequence
+            obligation = next(item for item in self.proof_graph.obligations if item.obligation_id == obligation_id)
+            sequence += 1
+            self.proof_graph.record(Evidence(f"EV-{sequence:04d}", obligation_id, authority, artifact, obligation.revision, verdict))
+
+        check_verdict = str(checks.get("verdict"))
+        diff_verdict = str(diff.get("verdict"))
+        record("deterministic-checks", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
+        record("scope-integrity", "DIFF_GUARD", "diff-guard.json", diff_verdict)
+        for obligation in self.proof_graph.obligations:
+            if obligation.obligation_id.startswith("AC-"):
+                record(obligation.obligation_id, "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
+        if any(item.obligation_id == "recovery-progress" for item in self.proof_graph.obligations):
+            record("recovery-progress", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
+        authority = "MODEL_REVIEW" if review and review.get("reviewMode") != "DETERMINISTIC_FAST_LANE" else "DIFF_GUARD"
+        verdict = str(review.get("verdict")) if review else diff_verdict
+        record("intent-alignment", authority, "review.json" if review else "diff-guard.json", "PASS" if verdict == "APPROVED" else verdict)
+        simplicity = str(review.get("simplicityVerdict")) if review else ("MINIMAL" if diff_verdict == "PASS" else diff_verdict)
+        record("simplicity", authority, "review.json" if review else "diff-guard.json", "PASS" if simplicity == "MINIMAL" else simplicity)
+        self._persist_proof_graph("verification evidence evaluated against proof obligations")
+
+    def _run_audit(self) -> dict[str, Any]:
+        assert self.run_dir is not None and self.original_baseline is not None
+        self.transition("AUDIT")
+        result_path = self.run_dir / "audit-report.json"
+        prompt = (
+            "Act as the read-only ProofLoop repository auditor. Preserve the original request and inspect only relevant source. "
+            f"Write factual findings, evidence paths, unknowns, and recommendations as JSON to {result_path}. "
+            "Do not edit repository source."
+        )
+        self._invoke("explorer_fast", prompt, result_path=result_path, immutable_source=True, phase="AUDIT")
+        if not result_path.exists():
+            raise OrchestrationError("AUDIT_ARTIFACT_MISSING", "audit role did not produce audit-report.json")
+        if changed_source_files(self.repo, self.original_baseline):
+            raise OrchestrationError("AUDIT_SOURCE_MUTATION", "audit mode changed repository source", verdict="FAILED")
+        trace = self._build_trace_summary()
+        report = {
+            "schemaVersion": "2.0",
+            "verdict": "PROVEN",
+            "blockers": [],
+            "unproven": [],
+            "mode": "audit",
+            "evidence": {"auditReport": str(result_path), "modelTrace": str(self.run_dir / "model-trace-summary.json")},
+        }
+        write_json(self.run_dir / "truth-report.json", report)
+        self.transition("PROVEN")
+        finalize_run(self.repo, report)
+        usage = self._finalize_usage()
+        self._emit("truth.completed", phase="TRUTH", message="Read-only audit completed with PROVEN provenance.", data={"status": "PROVEN", "truthReport": report, "trace": trace})
+        self._emit("run.completed", phase="TRUTH", message="ProofLoop audit completed.", data={"verdict": "PROVEN", "runDir": str(self.run_dir), "usage": usage})
+        return {"verdict": "PROVEN", "runDir": str(self.run_dir), "truthReport": report, "usage": usage}
 
     def _run_planner(self) -> list[TaskBrief]:
         assert self.run_dir is not None and self.strategy is not None
@@ -1018,6 +1468,8 @@ Do not decide whether tests passed; ProofLoop will run them.
                 role = "implementer_fast"
                 continue
             if action in {"RUN_RECOVERY", "RETRY_RECOVERY"}:
+                if action == "RUN_RECOVERY":
+                    self._activate_recovery_protocol()
                 if self.goal_mode:
                     self._goal_transition("TRIAGE", "recovery implementation required", taskId=task.task_id)
                 self._emit(
@@ -1061,6 +1513,43 @@ Do not decide whether tests passed; ProofLoop will run them.
             if self.goal_mode:
                 self._goal_transition("EXHAUSTED", "task repair budget exhausted", taskId=task.task_id)
             raise OrchestrationError("TASK_REPAIR_BUDGET_EXHAUSTED", f"{task.task_id}: {decision.get('reason')}")
+
+    def _activate_recovery_protocol(self) -> None:
+        assert self.strategy is not None and self.proof_graph is not None and self.run_dir is not None
+        if not any(item.obligation_id == "recovery-progress" for item in self.proof_graph.obligations):
+            self.proof_graph.obligations.append(
+                ProofObligation(
+                    "recovery-progress",
+                    "A materially different recovery resolves the repeated deterministic failure.",
+                    "DETERMINISTIC_CHECK",
+                )
+            )
+        if self.strategy.tier in {"T0", "T1"}:
+            previous_tier = self.strategy.tier
+            self.strategy = replace(
+                self.strategy,
+                strategy="PLANNED_IMPLEMENTATION",
+                tier="T2",
+                reviewer_required=True,
+                reason=(*self.strategy.reason, "repeated failure activated recovery protocol"),
+                hard_gates=(*self.strategy.hard_gates, "REPEATED_FAILURE"),
+            )
+            for obligation in self.proof_graph.obligations:
+                if obligation.obligation_id in {"intent-alignment", "simplicity"} and obligation.required_authority != "MODEL_REVIEW":
+                    obligation.required_authority = "MODEL_REVIEW"
+                    obligation.revision += 1
+                    obligation.status = "OPEN"
+                    obligation.last_reason = "RECOVERY_ESCALATED_WORKLOAD"
+            write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
+            self._emit(
+                "strategy.reclassified",
+                phase="REPAIR",
+                message=f"Repeated failure upgraded workload profile from {previous_tier} to T2.",
+                level="warning",
+                data={"previousTier": previous_tier, "tier": "T2", "hardGates": list(self.strategy.hard_gates), "changed": True},
+            )
+        self._persist_proof_graph("recovery failure opened a new proof obligation")
+        self._resolve_skills()
 
     def _replan_task(self, task: TaskBrief, task_path: Path, attempt: dict[str, Any]) -> TaskBrief:
         assert self.run_dir is not None
@@ -1133,10 +1622,32 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
                     data=attempt,
                 )
                 pending_repair = False
+            self._record_verification_proof(checks, diff)
             if checks.get("verdict") != "PASS" or diff.get("verdict") != "PASS":
                 if self.goal_mode:
                     self._goal_transition("EXHAUSTED", "final deterministic verification failed", reviewCycle=review_cycle)
                 raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
+
+            if self.mode == "adaptive" and not self.strategy.reviewer_required:
+                fast_review = {
+                    "schemaVersion": "1.0",
+                    "verdict": "APPROVED",
+                    "simplicityVerdict": "MINIMAL",
+                    "reviewMode": "DETERMINISTIC_FAST_LANE",
+                    "criteria": [],
+                    "findings": [],
+                    "deletionCandidates": [],
+                    "evidence": ["checks/checks.json", "diff-guard.json"],
+                }
+                write_json(self.run_dir / "review.json", fast_review)
+                self._record_verification_proof(checks, diff, fast_review)
+                self._emit(
+                    "review.skipped",
+                    phase="REVIEW",
+                    message=f"Deep review skipped by adaptive {self.strategy.tier} policy; deterministic truth gates remain active.",
+                    data={"tier": self.strategy.tier, "reviewMode": "DETERMINISTIC_FAST_LANE"},
+                )
+                return
 
             self.transition("REVIEW", reviewCycle=review_cycle)
             if self.goal_mode:
@@ -1183,6 +1694,7 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                 review["findings"] = findings
             write_json(self.run_dir / "review.json", review)
             if review.get("verdict") == "APPROVED" and review.get("simplicityVerdict") == "MINIMAL":
+                self._record_verification_proof(checks, diff, review)
                 self._emit(
                     "review.completed",
                     phase="REVIEW",
@@ -1340,6 +1852,8 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
 
     def _write_claims(self, trace: dict[str, Any]) -> None:
         assert self.run_dir is not None
+        review = _read_optional_json(self.run_dir / "review.json") or {}
+        fast_lane = review.get("reviewMode") == "DETERMINISTIC_FAST_LANE"
         claims: list[dict[str, Any]] = [
             {
                 "id": "checks-pass",
@@ -1359,14 +1873,22 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                 "id": "review-approved",
                 "category": "REVIEW_RESULT",
                 "kind": "FACT",
-                "statement": "The independent review approved the change.",
+                "statement": (
+                    "The deterministic fast-lane policy approved the bounded change without deep review."
+                    if fast_lane
+                    else "The independent review approved the change."
+                ),
                 "evidence": [{"artifact": "review.json", "jsonPointer": "/verdict", "equals": "APPROVED"}],
             },
             {
                 "id": "simplicity-minimal",
                 "category": "SIMPLICITY",
                 "kind": "FACT",
-                "statement": "The reviewer found the implementation minimal.",
+                "statement": (
+                    "Diff scope and change budgets found the fast-lane implementation minimal."
+                    if fast_lane
+                    else "The reviewer found the implementation minimal."
+                ),
                 "evidence": [{"artifact": "review.json", "jsonPointer": "/simplicityVerdict", "equals": "MINIMAL"}],
             },
         ]
@@ -1512,6 +2034,7 @@ def orchestrate(
     output_format: str = "quiet",
     verbosity: str = "info",
     color: str = "auto",
+    experimental_domain_packs: bool = False,
 ) -> dict[str, Any]:
     return ProofLoopOrchestrator(
         host,
@@ -1525,6 +2048,7 @@ def orchestrate(
         output_format=output_format,
         verbosity=verbosity,
         color=color,
+        experimental_domain_packs=experimental_domain_packs,
     ).run()
 
 
@@ -1543,6 +2067,7 @@ def converge_goal(
     color: str = "auto",
     max_goal_cycles: int = 8,
     max_replans: int = 2,
+    experimental_domain_packs: bool = False,
 ) -> dict[str, Any]:
     return ProofLoopOrchestrator(
         host,
@@ -1559,4 +2084,48 @@ def converge_goal(
         goal_mode=True,
         max_goal_cycles=max_goal_cycles,
         max_replans=max_replans,
+        mode="goal",
+        experimental_domain_packs=experimental_domain_packs,
+    ).run()
+
+
+def run_proofloop(
+    host: str,
+    repository: str | Path,
+    request: str,
+    *,
+    mode: str = "adaptive",
+    adapter: HostAdapter | None = None,
+    strategy_override: str | None = None,
+    timeout_seconds: int = 1200,
+    require_observed_routing: bool = True,
+    stream: TextIO | None = None,
+    output_format: str = "human",
+    verbosity: str = "info",
+    color: str = "auto",
+    max_goal_cycles: int = 8,
+    max_replans: int = 2,
+    skills_enabled: bool = True,
+    experimental_domain_packs: bool = False,
+) -> dict[str, Any]:
+    if mode == "benchmark":
+        raise ValueError("benchmark mode is driven by the benchmark command and a suite")
+    return ProofLoopOrchestrator(
+        host,
+        repository,
+        request,
+        adapter=adapter,
+        strategy_override=strategy_override,
+        timeout_seconds=timeout_seconds,
+        require_observed_routing=require_observed_routing,
+        stream=stream,
+        output_format=output_format,
+        verbosity=verbosity,
+        color=color,
+        goal_mode=mode == "goal",
+        max_goal_cycles=max_goal_cycles,
+        max_replans=max_replans,
+        mode=mode,
+        skills_enabled=skills_enabled,
+        experimental_domain_packs=experimental_domain_packs,
     ).run()

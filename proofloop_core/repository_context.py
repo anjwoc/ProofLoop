@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,18 @@ def _has_source(root: Path) -> bool:
         if any(Path(name).suffix in SOURCE_SUFFIXES for name in files):
             return True
     return False
+
+
+def get_files_by_extension(root: str | Path, extensions: Iterable[str]) -> list[Path]:
+    normalized = {f".{ext.strip().lstrip('.')}" for ext in extensions}
+    root_path = Path(root).resolve()
+    results = []
+    for current, dirs, files in os.walk(root_path):
+        dirs[:] = [d for d in dirs if d not in SKIP]
+        for name in files:
+            if Path(name).suffix in normalized:
+                results.append((Path(current) / name).resolve())
+    return sorted(results)
 
 
 def ensure_codegraph(repository: str | Path, output: str | Path, *, required: bool = True, mock: bool = False) -> dict[str, Any]:

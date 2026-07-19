@@ -22,6 +22,8 @@ def build_truth_report(run_dir: str | Path) -> dict[str, Any]:
     diff = _load_optional(root / "diff-guard.json")
     review = _load_optional(root / "review.json")
     trace = _load_optional(root / "model-trace-summary.json")
+    intent = _load_optional(root / "intent-contract.json")
+    proof_graph = _load_optional(root / "proof-graph.json")
     assurance = build_assurance_report(root)
 
     blockers: list[str] = []
@@ -42,6 +44,16 @@ def build_truth_report(run_dir: str | Path) -> dict[str, Any]:
         unproven.append("MODEL_TRACE_MISSING")
     elif trace.get("routingClaimed") and not trace.get("routingObserved"):
         unproven.append("MODEL_ROUTING_UNPROVEN")
+    if intent is not None:
+        if not proof_graph:
+            blockers.append("PROOF_GRAPH_MISSING")
+        else:
+            open_obligations = [
+                str(item.get("id"))
+                for item in proof_graph.get("obligations", [])
+                if isinstance(item, dict) and item.get("status") != "CLOSED"
+            ]
+            blockers.extend(f"PROOF_OBLIGATIONS_OPEN:{item}" for item in open_obligations)
 
     blockers.extend(assurance.get("blocking", []))
     unproven.extend(assurance.get("unproven", []))
@@ -63,6 +75,7 @@ def build_truth_report(run_dir: str | Path) -> dict[str, Any]:
             "diffGuard": str(root / "diff-guard.json") if diff else None,
             "review": str(root / "review.json") if review else None,
             "modelTrace": str(root / "model-trace-summary.json") if trace else None,
+            "proofGraph": str(root / "proof-graph.json") if proof_graph else None,
             "claims": str(root / "claims.json") if (root / "claims.json").exists() else None,
             "assurance": str(root / "assurance-report.json"),
         },

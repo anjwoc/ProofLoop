@@ -1,0 +1,13 @@
+{
+  "name": "proofloop-local",
+  "private": true,
+  "version": "0.4.0-alpha",
+  "description": "Local installation shortcuts for ProofLoop Core",
+  "scripts": {
+    "proofloop:install": "python3 scripts/install.py --host all",
+    "proofloop:install:no-tokscale": "python3 scripts/install.py --host all --without-tokscale",
+    "proofloop:build": "python3 scripts/install.py --host all --build-only --without-tokscale",
+    "proofloop:doctor": "python3 scripts/doctor.py",
+    "test": "python3 scripts/run_tests.py"
+  }
+}

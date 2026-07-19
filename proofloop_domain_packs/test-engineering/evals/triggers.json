@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","positive":["Add regression tests for this bug","Fix a flaky async test","Choose the right integration test boundary","Add a negative authorization test","Prove a retry test detects duplicate effects"],"negative":["Deploy a service","Restyle a page","Add a database endpoint implementation","Review documentation prose","Change a CI permission only"]}

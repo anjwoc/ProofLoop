@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","positive":["Review this code diff","Audit the patch for regressions","Inspect this pull request for security issues","Check intent alignment and overbuild","Review test evidence before approval"],"negative":["Implement a backend endpoint","Create a frontend page","Deploy this manifest","Write a new test suite","Generate a project plan"]}

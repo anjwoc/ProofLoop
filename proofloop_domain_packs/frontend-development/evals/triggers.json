@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","positive":["Add a frontend settings form","Fix keyboard navigation in a dialog","Implement a loading and error state","Add a responsive dashboard component","Wire a retry button to the existing query"],"negative":["Add a database migration","Change a Kubernetes overlay","Review backend code only","Write a CLI unit test","Update release documentation"]}

@@ -47,17 +47,14 @@ if "--model" in args:
 prompt = args[-1]
 if Path(sys.argv[0]).name == "agy" and not prompt:
     prompt = sys.stdin.read()
-match = re.search(r"exact absolute path before finishing: (.+?)\. Do not write", prompt, re.S)
-result_path = Path(match.group(1).strip()) if match else None
 repo = Path.cwd()
 
 if "read-only ProofLoop explorer" in prompt:
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({
+    result_payload = {
         "schemaVersion": "1.0", "entryPoints": ["src/value.py"],
         "impactedFiles": ["src/value.py"], "tests": ["tests/test_value.py"],
         "constraints": ["bounded fixture"], "openRisks": []
-    }), encoding="utf-8")
+    }
 elif "deep planner" in prompt:
     plan = {
         "schemaVersion": "1.0", "verdict": "READY", "summary": "bounded fixture plan",
@@ -70,8 +67,7 @@ elif "deep planner" in prompt:
             "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1}
         }]
     }
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps(plan), encoding="utf-8")
+    result_payload = plan
 elif "Role: implementer_fast" in prompt:
     count_path = repo / ".proofloop" / "fake-fast-count"
     count_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,12 +75,10 @@ elif "Role: implementer_fast" in prompt:
     count_path.write_text(str(count), encoding="utf-8")
     if os.environ.get("FAKE_PROOFLOOP_RECOVERY") != "1":
         (repo / "src" / "value.py").write_text('def get_value():\n    return "fixed"\n', encoding="utf-8")
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({"status":"DONE","classification":"LOCAL_IMPLEMENTATION"}), encoding="utf-8")
+    result_payload = {"status":"DONE","classification":"LOCAL_IMPLEMENTATION"}
 elif "Role: implementer_recovery" in prompt:
     (repo / "src" / "value.py").write_text('def get_value():\n    return "fixed"\n', encoding="utf-8")
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({"status":"DONE","classification":"LOCAL_IMPLEMENTATION"}), encoding="utf-8")
+    result_payload = {"status":"DONE","classification":"LOCAL_IMPLEMENTATION"}
 elif "final reviewer" in prompt:
     contracts = sorted((repo / ".proofloop" / "runs").glob("*/goal-contract.json"))
     criteria = []
@@ -94,12 +88,14 @@ elif "final reviewer" in prompt:
             {"id": item["criterion_id"], "status": "SATISFIED", "evidence": ["fixture"]}
             for item in contract.get("criteria", [])
         ]
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    result_path.write_text(json.dumps({"verdict":"APPROVED","simplicityVerdict":"MINIMAL","criteria":criteria,"findings":[],"deletionCandidates":[]}), encoding="utf-8")
+    result_payload = {"verdict":"APPROVED","simplicityVerdict":"MINIMAL","criteria":criteria,"findings":[],"deletionCandidates":[]}
 else:
     print("unknown role prompt", file=sys.stderr)
     raise SystemExit(3)
 
+print("PROOFLOOP_RESULT_BEGIN")
+print(json.dumps(result_payload))
+print("PROOFLOOP_RESULT_END")
 if Path(sys.argv[0]).name == "codex":
     print(json.dumps({"type": "thread.started", "model": model}))
     print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "fixture live output"}}))

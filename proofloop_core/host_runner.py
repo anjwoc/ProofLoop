@@ -73,11 +73,9 @@ def invoke_role(
     message = prompt or _default_prompt(role, task_path or os.environ.get("PROOFLOOP_TASK_PATH"), root)
     repo = Path(repository).resolve()
     if host == "codex":
-        # Planner/reviewer need to write run artifacts under .proofloop. The
-        # orchestrator snapshots source before read-only roles and rejects any
-        # production mutation, so workspace-write is safe and observable.
+        sandbox = "read-only" if access_mode == "read-only" else "workspace-write"
         command = [
-            str(executable), *fixed_args, "exec", "--json", "--ephemeral", "--sandbox", "workspace-write",
+            str(executable), *fixed_args, "exec", "--json", "--ephemeral", "--sandbox", sandbox,
             "--model", model, message,
         ]
     elif host == "antigravity":

@@ -16,6 +16,21 @@ def exists(path: Path) -> dict[str, object]:
     return {"path": str(path), "exists": path.exists()}
 
 
+def claude_entry_skill(home: Path) -> Path:
+    direct = home / ".claude" / "plugins" / "proofloop" / "skills" / "proofloop" / "SKILL.md"
+    registry = home / ".claude" / "plugins" / "installed_plugins.json"
+    if registry.exists():
+        try:
+            installs = json.loads(registry.read_text(encoding="utf-8"))["plugins"]["proofloop@proofloop-local"]
+            for install in reversed(installs):
+                candidate = Path(install["installPath"]) / "skills" / "proofloop" / "SKILL.md"
+                if candidate.exists():
+                    return candidate
+        except (KeyError, TypeError, ValueError, OSError):
+            pass
+    return direct
+
+
 home = Path.home()
 proofloop_home = runtime_home()
 result = {
@@ -28,7 +43,7 @@ result = {
         "claude-code": {
             **probe("claude-code"),
             "defaultProofLoopMode": "EXTERNAL_MODEL_ROUTING",
-            "entrySkill": exists(home / ".claude" / "plugins" / "proofloop" / "skills" / "proofloop" / "SKILL.md"),
+            "entrySkill": exists(claude_entry_skill(home)),
             "invocation": "/proofloop <request>",
         },
         "codex": {
@@ -39,7 +54,7 @@ result = {
             "agents": exists(home / ".codex" / "agents" / "proofloop_planner_deep.toml"),
             "marketplace": exists(home / ".agents" / "plugins" / "marketplace.json"),
             "invocation": "$proofloop <request> or /skills",
-            "note": "The default skill calls proofloop-core goal, which launches isolated role sessions until the goal contract converges or exhausts its budget. Custom agents remain optional native integration artifacts.",
+            "note": "The default skill calls proofloop-core run --mode adaptive, which selects bounded roles from the workload profile and proof gaps. Explicit goal mode continues until convergence or budget exhaustion.",
         },
         "antigravity": {
             **probe("antigravity"),
@@ -64,7 +79,8 @@ result = {
         "deterministicVerification": "PROVEN_BY_LOCAL_TESTS",
         "authenticatedCodexLiveE2E": "UNPROVEN_UNTIL_USER_RUN",
         "authenticatedAntigravityLiveE2E": "UNPROVEN_UNTIL_USER_RUN",
-        "repositoryAnalysisOrchestration": "NOT_IMPLEMENTED_BLOCKS_HONESTLY",
+        "repositoryAuditMode": "IMPLEMENTED_READ_ONLY",
+        "legacyAnalysisStrategy": "BLOCKED_OUTSIDE_AUDIT_MODE",
     },
 }
 print(json.dumps(result, indent=2, ensure_ascii=False))

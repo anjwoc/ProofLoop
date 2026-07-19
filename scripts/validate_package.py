@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from proofloop_core.skill_registry import SkillRegistry
 errors: list[str] = []
 
 
@@ -27,7 +29,7 @@ def frontmatter(path: Path) -> dict[str, str]:
     return result
 
 
-for path in sorted((ROOT / "skills").glob("*/SKILL.md")):
+for path in sorted((ROOT / "skills").glob("*/SKILL.md")) + sorted((ROOT / "proofloop_domain_packs").glob("*/SKILL.md")):
     meta = frontmatter(path)
     for field in ("name", "description"):
         if not meta.get(field):
@@ -55,25 +57,31 @@ for path in (ROOT / "plugin" / "plugin.json", ROOT / "plugin" / "marketplace.jso
         errors.append(f"{path.relative_to(ROOT)}: description required")
 
 source_files = [p for p in ROOT.rglob("*") if p.is_file() and "dist" not in p.parts and "__pycache__" not in p.parts]
-runtime_roots = {"proofloop_core", "scripts", "skills", "agents", "hooks", "plugin"}
+runtime_roots = {"proofloop_core", "scripts", "skills", "proofloop_protocols", "proofloop_domain_packs", "agents", "hooks", "plugin"}
 runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runtime_roots]
-runtime_file_budget = 80
+runtime_file_budget = 155
 if len(runtime_files) > runtime_file_budget:
     errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
 
 
 required_fragments = {
     ROOT / "skills" / "proofloop" / "SKILL.md": [
-        "proofloop-core goal",
+        "proofloop-core run",
+        "--mode <adaptive-or-goal-or-audit>",
         "Do not synthesize",
         "--output-format human",
         "--verbosity info",
         "--color auto",
         "truth-report.json",
     ],
-    ROOT / "skills" / "using-proofloop" / "SKILL.md": ["Compatibility alias", "proofloop"],
-    ROOT / "skills" / "proofloop-planning" / "SKILL.md": ["Minimum-solution ladder", "change budget"],
-    ROOT / "skills" / "proofloop-truth-gate" / "SKILL.md": ["FACT", "INFERENCE", "UNKNOWN", "simplicityVerdict"],
+    ROOT / "proofloop_protocols" / "proofloop-design" / "SKILL.md": ["Core principle", "Decision procedure", "Stop and escalate", "Completion checklist"],
+    ROOT / "proofloop_protocols" / "proofloop-debug" / "SKILL.md": ["red loop", "fingerprint", "falsifiable hypothesis"],
+    ROOT / "proofloop_protocols" / "proofloop-verify" / "SKILL.md": ["Evidence authority", "Freshness rules", "UNVERIFIABLE"],
+    ROOT / "proofloop_domain_packs" / "backend-development" / "SKILL.md": ["public contract", "Stop and escalate", "Django"],
+    ROOT / "proofloop_domain_packs" / "frontend-development" / "SKILL.md": ["accessibility", "user-observable states"],
+    ROOT / "proofloop_domain_packs" / "devops-delivery" / "SKILL.md": ["rollback", "Never \"test\" by deploying"],
+    ROOT / "proofloop_domain_packs" / "test-engineering" / "SKILL.md": ["red case", "nondeterminism"],
+    ROOT / "proofloop_domain_packs" / "code-review" / "SKILL.md": ["real diff", "Finding contract"],
     ROOT / "agents" / "reviewer-deep.md": ["OVERBUILT", "deletionCandidates"],
 }
 for path, fragments in required_fragments.items():
@@ -95,7 +103,7 @@ except Exception as exc:
     errors.append(f"examples/task-briefs/python-example.json: invalid JSON: {exc}")
 
 manual_pass_pattern = re.compile(r"verify\s+--status|--status\s+pass", re.I)
-for path in list((ROOT / "skills").rglob("*.md")) + list((ROOT / "proofloop_core").rglob("*.py")):
+for path in list((ROOT / "skills").rglob("*.md")) + list((ROOT / "proofloop_protocols").rglob("*.md")) + list((ROOT / "proofloop_domain_packs").rglob("*.md")) + list((ROOT / "proofloop_core").rglob("*.py")):
     if manual_pass_pattern.search(path.read_text(encoding="utf-8")):
         errors.append(f"{path.relative_to(ROOT)}: manual PASS interface is forbidden")
 
@@ -112,10 +120,58 @@ for path in required_host_files:
     if not path.exists():
         errors.append(f"{path.relative_to(ROOT)}: required host adapter file missing")
 
-for path in (ROOT / "skills").rglob("SKILL.md"):
+for path in list((ROOT / "skills").rglob("SKILL.md")) + list((ROOT / "proofloop_protocols").rglob("SKILL.md")) + list((ROOT / "proofloop_domain_packs").rglob("SKILL.md")):
     text = path.read_text(encoding="utf-8")
     if "python3 scripts/" in text:
         errors.append(f"{path.relative_to(ROOT)}: installed skill must use proofloop-core sidecar, not repository-relative scripts")
+
+try:
+    registry = SkillRegistry.discover(ROOT / "proofloop_protocols")
+    required_builtin = {
+        "proofloop-intent",
+        "proofloop-design",
+        "proofloop-plan",
+        "proofloop-implement",
+        "proofloop-debug",
+        "proofloop-review",
+        "proofloop-verify",
+    }
+    observed_builtin = {item.name for item in registry.skills}
+    if observed_builtin != required_builtin:
+        errors.append(f"proofloop_protocols: built-in protocol contracts mismatch: {sorted(observed_builtin)}")
+except Exception as exc:
+    errors.append(f"proofloop_protocols: invalid ProofLoop skill contract: {exc}")
+
+try:
+    domain_registry = SkillRegistry.discover(ROOT / "proofloop_domain_packs")
+    required_domains = {
+        "backend-development",
+        "frontend-development",
+        "devops-delivery",
+        "test-engineering",
+        "code-review",
+    }
+    observed_domains = {item.name for item in domain_registry.skills}
+    if observed_domains != required_domains:
+        errors.append(f"proofloop_domain_packs: built-in domain contracts mismatch: {sorted(observed_domains)}")
+    if any(item.kind != "DOMAIN_PACK" for item in domain_registry.skills):
+        errors.append("proofloop_domain_packs: every built-in must be kind DOMAIN_PACK")
+    for skill in domain_registry.skills:
+        triggers_path = skill.root / "evals" / "triggers.json"
+        behavior_path = skill.root / "evals" / "behavior.json"
+        try:
+            triggers = json.loads(triggers_path.read_text(encoding="utf-8"))
+            behavior = json.loads(behavior_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            errors.append(f"{skill.name}: invalid or missing eval fixture: {exc}")
+            continue
+        if triggers.get("schemaVersion") != "1.0" or len(triggers.get("positive", [])) < 5 or len(triggers.get("negative", [])) < 5:
+            errors.append(f"{skill.name}: trigger eval needs schemaVersion 1.0 and at least 5 positive/negative cases")
+        scenarios = behavior.get("scenarios", [])
+        if behavior.get("schemaVersion") != "1.0" or len(scenarios) < 3:
+            errors.append(f"{skill.name}: behavior eval needs schemaVersion 1.0 and at least 3 scenarios")
+except Exception as exc:
+    errors.append(f"proofloop_domain_packs: invalid ProofLoop domain contract: {exc}")
 
 entry_text = (ROOT / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
 if "invoke-role" in entry_text and "Do not manually call `invoke-role`" not in entry_text:

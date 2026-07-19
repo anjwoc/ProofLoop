@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","adapters":[{"id":"github-actions","signals":["delivery:github-actions"]},{"id":"kustomize-5","signals":["framework:kustomize"],"framework":{"name":"kustomize","range":">=5 <6"}},{"id":"flux-2","signals":["framework:flux"],"framework":{"name":"flux","range":">=2 <3"}}]}

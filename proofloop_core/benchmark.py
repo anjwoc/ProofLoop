@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import random
@@ -14,15 +15,50 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from .benchmark_environment import SWETrialEnvironment, materialize_repository
 from .host_runner import invoke_role
 from .io import write_json
-from .orchestrator import converge_goal
+from .orchestrator import converge_goal, run_proofloop
 from .run_state import start_run
 from .tokscale import TokScaleAdapter
 from .usage import build_usage_summary
+from .domain_runtime import build_repository_fingerprint, select_reference_slices
+from .skill_registry import ResolutionContext, SkillRegistry
 
 
 ROLES = ("planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep")
+
+
+def build_trial_schedule(
+    tasks: list[dict[str, Any]],
+    *,
+    modes: tuple[str, ...],
+    repetitions: int,
+    policies: tuple[str, ...],
+    include_official_skill: bool,
+    seed: int,
+) -> list[dict[str, Any]]:
+    rng = random.Random(seed)
+    schedule: list[dict[str, Any]] = []
+    for selected_mode in modes:
+        for repetition in range(1, repetitions + 1):
+            for task in tasks:
+                arms = [f"single-no-skill-{selected_mode}"]
+                arms.append(f"single-proofloop-domain-{selected_mode}")
+                if include_official_skill:
+                    arms.append(f"single-official-skill-{selected_mode}")
+                arms.extend(f"proofloop-{policy}-{selected_mode}" for policy in policies)
+                rng.shuffle(arms)
+                schedule.extend(
+                    {
+                        "mode": selected_mode,
+                        "repetition": repetition,
+                        "task": task,
+                        "arm": arm,
+                    }
+                    for arm in arms
+                )
+    return schedule
 
 
 def load_benchmark_suite(path: str | Path) -> dict[str, Any]:
@@ -52,17 +88,44 @@ def run_benchmark(
     proofloop_host: str,
     timeout_seconds: int = 1200,
     seed: int = 0,
+    policies: tuple[str, ...] = ("adaptive",),
+    include_official_skill: bool = False,
+    dry_run: bool = False,
+    benchmark_dir: str | Path | None = None,
+    resume: bool = False,
+    environment: str = "local",
+    swe_upstream: str | Path | None = None,
+    docker_binary: str = "docker",
+    only_task_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if mode not in {"routing", "system", "both"}:
         raise ValueError("unsupported benchmark mode")
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
+    if not policies or any(policy not in {"core", "adaptive", "full"} for policy in policies):
+        raise ValueError("unsupported ProofLoop benchmark policy")
+    if environment not in {"local", "swe-skills"}:
+        raise ValueError("unsupported benchmark environment")
+    if environment == "swe-skills" and swe_upstream is None:
+        raise ValueError("SWE-Skills-Bench environment requires swe_upstream")
     repo = Path(repository).resolve()
     suite = load_benchmark_suite(suite_path)
+    if only_task_ids:
+        requested = set(only_task_ids)
+        suite["tasks"] = [task for task in suite["tasks"] if task["id"] in requested]
+        missing = requested - {task["id"] for task in suite["tasks"]}
+        if missing:
+            raise ValueError(f"unknown benchmark task ids: {sorted(missing)}")
     baseline = _git(repo, "rev-parse", "HEAD").stdout.strip()
     benchmark_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
-    root = repo / ".proofloop" / "benchmarks" / benchmark_id
-    root.mkdir(parents=True, exist_ok=False)
+    root = Path(benchmark_dir).resolve() if benchmark_dir else repo / ".proofloop" / "benchmarks" / benchmark_id
+    if resume:
+        if not root.is_dir() or not (root / "manifest.json").is_file():
+            raise ValueError(f"benchmark resume directory is invalid: {root}")
+        previous_manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        benchmark_id = str(previous_manifest["benchmarkId"])
+    else:
+        root.mkdir(parents=True, exist_ok=False)
     modes = ("routing", "system") if mode == "both" else (mode,)
     manifest = {
         "schemaVersion": "1.0",
@@ -76,22 +139,83 @@ def run_benchmark(
         "baselineModel": baseline_model,
         "proofloopHost": proofloop_host,
         "seed": seed,
+        "policies": list(policies),
+        "includeOfficialSkill": include_official_skill,
+        "dryRun": dry_run,
+        "environment": environment,
+        "sweUpstream": str(Path(swe_upstream).resolve()) if swe_upstream else None,
+        "dockerBinary": docker_binary,
+        "onlyTaskIds": list(only_task_ids),
+        "timeoutSeconds": timeout_seconds,
     }
-    write_json(root / "manifest.json", manifest)
-    schedule: list[tuple[str, int, dict[str, Any], str]] = []
-    rng = random.Random(seed)
-    for selected_mode in modes:
-        for repetition in range(1, repetitions + 1):
-            for task in suite["tasks"]:
-                arms = [f"baseline-{selected_mode}", f"proofloop-{selected_mode}"]
-                rng.shuffle(arms)
-                schedule.extend((selected_mode, repetition, task, arm) for arm in arms)
+    if not resume:
+        write_json(root / "manifest.json", manifest)
+    schedule = build_trial_schedule(
+        suite["tasks"],
+        modes=modes,
+        repetitions=repetitions,
+        policies=policies,
+        include_official_skill=include_official_skill,
+        seed=seed,
+    )
+    schedule_artifact = {
+        "schemaVersion": "1.0",
+        "trials": [
+            {
+                "order": order,
+                "mode": item["mode"],
+                "repetition": item["repetition"],
+                "taskId": item["task"]["id"],
+                "arm": item["arm"],
+                "trialKey": _trial_key(item["mode"], item["repetition"], item["task"]["id"], item["arm"]),
+            }
+            for order, item in enumerate(schedule, start=1)
+        ],
+    }
+    write_json(root / "schedule.json", schedule_artifact)
+    if dry_run:
+        return {
+            "status": "DRY_RUN",
+            "benchmarkId": benchmark_id,
+            "benchmarkDir": str(root),
+            "plannedTrials": len(schedule),
+        }
 
-    trials: list[dict[str, Any]] = []
     trials_path = root / "trials.jsonl"
-    for order, (selected_mode, repetition, task, arm) in enumerate(schedule, start=1):
+    trials: list[dict[str, Any]] = (
+        [json.loads(line) for line in trials_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if resume and trials_path.exists()
+        else []
+    )
+    completed_keys = {
+        item.get("trialKey") or _trial_key(item["mode"], item["repetition"], item["taskId"], item["arm"])
+        for item in trials
+    }
+    skipped_trials = 0
+    evaluation_environment = (
+        SWETrialEnvironment(swe_upstream, docker_binary=docker_binary)
+        if environment == "swe-skills" and swe_upstream is not None
+        else None
+    )
+    for order, scheduled in enumerate(schedule, start=1):
+        selected_mode = scheduled["mode"]
+        repetition = scheduled["repetition"]
+        task = scheduled["task"]
+        arm = scheduled["arm"]
+        trial_key = _trial_key(selected_mode, repetition, task["id"], arm)
+        if trial_key in completed_keys:
+            skipped_trials += 1
+            continue
         trial_id = f"trial-{order:04d}-{task['id']}-{arm}"
-        with _isolated_worktree(repo, baseline) as worktree:
+        with _trial_repository(repo, baseline, task, environment=environment) as worktree:
+            official_skill = None
+            builtin_domain_context = None
+            builtin_domain_usage = None
+            if arm.startswith("single-official-skill-") and swe_upstream is not None:
+                skill_path = (Path(swe_upstream).resolve() / str(task["skillDocument"])).resolve()
+                official_skill = skill_path.read_text(encoding="utf-8")
+            if arm.startswith("single-proofloop-domain-"):
+                builtin_domain_context, builtin_domain_usage = build_builtin_domain_context(worktree, task)
             trial = _execute_trial(
                 worktree,
                 task,
@@ -101,6 +225,10 @@ def run_benchmark(
                 baseline_model=baseline_model,
                 proofloop_host=proofloop_host,
                 timeout_seconds=timeout_seconds,
+                evaluation_environment=evaluation_environment,
+                official_skill=official_skill,
+                builtin_domain_context=builtin_domain_context,
+                builtin_domain_usage=builtin_domain_usage,
             )
             trial.update(
                 {
@@ -111,6 +239,9 @@ def run_benchmark(
                     "arm": arm,
                     "repetition": repetition,
                     "order": order,
+                    "trialKey": trial_key,
+                    "domain": task.get("domain"),
+                    "workloadTier": task.get("workloadTier") or task.get("tier"),
                 }
             )
             _copy_trial_artifacts(trial, root / "trials" / trial_id)
@@ -120,7 +251,48 @@ def run_benchmark(
 
     comparison = compare_trials(trials)
     write_json(root / "comparison.json", comparison)
-    return {"benchmarkId": benchmark_id, "benchmarkDir": str(root), "comparison": comparison}
+    write_json(root / "skill-scorecards.json", {"schemaVersion": "1.0", "scorecards": comparison["skillScorecards"]})
+    return {
+        "status": "COMPLETED",
+        "benchmarkId": benchmark_id,
+        "benchmarkDir": str(root),
+        "completedTrials": len(trials),
+        "skippedTrials": skipped_trials,
+        "comparison": comparison,
+    }
+
+
+def resume_benchmark(benchmark_dir: str | Path, *, timeout_seconds: int | None = None) -> dict[str, Any]:
+    root = Path(benchmark_dir).resolve()
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"benchmark resume directory is invalid: {root}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    modes = manifest.get("modes", [])
+    mode = "both" if modes == ["routing", "system"] else modes[0]
+    return run_benchmark(
+        manifest["suite"],
+        manifest["repository"],
+        mode=mode,
+        repetitions=int(manifest["repetitions"]),
+        baseline_host=manifest["baselineHost"],
+        baseline_model=manifest["baselineModel"],
+        proofloop_host=manifest["proofloopHost"],
+        timeout_seconds=timeout_seconds or int(manifest.get("timeoutSeconds", 1200)),
+        seed=int(manifest["seed"]),
+        policies=tuple(manifest["policies"]),
+        include_official_skill=bool(manifest.get("includeOfficialSkill")),
+        benchmark_dir=root,
+        resume=True,
+        environment=manifest.get("environment", "local"),
+        swe_upstream=manifest.get("sweUpstream"),
+        docker_binary=manifest.get("dockerBinary", "docker"),
+        only_task_ids=tuple(manifest.get("onlyTaskIds", [])),
+    )
+
+
+def _trial_key(mode: str, repetition: int, task_id: str, arm: str) -> str:
+    return f"{mode}:{repetition}:{task_id}:{arm}"
 
 
 def compare_benchmark(benchmark_dir: str | Path) -> dict[str, Any]:
@@ -136,39 +308,257 @@ def compare_benchmark(benchmark_dir: str | Path) -> dict[str, Any]:
 
 
 def compare_trials(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0",
+        "skillUsage": _skill_usage_summary(trials),
+        "skillScorecards": build_skill_scorecards(trials),
+        "comparisons": _compare_group(trials),
+        "policyComparisons": _compare_policies(trials),
+        "byDomain": {
+            value: _compare_group([item for item in trials if item.get("domain") == value])
+            for value in sorted({str(item["domain"]) for item in trials if item.get("domain")})
+        },
+        "policyComparisonsByDomain": {
+            value: _compare_policies([item for item in trials if item.get("domain") == value])
+            for value in sorted({str(item["domain"]) for item in trials if item.get("domain")})
+        },
+        "byWorkloadTier": {
+            value: _compare_group([item for item in trials if item.get("workloadTier") == value])
+            for value in sorted({str(item["workloadTier"]) for item in trials if item.get("workloadTier")})
+        },
+        "policyComparisonsByWorkloadTier": {
+            value: _compare_policies([item for item in trials if item.get("workloadTier") == value])
+            for value in sorted({str(item["workloadTier"]) for item in trials if item.get("workloadTier")})
+        },
+    }
+
+
+def build_skill_scorecards(trials: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    baselines = {
+        (str(item.get("mode")), str(item.get("taskId")), int(item.get("repetition", 0))): item
+        for item in trials
+        if str(item.get("arm")) in {
+            f"single-no-skill-{item.get('mode')}",
+            f"baseline-{item.get('mode')}",
+        }
+    }
+    observations: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for candidate in trials:
+        if not str(candidate.get("arm", "")).startswith("single-proofloop-domain-"):
+            continue
+        usage = candidate.get("skillUsage") if isinstance(candidate.get("skillUsage"), dict) else {}
+        key = (str(candidate.get("mode")), str(candidate.get("taskId")), int(candidate.get("repetition", 0)))
+        baseline = baselines.get(key)
+        if baseline is None:
+            continue
+        for pack in {str(item) for item in usage.get("domainPacks", [])}:
+            observations.setdefault(pack, []).append((baseline, candidate))
+
+    scorecards: dict[str, dict[str, Any]] = {}
+    for pack, pairs in sorted(observations.items()):
+        task_repetitions: dict[str, set[int]] = {}
+        token_gains: list[float] = []
+        quality_deltas: list[float] = []
+        complete_usage_pairs = 0
+        critical_escapes = 0
+        for baseline, candidate in pairs:
+            task_id = str(candidate.get("taskId"))
+            task_repetitions.setdefault(task_id, set()).add(int(candidate.get("repetition", 0)))
+            baseline_pass = 1.0 if baseline.get("verdict") == "PROVEN" else 0.0
+            candidate_pass = 1.0 if candidate.get("verdict") == "PROVEN" else 0.0
+            quality_deltas.append((candidate_pass - baseline_pass) * 100)
+            if candidate.get("protectedFileIntegrity", {}).get("verdict") == "FAIL":
+                critical_escapes += 1
+            if baseline.get("usageAvailable") and candidate.get("usageAvailable"):
+                baseline_tokens = int(baseline.get("usage", {}).get("totals", {}).get("rawTotal", 0))
+                candidate_tokens = int(candidate.get("usage", {}).get("totals", {}).get("rawTotal", 0))
+                if baseline_tokens > 0:
+                    token_gains.append((baseline_tokens - candidate_tokens) / baseline_tokens * 100)
+                    complete_usage_pairs += 1
+        quality_interval = _bootstrap_interval(quality_deltas) if len(quality_deltas) >= 2 else None
+        token_interval = _bootstrap_interval(token_gains) if len(token_gains) >= 2 else None
+        five_by_three = len(task_repetitions) >= 5 and all(len(values) >= 3 for values in task_repetitions.values())
+        usage_coverage = complete_usage_pairs / len(pairs) if pairs else 0.0
+        quality_noninferior = quality_interval is not None and quality_interval[0] >= -2.0
+        evidence_level = "E2" if five_by_three and usage_coverage == 1.0 else "E1"
+        scorecards[pack] = {
+            "schemaVersion": "1.0",
+            "pack": pack,
+            "evidenceLevel": evidence_level,
+            "pairedTrials": len(pairs),
+            "distinctTasks": len(task_repetitions),
+            "minimumRepetitionsPerTask": min((len(values) for values in task_repetitions.values()), default=0),
+            "taskPassRate": round(
+                sum(candidate.get("verdict") == "PROVEN" for _, candidate in pairs) / len(pairs), 6
+            ),
+            "qualityNonInferior": quality_noninferior,
+            "pairedPassRateDelta95CI": quality_interval,
+            "usageCoverage": round(usage_coverage, 6),
+            "meanPairedTokenGainPct": round(statistics.mean(token_gains), 6) if token_gains else None,
+            "pairedTokenGain95CI": token_interval,
+            "criticalEscapes": critical_escapes,
+            "promotionReviewEligible": (
+                evidence_level == "E2"
+                and quality_noninferior
+                and critical_escapes == 0
+                and usage_coverage == 1.0
+            ),
+            "automaticPromotion": False,
+        }
+    return scorecards
+
+
+def _skill_usage_summary(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    packs: dict[str, dict[str, int]] = {}
+    adapters: dict[str, int] = {}
+    protocols: dict[str, int] = {}
+    trials_with_domain = 0
+    estimated_tokens = 0
+    for trial in trials:
+        usage = trial.get("skillUsage") if isinstance(trial.get("skillUsage"), dict) else {}
+        domain_packs = {str(item) for item in usage.get("domainPacks", [])}
+        if domain_packs:
+            trials_with_domain += 1
+        for name in domain_packs:
+            entry = packs.setdefault(name, {"trials": 0, "passed": 0})
+            entry["trials"] += 1
+            entry["passed"] += int(trial.get("verdict") == "PROVEN")
+        for name in {str(item) for item in usage.get("adapters", [])}:
+            adapters[name] = adapters.get(name, 0) + 1
+        for name in {str(item) for item in usage.get("processProtocols", [])}:
+            protocols[name] = protocols.get(name, 0) + 1
+        value = usage.get("estimatedInjectedTokens")
+        if isinstance(value, int) and not isinstance(value, bool):
+            estimated_tokens += value
+    return {
+        "trials": len(trials),
+        "trialsWithDomainPack": trials_with_domain,
+        "domainPacks": {
+            name: {
+                **entry,
+                "taskPassRate": round(entry["passed"] / entry["trials"], 6),
+            }
+            for name, entry in sorted(packs.items())
+        },
+        "adapters": dict(sorted(adapters.items())),
+        "processProtocols": dict(sorted(protocols.items())),
+        "estimatedInjectedTokens": estimated_tokens,
+    }
+
+
+def _compare_group(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     modes = sorted({str(item["mode"]) for item in trials})
-    comparisons = []
+    comparisons: list[dict[str, Any]] = []
     for mode in modes:
-        baseline = [item for item in trials if item["mode"] == mode and item["arm"] == f"baseline-{mode}"]
-        candidate = [item for item in trials if item["mode"] == mode and item["arm"] == f"proofloop-{mode}"]
+        baseline = [
+            item
+            for item in trials
+            if item["mode"] == mode and item["arm"] in {f"single-no-skill-{mode}", f"baseline-{mode}"}
+        ]
         baseline_metrics = _arm_metrics(baseline)
-        candidate_metrics = _arm_metrics(candidate)
-        token_gain = _gain(baseline_metrics.get("tokensPerProven"), candidate_metrics.get("tokensPerProven"))
-        cost_gain = _gain(baseline_metrics.get("costPerProven"), candidate_metrics.get("costPerProven"))
-        paired = _paired_token_gains(baseline, candidate)
-        interval = _bootstrap_interval(paired) if len(paired) >= 2 else None
-        status = "INSUFFICIENT_DATA"
-        if token_gain is not None and interval is not None:
-            status = (
-                "IMPROVED"
-                if token_gain > 0
-                and interval[0] > 0
-                and candidate_metrics["successRate"] >= baseline_metrics["successRate"]
-                else "NO_PROVEN_GAIN"
-            )
-        comparisons.append(
+        candidate_arms = sorted(
             {
-                "mode": mode,
-                "status": status,
-                "baseline": baseline_metrics,
-                "proofloop": candidate_metrics,
-                "tokenEfficiencyGainPct": token_gain,
-                "costEfficiencyGainPct": cost_gain,
-                "pairedTokenGain95CI": interval,
-                "comparablePairs": len(paired),
+                str(item["arm"])
+                for item in trials
+                if item["mode"] == mode
+                and (
+                    str(item["arm"]).startswith("proofloop-")
+                    or str(item["arm"]) == f"single-official-skill-{mode}"
+                    or str(item["arm"]) == f"single-proofloop-domain-{mode}"
+                )
             }
         )
-    return {"schemaVersion": "1.0", "comparisons": comparisons}
+        for candidate_arm in candidate_arms:
+            candidate = [item for item in trials if item["mode"] == mode and item["arm"] == candidate_arm]
+            candidate_metrics = _arm_metrics(candidate)
+            token_gain = _gain(baseline_metrics.get("tokensPerProven"), candidate_metrics.get("tokensPerProven"))
+            cost_gain = _gain(baseline_metrics.get("costPerProven"), candidate_metrics.get("costPerProven"))
+            paired = _paired_token_gains(baseline, candidate)
+            interval = _bootstrap_interval(paired) if len(paired) >= 2 else None
+            paired_quality = _paired_pass_rate_deltas(baseline, candidate)
+            quality_interval = _bootstrap_interval(paired_quality) if len(paired_quality) >= 2 else None
+            quality_noninferior = quality_interval is not None and quality_interval[0] >= -2.0
+            status = "INSUFFICIENT_DATA"
+            if token_gain is not None and interval is not None:
+                status = (
+                    "IMPROVED"
+                    if token_gain > 0
+                    and interval[0] > 0
+                    and quality_noninferior
+                    else "NO_PROVEN_GAIN"
+                )
+            policy = _arm_policy(candidate_arm, mode)
+            comparisons.append(
+                {
+                    "mode": mode,
+                    "policy": policy,
+                    "status": status,
+                    "baseline": baseline_metrics,
+                    "proofloop": candidate_metrics,
+                    "tokenEfficiencyGainPct": token_gain,
+                    "costEfficiencyGainPct": cost_gain,
+                    "pairedTokenGain95CI": interval,
+                    "comparablePairs": len(paired),
+                    "passRateDeltaPctPoints": round(
+                        (candidate_metrics["taskPassRate"] - baseline_metrics["taskPassRate"]) * 100,
+                        6,
+                    ),
+                    "pairedPassRateDelta95CI": quality_interval,
+                    "qualityNonInferior": quality_noninferior,
+                    "qualityNonInferiorityMarginPctPoints": -2.0,
+                }
+            )
+    return comparisons
+
+
+def _compare_policies(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for mode in sorted({str(item["mode"]) for item in trials}):
+        arms = {
+            policy: [
+                item
+                for item in trials
+                if item["mode"] == mode and item["arm"] == f"proofloop-{policy}-{mode}"
+            ]
+            for policy in ("core", "adaptive", "full")
+        }
+        for left, right in (("core", "adaptive"), ("core", "full"), ("adaptive", "full")):
+            if not arms[left] or not arms[right]:
+                continue
+            left_metrics = _arm_metrics(arms[left])
+            right_metrics = _arm_metrics(arms[right])
+            token_deltas = _paired_token_gains(arms[left], arms[right])
+            quality_deltas = _paired_pass_rate_deltas(arms[left], arms[right])
+            result.append(
+                {
+                    "mode": mode,
+                    "leftPolicy": left,
+                    "rightPolicy": right,
+                    "left": left_metrics,
+                    "right": right_metrics,
+                    "tokenEfficiencyGainPct": _gain(
+                        left_metrics.get("tokensPerProven"), right_metrics.get("tokensPerProven")
+                    ),
+                    "pairedTokenGain95CI": _bootstrap_interval(token_deltas) if len(token_deltas) >= 2 else None,
+                    "passRateDeltaPctPoints": round(
+                        (right_metrics["taskPassRate"] - left_metrics["taskPassRate"]) * 100, 6
+                    ),
+                    "pairedPassRateDelta95CI": (
+                        _bootstrap_interval(quality_deltas) if len(quality_deltas) >= 2 else None
+                    ),
+                }
+            )
+    return result
+
+
+def _arm_policy(arm: str, mode: str) -> str:
+    if arm == f"single-official-skill-{mode}":
+        return "official-skill"
+    if arm == f"single-proofloop-domain-{mode}":
+        return "domain-only"
+    if arm == f"proofloop-{mode}":
+        return "legacy"
+    return arm[len("proofloop-") : -len(f"-{mode}")]
 
 
 def _execute_trial(
@@ -181,51 +571,265 @@ def _execute_trial(
     baseline_model: str,
     proofloop_host: str,
     timeout_seconds: int,
+    evaluation_environment: SWETrialEnvironment | None = None,
+    official_skill: str | None = None,
+    builtin_domain_context: str | None = None,
+    builtin_domain_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    if arm == "baseline-system":
-        result = _run_single_agent(repo, task, baseline_host, baseline_model, timeout_seconds)
+    protected = snapshot_protected_files(repo, task.get("protectedFiles", [])) if evaluation_environment is None else {}
+    if arm.startswith("single-"):
+        result = _run_single_agent(
+            repo,
+            task,
+            baseline_host,
+            baseline_model,
+            timeout_seconds,
+            official_skill=official_skill,
+            builtin_domain_context=builtin_domain_context,
+            builtin_domain_usage=builtin_domain_usage,
+        )
     else:
-        override = _single_model_routes(baseline_host, baseline_model) if arm == "baseline-routing" else None
+        override = _single_model_routes(baseline_host, baseline_model) if selected_mode == "routing" else None
         previous = os.environ.get("PROOFLOOP_ROLE_ROUTING_JSON")
         try:
             if override:
                 os.environ["PROOFLOOP_ROLE_ROUTING_JSON"] = json.dumps(override)
             else:
                 os.environ.pop("PROOFLOOP_ROLE_ROUTING_JSON", None)
-            result = converge_goal(
-                baseline_host if arm == "baseline-routing" else proofloop_host,
-                repo,
-                task["request"],
-                strategy_override=_strategy(task.get("strategy")),
-                timeout_seconds=timeout_seconds,
-                output_format="quiet",
-                stream=io.StringIO(),
-            )
+            if arm.startswith("proofloop-adaptive-") or arm.startswith("proofloop-core-"):
+                result = run_proofloop(
+                    proofloop_host,
+                    repo,
+                    task["request"],
+                    mode="adaptive",
+                    strategy_override=_strategy(task.get("strategy")),
+                    timeout_seconds=timeout_seconds,
+                    output_format="quiet",
+                    stream=io.StringIO(),
+                    skills_enabled=not arm.startswith("proofloop-core-"),
+                )
+            else:
+                result = converge_goal(
+                    baseline_host if arm == "baseline-routing" else proofloop_host,
+                    repo,
+                    task["request"],
+                    strategy_override=_strategy(task.get("strategy")),
+                    timeout_seconds=timeout_seconds,
+                    output_format="quiet",
+                    stream=io.StringIO(),
+                )
         finally:
             if previous is None:
                 os.environ.pop("PROOFLOOP_ROLE_ROUTING_JSON", None)
             else:
                 os.environ["PROOFLOOP_ROLE_ROUTING_JSON"] = previous
 
-    checks = _run_suite_checks(repo, task.get("checks", []))
+    if evaluation_environment is None:
+        integrity = verify_protected_files(repo, protected)
+        checks = _run_suite_checks(repo, task.get("checks", [])) if integrity["verdict"] == "PASS" else []
+        evaluation = None
+    else:
+        evaluation = evaluation_environment.evaluate(task, repository=repo, timeout_seconds=timeout_seconds)
+        integrity = {
+            "verdict": evaluation["protectedTestIntegrity"],
+            "changed": [] if evaluation["protectedTestIntegrity"] == "PASS" else [task.get("upstreamTest")],
+        }
+        checks = evaluation["commands"]
     run_dir = Path(result["runDir"])
     try:
         TokScaleAdapter().reconcile(run_dir)
     except Exception:
         pass
     usage = build_usage_summary(run_dir)
-    success = result.get("verdict") in {"PASS", "PROVEN"} and all(item["exitCode"] == 0 for item in checks)
+    proof_graph_path = run_dir / "proof-graph.json"
+    proof_graph = json.loads(proof_graph_path.read_text(encoding="utf-8")) if proof_graph_path.exists() else {}
+    obligations = proof_graph.get("obligations") if isinstance(proof_graph.get("obligations"), list) else []
+    closed_obligations = sum(item.get("status") == "CLOSED" for item in obligations if isinstance(item, dict))
+    attempts_path = run_dir / "attempts.jsonl"
+    attempt_count = (
+        sum(1 for line in attempts_path.read_text(encoding="utf-8").splitlines() if line.strip())
+        if attempts_path.exists()
+        else 1
+    )
+    success = determine_trial_success(
+        agent_verdict=result.get("verdict"),
+        integrity_verdict=integrity["verdict"],
+        checks=checks,
+        evaluation=evaluation,
+    )
     coverage = usage["coverage"]
+    usage_available = coverage["expectedInvocations"] > 0 and coverage["tokenCoverageRatio"] == 1.0
     return {
         "verdict": "PROVEN" if success else "FAILED",
         "agentVerdict": result.get("verdict"),
         "runDir": str(run_dir),
         "durationSeconds": round(time.monotonic() - started, 6),
         "checks": checks,
+        "protectedFileIntegrity": integrity,
         "usage": usage,
-        "usageAvailable": coverage["expectedInvocations"] > 0 and coverage["tokenCoverageRatio"] == 1.0,
+        "usageAvailable": usage_available,
+        "usageStatus": "COMPLETE" if usage_available else "INVALID_USAGE",
         "costAvailable": coverage["expectedInvocations"] > 0 and coverage["costedInvocations"] == coverage["expectedInvocations"],
+        "proof": {"closed": closed_obligations, "total": len(obligations)},
+        "attemptCount": attempt_count,
+        "evaluation": evaluation,
+        "testsPassed": evaluation["testsPassed"] if evaluation else None,
+        "testsTotal": evaluation["testsTotal"] if evaluation else None,
+        "testPassRate": evaluation["testPassRate"] if evaluation else None,
+        "skillUsage": _collect_skill_usage(run_dir),
+    }
+
+
+def determine_trial_success(
+    *,
+    agent_verdict: Any,
+    integrity_verdict: str,
+    checks: list[dict[str, Any]],
+    evaluation: dict[str, Any] | None,
+) -> bool:
+    if integrity_verdict != "PASS":
+        return False
+    if evaluation is not None:
+        return bool(evaluation.get("taskPassed"))
+    return agent_verdict in {"PASS", "PROVEN"} and all(item.get("exitCode") == 0 for item in checks)
+
+
+def snapshot_protected_files(repo: str | Path, paths: list[str]) -> dict[str, str]:
+    root = Path(repo).resolve()
+    snapshot: dict[str, str] = {}
+    for relative in paths:
+        path = (root / relative).resolve()
+        if root not in path.parents or not path.is_file():
+            raise ValueError(f"protected benchmark file is missing or unsafe: {relative}")
+        snapshot[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
+
+
+def verify_protected_files(repo: str | Path, snapshot: dict[str, str]) -> dict[str, Any]:
+    root = Path(repo).resolve()
+    changed = []
+    for relative, expected in snapshot.items():
+        path = (root / relative).resolve()
+        observed = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() and root in path.parents else None
+        if observed != expected:
+            changed.append(relative)
+    return {"verdict": "PASS" if not changed else "FAIL", "changed": sorted(changed)}
+
+
+def build_builtin_domain_context(repo: str | Path, task: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    root = Path(repo).resolve()
+    request = str(task["request"])
+    fingerprint = build_repository_fingerprint(root, request)
+    task_types = list(fingerprint.get("taskTypes", []))
+    domain_task_type = {
+        "backend": "backend-development",
+        "frontend": "frontend-development",
+        "devops": "devops-delivery",
+        "test": "test-engineering",
+        "review": "code-review",
+    }.get(str(task.get("domain", "")).casefold())
+    if domain_task_type and domain_task_type not in task_types:
+        task_types.insert(0, domain_task_type)
+    pack_root = Path(__file__).resolve().parents[1] / "proofloop_domain_packs"
+    registry = SkillRegistry.discover(pack_root)
+    selected = []
+    seen: set[str] = set()
+    remaining_tokens = 10_000
+    for task_type in task_types:
+        candidates = registry.resolve(
+            ResolutionContext(
+                mode="adaptive",
+                host="codex",
+                tier="T1",
+                open_obligations=("intent-alignment",),
+                remaining_tokens=remaining_tokens,
+                task_type=str(task_type),
+                repository_signals=tuple(str(item) for item in fingerprint.get("signals", [])),
+                languages=tuple(str(item) for item in fingerprint.get("languages", [])),
+                frameworks=tuple(
+                    (str(name), str(version))
+                    for name, version in (fingerprint.get("frameworks") or {}).items()
+                ),
+                allow_experimental_domains=True,
+            )
+        )
+        for candidate in candidates:
+            if candidate.name in seen:
+                continue
+            selected.append(candidate)
+            seen.add(candidate.name)
+            remaining_tokens -= candidate.max_tokens
+            break
+        if selected:
+            break
+
+    sections: list[str] = []
+    selection_items: list[dict[str, Any]] = []
+    adapter_ids: list[str] = []
+    estimated_tokens = 0
+    for skill in selected:
+        references = select_reference_slices(
+            skill.root,
+            fingerprint,
+            max_tokens=skill.max_injected_tokens,
+        )
+        sections.append(skill.root.joinpath("SKILL.md").read_text(encoding="utf-8"))
+        for item in references["slices"]:
+            sections.append(Path(item["path"]).read_text(encoding="utf-8"))
+        adapter_ids.extend(str(item) for item in references["adapters"])
+        estimated_tokens += int(references["estimatedTokens"])
+        selection_items.append(
+            {
+                "skill": skill.name,
+                "version": skill.version,
+                "contentHash": skill.content_hash,
+                "adapters": references["adapters"],
+                "slices": references["slices"],
+                "estimatedTokens": references["estimatedTokens"],
+            }
+        )
+    usage = {
+        "domainPacks": [item.name for item in selected],
+        "adapters": adapter_ids,
+        "estimatedInjectedTokens": estimated_tokens,
+        "selected": selection_items,
+        "fingerprintSha256": fingerprint["fingerprintSha256"],
+    }
+    return "\n\n".join(sections), usage
+
+
+def _collect_skill_usage(run_dir: Path) -> dict[str, Any]:
+    resolution_path = run_dir / "skill-resolution.json"
+    domain_path = run_dir / "domain-selection.json"
+    resolution = json.loads(resolution_path.read_text(encoding="utf-8")) if resolution_path.is_file() else {}
+    domain = json.loads(domain_path.read_text(encoding="utf-8")) if domain_path.is_file() else {}
+    selected_domains = domain.get("selected") if isinstance(domain.get("selected"), list) else []
+    domain_packs = list(resolution.get("domainPacks") or [])
+    if not domain_packs:
+        domain_packs = [
+            str(item["skill"])
+            for item in selected_domains
+            if isinstance(item, dict) and isinstance(item.get("skill"), str)
+        ]
+    adapters = sorted(
+        {
+            str(adapter)
+            for item in selected_domains
+            if isinstance(item, dict)
+            for adapter in (item.get("adapters") or [])
+        }
+    )
+    return {
+        "skillsEnabled": resolution.get("skillsEnabled", bool(domain_packs)),
+        "processProtocols": list(resolution.get("processProtocols") or []),
+        "domainPacks": domain_packs,
+        "adapters": adapters,
+        "estimatedInjectedTokens": sum(
+            int(item.get("estimatedTokens", 0))
+            for item in selected_domains
+            if isinstance(item, dict)
+        ),
     }
 
 
@@ -235,14 +839,23 @@ def _run_single_agent(
     host: str,
     model: str,
     timeout_seconds: int,
+    *,
+    official_skill: str | None = None,
+    builtin_domain_context: str | None = None,
+    builtin_domain_usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = start_run(repo, task["request"])
     run_dir = Path(started["runDir"])
-    checks_text = "\n".join(" ".join(command) for command in task.get("checks", []))
-    prompt = (
-        "Implement the following objective as a single coding agent. Continue until the objective and acceptance checks pass.\n\n"
-        f"Objective:\n{task['request']}\n\nAcceptance checks:\n{checks_text or 'Use the repository tests.'}"
+    prompt = build_single_agent_prompt(
+        task,
+        official_skill=official_skill,
+        builtin_domain_context=builtin_domain_context,
     )
+    if builtin_domain_usage is not None:
+        write_json(
+            run_dir / "domain-selection.json",
+            {"schemaVersion": "1.0", "selected": builtin_domain_usage.get("selected", []), "arm": "domain-only"},
+        )
     result = invoke_role(
         host,
         "implementer_fast",
@@ -269,6 +882,29 @@ def _run_single_agent(
         handle.write(json.dumps(invocation, ensure_ascii=False) + "\n")
     build_usage_summary(run_dir)
     return {**result, "runDir": str(run_dir)}
+
+
+def build_single_agent_prompt(
+    task: dict[str, Any],
+    *,
+    official_skill: str | None = None,
+    builtin_domain_context: str | None = None,
+) -> str:
+    skill_section = (
+        f"\n\nOfficial domain skill:\n{official_skill.strip()}"
+        if isinstance(official_skill, str) and official_skill.strip()
+        else ""
+    )
+    builtin_section = (
+        f"\n\nProofLoop built-in domain pack (domain-only arm):\n{builtin_domain_context.strip()}"
+        if isinstance(builtin_domain_context, str) and builtin_domain_context.strip()
+        else ""
+    )
+    return (
+        "Implement the following objective as a single coding agent. Continue until the objective is satisfied.\n\n"
+        f"Objective:\n{task['request']}"
+        f"{skill_section}{builtin_section}"
+    )
 
 
 def _run_suite_checks(repo: Path, commands: list[list[str]]) -> list[dict[str, Any]]:
@@ -313,16 +949,44 @@ def _arm_metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
     token_total = sum(int(item.get("usage", {}).get("totals", {}).get("rawTotal", 0)) for item in items)
     cost_total = sum(float(item.get("usage", {}).get("totals", {}).get("costUsd", 0.0)) for item in items)
     proven_tokens = [int(item["usage"]["totals"]["rawTotal"]) for item in proven if item.get("usageAvailable")]
+    closed = sum(int(item.get("proof", {}).get("closed", 0)) for item in items)
+    durations = sorted(float(item.get("durationSeconds", 0.0)) for item in items)
+    attempts = sum(max(1, int(item.get("attemptCount", 1))) for item in items)
+    tests_passed = sum(int(item.get("testsPassed") or 0) for item in items)
+    tests_total = sum(int(item.get("testsTotal") or 0) for item in items)
+    valid_usage = sum(bool(item.get("usageAvailable")) for item in items)
     return {
         "trials": len(items),
         "proven": len(proven),
         "successRate": round(len(proven) / len(items), 6) if items else 0.0,
-        "usageCoverage": round(sum(bool(item.get("usageAvailable")) for item in items) / len(items), 6) if items else 0.0,
+        "taskPassRate": round(len(proven) / len(items), 6) if items else 0.0,
+        "officialTestPassRate": round(tests_passed / tests_total, 6) if tests_total else None,
+        "testsPassed": tests_passed,
+        "testsTotal": tests_total,
+        "usageCoverage": round(valid_usage / len(items), 6) if items else 0.0,
+        "usageValidityRate": round(valid_usage / len(items), 6) if items else 0.0,
+        "invalidUsageTrials": len(items) - valid_usage,
         "tokensPerProven": round(token_total / len(proven), 6) if proven and usage_complete else None,
         "medianTokensOnProven": statistics.median(proven_tokens) if proven_tokens else None,
         "costPerProven": round(cost_total / len(proven), 8) if proven and cost_complete else None,
-        "medianDurationSeconds": statistics.median(float(item.get("durationSeconds", 0)) for item in items) if items else None,
+        "medianDurationSeconds": statistics.median(durations) if durations else None,
+        "p95DurationSeconds": _percentile(durations, 0.95) if durations else None,
+        "proofObligationsClosed": closed,
+        "proofObligationsClosedPer1kTokens": round(closed / token_total * 1000, 6) if token_total else None,
+        "verificationYield": round(len(proven) / attempts, 6) if attempts else 0.0,
     }
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        raise ValueError("values must be non-empty")
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * quantile
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    weight = position - lower
+    return round(values[lower] * (1 - weight) + values[upper] * weight, 6)
 
 
 def _gain(baseline: Any, candidate: Any) -> float | None:
@@ -347,6 +1011,19 @@ def _paired_token_gains(baseline: list[dict[str, Any]], candidate: list[dict[str
     return gains
 
 
+def _paired_pass_rate_deltas(baseline: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[float]:
+    candidate_map = {(item["taskId"], item["repetition"]): item for item in candidate}
+    deltas = []
+    for item in baseline:
+        other = candidate_map.get((item["taskId"], item["repetition"]))
+        if other is None:
+            continue
+        baseline_pass = 1.0 if item.get("verdict") == "PROVEN" else 0.0
+        candidate_pass = 1.0 if other.get("verdict") == "PROVEN" else 0.0
+        deltas.append((candidate_pass - baseline_pass) * 100)
+    return deltas
+
+
 def _bootstrap_interval(values: list[float], samples: int = 1000) -> list[float]:
     rng = random.Random(0)
     means = sorted(statistics.mean(rng.choices(values, k=len(values))) for _ in range(samples))
@@ -356,7 +1033,18 @@ def _bootstrap_interval(values: list[float], samples: int = 1000) -> list[float]
 def _copy_trial_artifacts(trial: dict[str, Any], target: Path) -> None:
     source = Path(trial["runDir"])
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("run.json", "truth-report.json", "invocations.jsonl", "model-trace.jsonl", "events.jsonl"):
+    for name in (
+        "run.json",
+        "truth-report.json",
+        "intent-contract.json",
+        "strategy.json",
+        "proof-graph.json",
+        "skill-registry.json",
+        "skill-resolution.json",
+        "invocations.jsonl",
+        "model-trace.jsonl",
+        "events.jsonl",
+    ):
         path = source / name
         if path.exists():
             shutil.copy2(path, target / name)
@@ -374,6 +1062,25 @@ def _isolated_worktree(repo: Path, baseline: str) -> Iterator[Path]:
         yield worktree
     finally:
         _git(repo, "worktree", "remove", "--force", str(worktree), check=False)
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+@contextmanager
+def _trial_repository(
+    controller_repo: Path,
+    baseline: str,
+    task: dict[str, Any],
+    *,
+    environment: str,
+) -> Iterator[Path]:
+    if environment == "local":
+        with _isolated_worktree(controller_repo, baseline) as worktree:
+            yield worktree
+        return
+    parent = Path(tempfile.mkdtemp(prefix="proofloop-swe-trial-"))
+    try:
+        yield materialize_repository(task, parent / "repo")
+    finally:
         shutil.rmtree(parent, ignore_errors=True)
 
 

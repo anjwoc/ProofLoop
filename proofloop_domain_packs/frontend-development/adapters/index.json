@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","adapters":[{"id":"react-18","signals":["framework:react"],"framework":{"name":"react","range":">=18 <20"}},{"id":"next-14","signals":["framework:next"],"framework":{"name":"next","range":">=14 <16"}},{"id":"vue-3","signals":["framework:vue"],"framework":{"name":"vue","range":">=3 <4"}}]}

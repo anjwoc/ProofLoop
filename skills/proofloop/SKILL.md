@@ -11,10 +11,12 @@ This skill is a thin bootstrap. The deterministic orchestrator owns the workflow
 
 1. Capture the user's complete request verbatim in a UTF-8 text file under `.proofloop/requests/`.
 2. Determine the current host as exactly one of `claude-code`, `codex`, or `antigravity`.
-3. Run one command:
+3. Select exactly one mode from the invocation: `adaptive` by default, `goal` for explicit convergence requests, or `audit` for read-only analysis. Benchmark requests use the dedicated `benchmark` command with a suite.
+4. Run one command:
 
 ```bash
-$HOME/.proofloop/bin/proofloop-core goal \
+$HOME/.proofloop/bin/proofloop-core run \
+  --mode <adaptive-or-goal-or-audit> \
   --host <current-host> \
   --repo . \
   --request-file <absolute-request-file> \
@@ -23,9 +25,11 @@ $HOME/.proofloop/bin/proofloop-core goal \
   --color auto
 ```
 
-4. Do not implement the task in the coordinator session while the command runs.
-5. Do not synthesize planning, role, verification, retry, recovery, review, or truth status. Display the orchestrator stream as the system status source.
-6. Present the returned `truth-report.json` status exactly. Never upgrade `UNPROVEN`, `FAILED`, or `BLOCKED` to success.
+For a benchmark invocation, preserve the user's suite, hosts, model, repetition, and policy options and run `proofloop-core benchmark` directly. Never substitute an ordinary coding run for a requested comparison.
+
+5. Do not implement the task in the coordinator session while the command runs.
+6. Do not synthesize planning, role, verification, retry, recovery, review, or truth status. Display the orchestrator stream as the system status source.
+7. Present the returned `truth-report.json` status exactly. Never upgrade `UNPROVEN`, `FAILED`, or `BLOCKED` to success.
 
 ## Host invocation names
 

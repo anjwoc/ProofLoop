@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from proofloop_core.adapters import RoleInvocation
-from proofloop_core.orchestrator import converge_goal, orchestrate
+from proofloop_core.orchestrator import converge_goal, orchestrate, run_proofloop
 
 
 def git(root: Path, *args: str) -> None:
@@ -56,6 +56,7 @@ class ScriptedAdapter:
         self.fast_calls = 0
         self.reviewer_calls = 0
         self.calls: list[str] = []
+        self.prompts: list[tuple[str, str]] = []
 
     def probe(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class ScriptedAdapter:
 
     def invoke(self, invocation: RoleInvocation) -> dict[str, Any]:
         self.calls.append(invocation.role)
+        self.prompts.append((invocation.role, invocation.prompt))
         if invocation.role == "explorer_fast":
             if invocation.result_path:
                 invocation.result_path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +215,8 @@ class OrchestratorTest(unittest.TestCase):
             types = [event["type"] for event in events]
             self.assertEqual("run.started", types[0])
             for required in (
+                "intent.compiled",
+                "proof.updated",
                 "capability.detected",
                 "strategy.selected",
                 "context.ready",
@@ -231,6 +235,9 @@ class OrchestratorTest(unittest.TestCase):
                 self.assertIn(required, types)
             self.assertEqual("run.completed", types[-1])
             self.assertEqual(list(range(1, len(events) + 1)), [event["sequence"] for event in events])
+            self.assertTrue((run / "intent-contract.json").exists())
+            self.assertTrue((run / "proof-graph.json").exists())
+            self.assertTrue((run / "skill-registry.json").exists())
             claims = [event for event in events if event["type"].startswith("claim.")]
             self.assertTrue(claims)
             self.assertTrue(all(event["type"] == "claim.supported" for event in claims))
@@ -346,6 +353,148 @@ class OrchestratorTest(unittest.TestCase):
             strategy = json.loads((Path(result["runDir"]) / "strategy.json").read_text())
             self.assertFalse(strategy["plannerRequired"])
 
+    def test_adaptive_t0_skips_deep_roles_but_remains_truth_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Fix this one-line local value bug",
+                mode="adaptive",
+                adapter=adapter,
+                strategy_override="DIRECT_VERIFIED_CHANGE",
+            )
+
+            self.assertEqual("PROVEN", result["verdict"], result)
+            self.assertEqual(["implementer_fast"], adapter.calls)
+            review = json.loads((Path(result["runDir"]) / "review.json").read_text())
+            self.assertEqual("DETERMINISTIC_FAST_LANE", review["reviewMode"])
+
+    def test_adaptive_hard_token_budget_blocks_overrun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+            original = adapter.invoke
+
+            def over_budget(invocation):
+                result = original(invocation)
+                result["usage"] = {"rawTotal": 25_000, "model": "fast-model"}
+                return result
+
+            adapter.invoke = over_budget  # type: ignore[method-assign]
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Fix this one-line local value bug",
+                mode="adaptive",
+                adapter=adapter,
+                strategy_override="DIRECT_VERIFIED_CHANGE",
+            )
+
+            self.assertEqual("BLOCKED", result["verdict"])
+            self.assertEqual("TOKEN_BUDGET_EXHAUSTED", result["code"])
+            self.assertIn("budget.exhausted", [item["type"] for item in load_events(result["runDir"])])
+
+    def test_skill_ablation_keeps_core_truth_gates_and_records_no_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Fix this one-line local value bug",
+                mode="adaptive",
+                adapter=ScriptedAdapter(),
+                strategy_override="DIRECT_VERIFIED_CHANGE",
+                skills_enabled=False,
+            )
+
+            self.assertEqual("PROVEN", result["verdict"])
+            resolution = json.loads((Path(result["runDir"]) / "skill-resolution.json").read_text())
+            self.assertFalse(resolution["skillsEnabled"])
+            self.assertEqual([], resolution["selected"])
+
+    def test_generic_backend_pack_selects_django_as_internal_adapter_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "fixture"\ndependencies = ["Django==5.1.2"]\n',
+                encoding="utf-8",
+            )
+            git(root, "add", "pyproject.toml")
+            git(root, "commit", "-m", "add framework fixture")
+            adapter = ScriptedAdapter()
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Add a backend API endpoint with focused tests",
+                mode="adaptive",
+                adapter=adapter,
+                strategy_override="DIRECT_VERIFIED_CHANGE",
+                experimental_domain_packs=True,
+            )
+
+            run = Path(result["runDir"])
+            fingerprint = json.loads((run / "repository-fingerprint.json").read_text())
+            resolution = json.loads((run / "skill-resolution.json").read_text())
+            domain = json.loads((run / "domain-selection.json").read_text())
+            self.assertIn("backend-development", fingerprint["taskTypes"])
+            self.assertEqual("5.1.2", fingerprint["frameworks"]["django"])
+            self.assertIn("backend-development", resolution["domainPacks"])
+            self.assertNotIn("django", resolution["domainPacks"])
+            backend = next(item for item in domain["selected"] if item["skill"] == "backend-development")
+            self.assertEqual(["django-5"], backend["adapters"])
+            implement_prompt = next(prompt for role, prompt in adapter.prompts if role == "implementer_fast")
+            self.assertIn("backend-development/SKILL.md", implement_prompt)
+            self.assertIn("references/django-5.md", implement_prompt)
+            self.assertNotIn("references/spring-3.md", implement_prompt)
+
+    def test_experimental_domain_packs_are_not_auto_selected_without_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Add a backend API endpoint",
+                mode="adaptive",
+                adapter=ScriptedAdapter(),
+                strategy_override="DIRECT_VERIFIED_CHANGE",
+            )
+
+            resolution = json.loads((Path(result["runDir"]) / "skill-resolution.json").read_text())
+            self.assertFalse(resolution["experimentalDomainPacks"])
+            self.assertEqual([], resolution["domainPacks"])
+
+    def test_audit_mode_is_read_only_and_produces_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_repo(root)
+            adapter = ScriptedAdapter()
+            baseline = (root / "src" / "value.py").read_text(encoding="utf-8")
+
+            result = run_proofloop(
+                "codex",
+                root,
+                "Analyze this repository without changing code",
+                mode="audit",
+                adapter=adapter,
+            )
+
+            self.assertEqual("PROVEN", result["verdict"], result)
+            self.assertEqual(["explorer_fast"], adapter.calls)
+            self.assertTrue((Path(result["runDir"]) / "audit-report.json").exists())
+            self.assertEqual(baseline, (root / "src" / "value.py").read_text(encoding="utf-8"))
+
     def test_repeated_fast_failure_invokes_recovery_automatically(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -373,6 +522,10 @@ class OrchestratorTest(unittest.TestCase):
             types = [event["type"] for event in events]
             self.assertIn("retry.scheduled", types)
             self.assertIn("progress.stalled", types)
+            self.assertTrue(
+                any(event["type"] == "skill.selected" and event["data"].get("skill") == "proofloop-debug" for event in events)
+            )
+            self.assertEqual("T2", json.loads((Path(result["runDir"]) / "strategy.json").read_text())["tier"])
             recovery = next(event for event in events if event["type"] == "recovery.scheduled")
             self.assertEqual("implementer_fast", recovery["data"]["fromRole"])
             self.assertEqual("implementer_recovery", recovery["data"]["toRole"])
@@ -433,7 +586,7 @@ class OrchestratorTest(unittest.TestCase):
             self.assertEqual("PLAN_ARTIFACT_MISSING", events[-1]["data"]["code"])
 
 
-    def test_repository_analysis_blocks_instead_of_simulating(self) -> None:
+    def test_legacy_orchestrate_keeps_repository_analysis_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             make_repo(root)

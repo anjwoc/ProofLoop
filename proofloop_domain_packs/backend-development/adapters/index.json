@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0",
+  "adapters": [
+    {"id": "django-5", "signals": ["framework:django"], "framework": {"name": "django", "range": ">=5 <6"}},
+    {"id": "spring-3", "signals": ["framework:spring"], "framework": {"name": "spring", "range": ">=3 <4"}},
+    {"id": "ghost-5", "signals": ["framework:ghost"], "framework": {"name": "ghost", "range": ">=5 <6"}}
+  ]
+}

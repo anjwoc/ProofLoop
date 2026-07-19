@@ -1,0 +1,13 @@
+{
+  "schemaVersion":"2.0","id":"test-engineering","version":"0.1.0","status":"EXPERIMENTAL","kind":"DOMAIN_PACK",
+  "source":{"license":"Apache-2.0","provenance":["ProofLoop built-in generic workflow"]},
+  "activation":{"modes":["adaptive","goal"],"taskTypes":["test-engineering"],"positiveSignals":[],"negativeSignals":[]},
+  "compatibility":{"hosts":["claude-code","codex","antigravity"],"tiers":["T0","T1","T2","T3"],"languages":[],"frameworks":[],"requiredTools":[]},
+  "dependencies":[],"conflicts":[],
+  "proof":{"closes":[],"adds":["test-detects-target-defect","test-suite-fresh"],"minimumAuthority":"DETERMINISTIC_CHECK","selfClosureAllowed":false},
+  "context":{"required":["intent-contract.json","repository-fingerprint.json"],"maxInjectedTokens":1600},
+  "budget":{"maxTokens":2500,"maxSeconds":300,"maxInvocations":2},
+  "completion":{"artifact":"domain/test-engineering.json","schema":null},
+  "escalation":{"on":["TEST_SEAM_UNKNOWN","ENVIRONMENT_UNAVAILABLE","ASSERTION_WEAKENING_REQUIRED"]},
+  "evaluation":{"evidenceLevel":"E0","validUntil":null,"scorecard":null}
+}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "2.0",
+  "id": "backend-development",
+  "version": "0.1.0",
+  "status": "EXPERIMENTAL",
+  "kind": "DOMAIN_PACK",
+  "source": {"license": "Apache-2.0", "provenance": ["ProofLoop built-in generic workflow"]},
+  "activation": {"modes": ["adaptive", "goal"], "taskTypes": ["backend-development"], "positiveSignals": [], "negativeSignals": []},
+  "compatibility": {"hosts": ["claude-code", "codex", "antigravity"], "tiers": ["T0", "T1", "T2", "T3"], "languages": [], "frameworks": [], "requiredTools": []},
+  "dependencies": [],
+  "conflicts": [],
+  "proof": {"closes": [], "adds": ["backend-contract-preserved", "backend-failure-path-verified"], "minimumAuthority": "DETERMINISTIC_CHECK", "selfClosureAllowed": false},
+  "context": {"required": ["intent-contract.json", "repository-fingerprint.json"], "maxInjectedTokens": 1800},
+  "budget": {"maxTokens": 2500, "maxSeconds": 300, "maxInvocations": 2},
+  "completion": {"artifact": "domain/backend-development.json", "schema": null},
+  "escalation": {"on": ["PUBLIC_CONTRACT_UNKNOWN", "MIGRATION_AUTHORITY_REQUIRED", "SECURITY_BOUNDARY_UNKNOWN"]},
+  "evaluation": {"evidenceLevel": "E0", "validUntil": null, "scorecard": null}
+}

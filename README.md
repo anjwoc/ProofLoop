@@ -1,128 +1,384 @@
-# ProofLoop Skill-First Core
+# ProofLoop
 
-ProofLoop is an installable software-engineering skill harness. One visible skill invocation launches an orchestrator that owns task classification, role allocation, real verification, bounded repair, independent review, hallucination checks, anti-bloat enforcement, and truth-gated completion.
+**Make coding agents prove they are done.**
 
-**v0.4.0-alpha is a development build.** The automatic kernel and deterministic evidence layer are implemented. Authenticated Codex and Antigravity model-routing/recovery runs still need to be proven in the user's environment, so the overall release gate remains `FAIL`.
+> **Strong judgment at the boundaries. Fast models in the loop. Evidence at the finish.**
 
-## Use
+ProofLoop is a skill-first software-engineering runtime for Codex, Claude Code, and Antigravity. One
+visible skill turns a rough request into a scope-preserving intent contract, chooses a workload-sized
+workflow, runs isolated roles, verifies real repository evidence, repairs bounded failures, and ends in
+an explicit truth state.
+
+[한국어 README](README.ko.md) · [Efficiency strategy](docs/proofloop-efficiency-strategy.md) · [Benchmark specification](docs/swe-skills-benchmark-spec.md)
+
+> **Under active development — `v0.4.0-alpha`.** Adaptive model routing, the Proof Graph, bounded recovery,
+> live execution visibility, and per-model token accounting are implemented and covered by deterministic
+> tests. Authenticated live evidence and comparative quality/token-efficiency benchmarks are still being
+> developed and measured.
+
+## The idea in one minute
+
+Most agent workflows make one model do everything: understand the request, design the change, search the
+repository, implement, retry, review itself, and declare success. Using the strongest model for every step
+is expensive. Using a fast model for every step can make early misunderstandings compound.
+
+ProofLoop's design bet is different:
 
 ```text
-Codex:       $proofloop <request>   or select proofloop from /skills
-Antigravity: /proofloop <request>
+rough request
+  → strong reasoning at high-leverage decisions, only when the task earns it
+  → fast explorer and implementer loops where tests can provide corrective feedback
+  → deterministic checks after every meaningful attempt
+  → strong independent review when risk, uncertainty, or blast radius requires it
+  → evidence—not any model—owns the final verdict
+```
+
+In other words: spend premium reasoning where a wrong decision would multiply downstream work. Use faster,
+lower-cost models for bounded exploration, implementation, and repair loops that can be corrected by real
+feedback. Skip both when a small task does not need them.
+
+This is the product hypothesis behind ProofLoop's model routing and adaptive lanes. The architecture and
+deterministic mechanics exist; the claim that this produces better token efficiency is still being tested
+and is not presented as a proven result.
+
+![ProofLoop compares a single-model workflow with proof-driven routing across strong judgment, fast model loops, deterministic verification, recovery, and a truth gate.](docs/assets/proof-driven-model-routing.svg)
+
+The important distinction is not “many models instead of one.” ProofLoop couples routing to the proof
+state: failed evidence sends work back through a bounded recovery loop, open high-risk obligations can add
+strong review, and closed obligations let the runtime stop. Routing controls who works next; Proof controls
+why the loop continues and whether the result may be called complete.
+
+The model names in the diagram are concrete routing examples, not fixed dependencies. A host may route
+strong judgment to Claude Opus, Fable, or GPT-5.6 Sol and feedback-rich implementation loops to Claude
+Haiku or Gemini 3.5 Flash. The active Registry, host capability, availability, and observed model trace
+remain authoritative.
+
+### When does ProofLoop escalate to a stronger role or model?
+
+Escalation is driven by observed risk and proof gaps, not by a model asking for more intelligence. The
+current default policy is:
+
+| Signal | Runtime decision |
+| --- | --- |
+| Security, auth, payments, permissions, concurrency, migration, schema, data loss, deployment, or another critical path | Enter T3; require strong planning, exploration, independent review, and high-risk proof obligations |
+| Public contract, persistent state, greenfield architecture, broad scope, or material uncertainty | Enter or upgrade to T2/T3; add a planner, an explorer when needed, and deep review |
+| First diff touches a critical path | Upgrade to T3 even if the request looked simple |
+| First diff spans at least three top-level roots or four files | Upgrade an underestimated T0/T1 task to T2 |
+| Same deterministic failure fingerprint repeats twice, or the default two fast attempts are exhausted | Switch to the recovery role; upgrade T0/T1 to T2 and require deep review |
+| Failure is `DESIGN_CONFLICT`, `SPEC_AMBIGUITY`, or `CONTRACT_CHANGE` | Return to the strong planner instead of retrying implementation |
+| Deep reviewer returns `FIX_REQUIRED` or `OVERBUILT` | Run one bounded recovery repair, rerun deterministic checks, then review again |
+| Recovery, replan, time, or token budget is exhausted | Stop as `BLOCKED` or `FAILED`; do not escalate forever |
+
+The default repair budget is two fast attempts followed by at most one recovery attempt. Task briefs can
+set tighter budgets, and the runtime records every transition and reason in the event stream and artifacts.
+
+## Why ProofLoop exists
+
+Coding agents are good at producing plausible changes. Plausibility is not completion.
+
+A model can say that tests pass without running them, use stale evidence, quietly widen the scope, keep
+repairing without making progress, or spend more tokens on a one-line change than the change is worth.
+Prompt discipline helps, but the same model should not own the request, the implementation, the evidence,
+and the final verdict without checks and balances.
+
+ProofLoop follows four principles:
+
+1. **Evidence over claims.** Deterministic checks, protected-file integrity, and current artifacts outrank model prose.
+2. **The loop belongs to the runtime.** Retry, escalation, recovery, and exhaustion are explicit state transitions, not hopeful prompt text.
+3. **Use only the process the work earns.** Small changes take a fast lane; uncertainty, blast radius, and proof gaps add roles and review.
+4. **Truth includes restraint.** A correct change can still fail if it is out of scope, overbuilt, or supported only by stale evidence.
+
+## How does that help me?
+
+You give ProofLoop the same kind of request you would give a coding agent. The difference is what happens
+afterward: ProofLoop turns the request into an explicit contract, decides how much process the task
+deserves, exposes every role and model change, and refuses to collapse “the model sounds confident” into
+“the repository is proven.”
+
+| Your task | Likely ProofLoop path | Practical value |
+| --- | --- | --- |
+| One-file mechanical change | Intent-lite → fast implementation → focused check → truth gate | Avoids paying for a full planning and review ceremony |
+| Bounded feature with known seams | Targeted context → fast implementation loop → tests → optional review | Lets objective feedback correct inexpensive iterations |
+| Cross-module or ambiguous feature | Strong planning → bounded fast implementation cycles → reclassification → strong review | Uses premium reasoning before and after the high-volume middle |
+| Regression or intermittent failure | Failure fingerprint → targeted retry → recovery escalation → fresh verification | Continues without requiring you to manually re-prompt every failed attempt |
+| Security, migration, or public-contract change | High-risk lane → explicit proof obligations → independent review → fail-closed truth | Prefers `BLOCKED` or `UNPROVEN` over an unsafe success claim |
+
+ProofLoop is most useful when a task is large enough for mistakes to compound, when failed checks are
+likely, or when accepting a wrong result is expensive. It is less useful for prose edits, trivial renames,
+or repositories with no executable checks. The Adaptive lane is designed to reduce that overhead, but its
+real-world efficiency advantage remains unproven until paired benchmarks complete.
+
+Distinct-model routing also depends on the host. Codex and Claude Code can request role-specific models;
+the current Antigravity integration isolates roles but uses the current session model.
+
+## Getting started
+
+### Requirements
+
+- macOS or Linux with Python 3.10+
+- Git
+- At least one supported host CLI: Codex, Claude Code, or Antigravity
+- npm only for the pinned local tokScale companion
+
+### Install
+
+```bash
+git clone https://github.com/anjwoc/ProofLoop.git
+cd ProofLoop
+./install.sh
+python3 scripts/doctor.py
+```
+
+Equivalent entry points are available:
+
+```bash
+make install
+python3 scripts/install.py
+python3 script/install.py
+npm run proofloop:install
+```
+
+Installation is a clean, idempotent reinstall of ProofLoop-managed files. It removes stale ProofLoop
+runtime, plugin, skill, agent, workflow, and marketplace entries before installing the current build.
+Unrelated host configuration is preserved. The install manifest is written to
+`~/.proofloop/install-manifest.json`.
+
+Restart the host after installation, then invoke the one public skill:
+
+```text
+Codex:       $proofloop <request>   or choose proofloop from /skills
 Claude Code: /proofloop <request>
+Antigravity: /proofloop <request>
 ```
 
-The user never runs `invoke-role`, `record-attempt`, or `verify-run` manually.
+### First useful task
 
-## Flow
+Start in a clean, disposable Git repository with a real success command. For example:
 
 ```text
-visible proofloop skill
-→ proofloop-core goal
-→ preflight and Git snapshot
-→ strategy selection
-→ isolated role processes
-→ real checks and diff guard
-→ fingerprint-based retry/recovery
-→ independent review
-→ claim, truth, and anti-bloat gates
-→ PROVEN | UNPROVEN | FAILED | BLOCKED
+/proofloop Add an idempotent reservation endpoint with persistence, conflict handling,
+and tests. Preserve the existing response contract. Run the repository's tests and do
+not report completion unless the checks and final diff are proven.
 ```
 
-Mutation strategies implemented in this alpha:
-
-- `DIRECT_VERIFIED_CHANGE`
-- `PLANNED_IMPLEMENTATION`
-- `HIGH_RISK_ENGINEERING`
-
-Repository-analysis orchestration is intentionally blocked with `ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED` rather than simulated.
-
-## Live execution visibility
-
-Installed host skills use the human stream automatically. The screen shows phases, roles, requested and observed models, attempts, real check results, recovery reasons, review findings, and the final truth state. The same event objects are appended to `.proofloop/runs/<run-id>/events.jsonl`.
-
-```bash
-proofloop-core goal --host codex --repo . --request-file request.txt \
-  --output-format human --verbosity info --color auto
-```
-
-Machine consumers can request pure JSON Lines. The backward-compatible default `quiet` mode prints only the final JSON result.
-
-```bash
-proofloop-core goal --host codex --repo . --request-file request.txt --output-format jsonl
-proofloop-core goal --host codex --repo . --request-file request.txt --output-format quiet
-```
-
-Replay or follow a run from another terminal:
+In another terminal, follow the same run:
 
 ```bash
 proofloop-core watch --run latest --repo . --format human
-proofloop-core watch --run-dir .proofloop/runs/<run-id> --format jsonl --task TASK-001 --level warning
 ```
 
-An unobserved model is displayed as requested-only and keeps model routing `UNPROVEN`. Complete stdout and stderr remain in the run's invocation and check artifacts.
+After completion, inspect the truth and usage artifacts:
 
-## Token usage and benchmarks
+```bash
+proofloop-core usage --run latest --repo . --reconcile
+python3 -m json.tool .proofloop/runs/<run-id>/truth-report.json
+```
 
-Provider-reported input, output, cache-read, cache-write, and reasoning tokens are attributed to the
-exact run, task, role, model, session, and invocation. ProofLoop stores the ledger under
-`.proofloop/runs/<run-id>/usage/` and uses the pinned local tokScale CLI to reconcile session totals and
-cost without uploading data.
+## What happens after invocation
+
+```text
+visible proofloop skill
+  → intent contract: preserve the original request, scope, unknowns, and authority
+  → workload profile: classify T0–T3 from risk, change surface, and uncertainty
+  → repository preflight and Git snapshot
+  → proof graph: identify obligations that must be closed
+  → conditional protocol, domain pack, role, and model selection
+  → implementation with live role/model/check events
+  → first-diff reclassification
+  → deterministic checks, diff guard, and protected evidence
+  → bounded fingerprint-based recovery when evidence fails
+  → conditional independent review
+  → truth and anti-bloat gates
+  → PROVEN | UNPROVEN | FAILED | BLOCKED
+```
+
+The runtime exposes three user modes:
+
+| Mode | Use it for | Behavior |
+| --- | --- | --- |
+| `adaptive` | Default engineering work | Chooses the lightest workflow justified by workload and proof gaps |
+| `goal` | Multi-step convergence work | Continues until the goal is proven, exhausted, or genuinely blocked |
+| `audit` | Read-only analysis | Produces evidence without authorizing source mutation |
+
+```bash
+proofloop-core run --mode adaptive --host codex --repo . --request-file request.txt
+proofloop-core run --mode goal --host claude-code --repo . --request-file request.txt
+proofloop-core run --mode audit --host codex --repo . --request-file audit.txt
+```
+
+## Visible execution, model changes, and artifacts
+
+The human stream shows phases, role starts, requested and observed models, model changes, attempts, check
+results, recovery reasons, review findings, token progress, and the final truth state. An unobserved model
+is displayed as requested-only and keeps model routing `UNPROVEN`.
+
+Each run persists machine-readable artifacts under `.proofloop/runs/<run-id>/`, including:
+
+- `intent-contract.json`
+- `workload-profile.json`
+- `proof-graph.json`
+- `skill-resolution.json` and `domain-selection.json`
+- `events.jsonl`, `model-trace.jsonl`, and `invocations/`
+- `attempts.jsonl`, check outputs, and diff evidence
+- `usage/usage-summary.json`
+- `truth-report.json`
+
+JSONL output is available for TUI, relay, and CI consumers:
+
+```bash
+proofloop-core run --mode adaptive --host codex --repo . --request-file request.txt \
+  --output-format jsonl
+```
+
+## ProofLoop, Superpowers, and ordinary skills
+
+[Superpowers](https://github.com/obra/superpowers/tree/d884ae04edebef577e82ff7c4e143debd0bbec99)
+is a mature, composable software-development methodology. Its public workflow mandates brainstorming,
+worktrees, plans, TDD, subagent execution, review, and completion verification. ProofLoop shares its
+commitment to systematic work and evidence, but is solving a different runtime problem.
+
+| Dimension | Ordinary single skill | Superpowers | ProofLoop |
+| --- | --- | --- | --- |
+| Primary unit | Domain instructions in model context | Composable mandatory workflow skills | One public entry skill backed by a runtime and internal protocols |
+| Workflow ownership | The active model | Skill instructions and host tools | Runtime FSM, proof graph, budgets, and host adapters |
+| Workload adaptation | Usually manual | Workflow is intentionally comprehensive | T0–T3 fast/full lanes with first-diff reclassification |
+| Verification | Depends on the skill and model | Verification-before-completion discipline | Deterministic commands, evidence authority, diff guard, and truth gate |
+| Recovery | Re-prompt or skill-specific debugging | Systematic-debugging workflow | Failure fingerprints, bounded retries, recovery role, exhaustion state |
+| Model routing | Host default | Host/subagent dependent | Role registry plus requested/observed model trace |
+| Token accounting | Usually absent | Not a core public claim | Per run/task/role/model/invocation ledger plus tokScale reconciliation |
+| Domain knowledge | Often the main value | Primarily process methodology | Generic domain packs with repository-conditioned technology adapters |
+| Completion output | Natural-language answer | Workflow completion discipline | `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` with artifacts |
+
+This table describes architecture, not a proven performance ranking. There is currently no completed,
+controlled benchmark showing that ProofLoop beats Superpowers in pass rate or tokens. Superpowers also
+maintains behavior tests; comparing the two fairly requires the same tasks, model, host, time limit,
+repository state, and external evaluator.
+
+## What is actually proven today
+
+Evidence labels are intentionally narrow:
+
+| Claim | Current evidence | Status |
+| --- | --- | --- |
+| Deterministic kernel and package mechanics | 209 local tests pass; package validation passes | `DEVELOPMENT_PROVEN` |
+| Simulated one-command orchestration | Fake-host process and orchestration tests | `SIMULATED_PROVEN` |
+| Trigger routing for five authoring fixtures | Positive/negative fixtures, all F1 1.0 | `AUTHORING_SET_ONLY` |
+| External trigger routing | Pinned SWE-Skills-Bench titles: backend/frontend/devops F1 1.0 | `LIMITED_EXTERNAL_MEASURED` |
+| Test-engineering and code-review external routing | No external catalog coverage | `UNMEASURED` |
+| Domain-pack behavior | 90 paired trials planned, not executed | `PLANNED` |
+| Six-arm SWE efficacy benchmark | 162 trials dry-run; Docker evaluator not completed | `UNMEASURED` |
+| Authenticated cross-model routing and recovery | No accepted live run artifact | `UNPROVEN` |
+| Token-efficiency or market superiority | No completed paired model benchmark | `UNPROVEN` |
+
+The machine-readable qualification report is
+[`reports/domain-skill-qualification.json`](reports/domain-skill-qualification.json). The release report is
+[`reports/release-check.json`](reports/release-check.json). Dry-run and self-authored fixtures are never
+reported as task pass-rate evidence.
+
+## Domain packs are experimental
+
+ProofLoop currently ships five generic domain packs:
+
+- backend development
+- frontend development
+- DevOps delivery
+- test engineering
+- code review
+
+Django, React, Spring, GitHub Actions, Kustomize, Flux, and similar names are conditional adapters inside
+generic packs, not public product skills. All five packs remain `EXPERIMENTAL` and are excluded from default
+Adaptive selection until repeated behavior and efficacy scorecards justify promotion.
+
+Use explicit canary opt-in only:
+
+```bash
+proofloop-core run --mode adaptive --host codex --repo . --request-file request.txt \
+  --experimental-domain-packs
+```
+
+## Token usage and reproducible benchmarks
+
+Provider-reported input, output, cache-read, cache-write, and reasoning tokens are attributed to the exact
+run, task, role, model, session, and invocation. Missing usage remains unknown and invalidates efficiency
+claims; it is never converted to zero.
 
 ```bash
 proofloop-core usage --run latest --repo .
 proofloop-core usage --run-dir .proofloop/runs/<run-id> --reconcile
 ```
 
-Benchmark suites are JSON documents with `tasks`, where every task has an `id`, `request`, and optional
-`checks` as arrays of command arguments. `routing` compares the same ProofLoop harness using one model
-against role routing. `system` compares a normal single-agent run against the full ProofLoop goal loop.
-Each trial runs in an isolated Git worktree and missing usage remains unknown rather than zero.
+The benchmark harness supports six paired arms:
 
-```bash
-proofloop-core benchmark --suite benchmarks/core.json --repo . --mode both \
-  --repetitions 5 --baseline-host codex --baseline-model <model> --proofloop-host codex
-proofloop-core compare --benchmark-dir .proofloop/benchmarks/<benchmark-id>
+1. single model, no skill
+2. single model, ProofLoop domain pack only
+3. single model, official external skill
+4. ProofLoop Core without skill resolution
+5. Adaptive ProofLoop
+6. Full ProofLoop
+
+See [the SWE-Skills-Bench specification](docs/swe-skills-benchmark-spec.md) for pinned repositories,
+read-only official tests, Docker evaluation, usage coverage, repetition requirements, and adoption gates.
+
+## Testing in Codex, Claude Code, and Antigravity
+
+Referencing only the public ProofLoop skill and asking it to build something is a valid end-to-end smoke
+test on all three hosts, as long as the task is inside a real Git repository and has executable checks. It
+tests the entry skill, runtime launch, event stream, artifacts, checks, and truth gate.
+
+| Host | Invoke | What the smoke test can show | Model-routing boundary |
+| --- | --- | --- | --- |
+| Codex | `$proofloop <request>` or `/skills` | Full runtime path, live events, checks, recovery, artifacts, truth | Role-specific models can be requested; only an observed model trace proves they were used |
+| Claude Code | `/proofloop <request>` | Full runtime path, live events, checks, recovery, artifacts, truth | Role-specific models can be requested; only an observed model trace proves they were used |
+| Antigravity | `/proofloop <request>` | Full runtime path with role-isolated Antigravity processes | `ROLE_ROUTING_ONLY`; roles use the current session model |
+
+Use the same meaningful test standard on every host:
+
+1. Restart the host after installation.
+2. Use a disposable Git repository with a green baseline.
+3. Request a project-sized task with tests, persistence, error handling, and a compatibility constraint.
+4. Keep another terminal on `proofloop-core watch --run latest --repo . --format human`.
+5. Verify `truth-report.json`, `model-trace.jsonl`, check artifacts, final diff, and usage coverage.
+6. Run a second scenario containing a real failing check to observe bounded recovery; first-attempt success does not prove recovery.
+
+Example invocations:
+
+```text
+# Codex
+$proofloop Add an idempotent reservation API with persistence, conflict handling, and regression tests.
+
+# Claude Code
+/proofloop Add an idempotent reservation API with persistence, conflict handling, and regression tests.
+
+# Antigravity
+/proofloop Add an idempotent reservation API with persistence, conflict handling, and regression tests.
 ```
 
-## Install
-
-```bash
-./install.sh
-python3 scripts/doctor.py
-```
-
-`./install.sh` selects `python3` automatically and clean-installs all hosts at user scope. Pass the
-same options as the Python installer to narrow the target, for example
-`./install.sh --host codex --scope user`. `make install` and
-`python3 ./scripts/install.py` are equivalent. ProofLoop itself does not require an npm package; npm is
-used to install the pinned tokScale companion under `~/.proofloop/tools/`. Pass `--without-tokscale` only
-when token-cost reconciliation is intentionally unavailable.
-
-Installation is a clean, idempotent reinstall. It validates generated adapters, removes only
-ProofLoop-managed runtime, plugin, agent, skill, workflow, and marketplace entries, then installs
-the fresh build. The ProofLoop-managed tokScale directory is also deleted and recreated at the pinned
-version. Unrelated host plugins, agents, skills, npm packages, and settings are preserved.
-
-Antigravity permission bypass is disabled by default. It can be explicitly enabled for isolated unattended testing:
-
-```bash
-export PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1
-```
-
-## Authenticated acceptance
+Maintained authenticated acceptance automation currently covers Codex and Antigravity:
 
 ```bash
 python3 scripts/run_host_live.py --host codex --scenario normal --keep-workspace
 python3 scripts/run_host_live.py --host codex --scenario recovery --keep-workspace
 python3 scripts/run_host_live.py --host antigravity --scenario normal --keep-workspace
 python3 scripts/run_host_live.py --host antigravity --scenario recovery --keep-workspace
-```
-
-A recovery run passes only when a real `implementer_recovery` invocation is observed after objective failed checks. First-attempt success does not prove recovery.
-
-```bash
 python3 scripts/release_check.py
 ```
 
-Static tests and simulated host processes cannot override missing authenticated live evidence.
+Claude Code can be tested interactively through `/proofloop`, but `run_host_live.py` does not yet provide a
+Claude acceptance scenario. That missing automated harness is a release evidence gap, not a reason to
+claim Claude is already live-proven.
+
+Antigravity permission bypass remains off by default. Enable
+`PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1` only in an isolated unattended test environment.
+
+## Release boundary
+
+Before a public launch, the project still needs:
+
+- authenticated host acceptance artifacts
+- completed behavior and paired efficacy trials
+- Docker-backed official evaluator results
+- a selected and committed software license; this repository currently has no `LICENSE` file
+- CI that republishes the same evidence on a clean machine
+
+Until those gates close, market copy should say “designed to improve reliability and token efficiency,”
+not “proven better” or “saves N%.”
