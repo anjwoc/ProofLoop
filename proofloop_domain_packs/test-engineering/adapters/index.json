@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","adapters":[{"id":"pytest","signals":["framework:pytest"]},{"id":"jest","signals":["framework:jest"]},{"id":"junit","signals":["framework:junit"]}]}

@@ -5,17 +5,32 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from proofloop_core.hosts import antigravity_workflow, capability, write_codex_agents
+from proofloop_core.skill_registry import SkillRegistry
+
+
+def remove_tree(path: Path, *, attempts: int = 5) -> None:
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def copy_tree(source: Path, target: Path) -> None:
     if target.exists():
-        shutil.rmtree(target)
+        remove_tree(target)
     shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "dist"))
 
 
@@ -30,6 +45,19 @@ def specialize_entry_skill(skill_root: Path, host: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def write_skill_manifest(protocol_root: Path, domain_root: Path, target: Path) -> None:
+    registry = SkillRegistry(
+        [
+            *SkillRegistry.discover(protocol_root).skills,
+            *SkillRegistry.discover(domain_root).skills,
+        ]
+    )
+    target.write_text(
+        json.dumps(registry.to_dict(), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def build_claude(root: Path, output: Path) -> None:
     plugin_root = output / "plugins" / "proofloop"
     (output / ".claude-plugin").mkdir(parents=True, exist_ok=True)
@@ -38,9 +66,10 @@ def build_claude(root: Path, output: Path) -> None:
     plugin = json.loads((root / "plugin" / "plugin.json").read_text(encoding="utf-8"))
     (output / ".claude-plugin" / "marketplace.json").write_text(json.dumps(marketplace, indent=2) + "\n", encoding="utf-8")
     (plugin_root / ".claude-plugin" / "plugin.json").write_text(json.dumps(plugin, indent=2) + "\n", encoding="utf-8")
-    for name in ("skills", "agents", "scripts", "proofloop_core", "references", "hooks"):
+    for name in ("skills", "proofloop_protocols", "proofloop_domain_packs", "agents", "scripts", "proofloop_core", "references", "hooks"):
         copy_tree(root / name, plugin_root / name)
     specialize_entry_skill(plugin_root / "skills", "claude-code")
+    write_skill_manifest(plugin_root / "proofloop_protocols", plugin_root / "proofloop_domain_packs", plugin_root / "installed-skills.json")
 
 
 def build_codex(root: Path, output: Path) -> None:
@@ -80,9 +109,10 @@ def build_codex(root: Path, output: Path) -> None:
     }
     (output / ".agents" / "plugins" / "marketplace.json").write_text(json.dumps(marketplace, indent=2) + "\n", encoding="utf-8")
     (plugin_root / ".codex-plugin" / "plugin.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    for name in ("skills", "proofloop_core", "references"):
+    for name in ("skills", "proofloop_protocols", "proofloop_domain_packs", "proofloop_core", "references"):
         copy_tree(root / name, plugin_root / name)
     specialize_entry_skill(plugin_root / "skills", "codex")
+    write_skill_manifest(plugin_root / "proofloop_protocols", plugin_root / "proofloop_domain_packs", plugin_root / "installed-skills.json")
     hooks_dir = plugin_root / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(root / "scripts" / "host_trace_hook.py", hooks_dir / "host_trace_hook.py")
@@ -122,7 +152,10 @@ def build_codex(root: Path, output: Path) -> None:
 
 def build_antigravity(root: Path, output: Path) -> None:
     copy_tree(root / "skills", output / "skills")
+    copy_tree(root / "proofloop_protocols", output / "proofloop_protocols")
+    copy_tree(root / "proofloop_domain_packs", output / "proofloop_domain_packs")
     specialize_entry_skill(output / "skills", "antigravity")
+    write_skill_manifest(output / "proofloop_protocols", output / "proofloop_domain_packs", output / "installed-skills.json")
     (output / "workflows").mkdir(parents=True, exist_ok=True)
     (output / "workflows" / "proofloop.md").write_text(antigravity_workflow(), encoding="utf-8")
     (output / "capability.json").write_text(
@@ -152,7 +185,7 @@ def main() -> int:
     name = "claude" if args.host == "claude-code" else args.host
     output = Path(args.output).resolve() if args.output else root / "dist" / name
     if output.exists():
-        shutil.rmtree(output)
+        remove_tree(output)
     output.mkdir(parents=True, exist_ok=True)
     if args.host == "claude-code":
         build_claude(root, output)

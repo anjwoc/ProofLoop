@@ -21,11 +21,14 @@ from .run_state import start_run, abort_run, finalize_run
 from .attempts import record_attempt
 from .hosts import capability, probe
 from .host_runner import invoke_role
-from .orchestrator import converge_goal, orchestrate
+from .orchestrator import converge_goal, orchestrate, run_proofloop
 from .watch import resolve_run_dir, watch_events
 from .tokscale import TokScaleAdapter
 from .usage import build_usage_summary
-from .benchmark import compare_benchmark, run_benchmark
+from .benchmark import compare_benchmark, resume_benchmark, run_benchmark
+from .benchmark_environment import preflight_swe_environment
+from .swe_skills_bench import REQUIRED_DOMAINS, build_swe_suite, inspect_swe_suite
+from .skill_qualification import build_behavior_trial_schedule, qualify_domain_packs
 
 
 def _print(value: object) -> None:
@@ -72,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     p_orchestrate.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="quiet")
     p_orchestrate.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_orchestrate.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    p_orchestrate.add_argument("--experimental-domain-packs", action="store_true")
 
     p_goal = sub.add_parser("goal")
     p_goal.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
@@ -86,6 +90,24 @@ def main(argv: list[str] | None = None) -> int:
     p_goal.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="human")
     p_goal.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_goal.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    p_goal.add_argument("--experimental-domain-packs", action="store_true")
+
+    p_run = sub.add_parser("run")
+    p_run.add_argument("--mode", choices=["adaptive", "goal", "audit"], default="adaptive")
+    p_run.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_run.add_argument("--repo", default=".")
+    run_request_group = p_run.add_mutually_exclusive_group(required=True)
+    run_request_group.add_argument("--request")
+    run_request_group.add_argument("--request-file")
+    p_run.add_argument("--strategy", choices=["direct", "planned", "high-risk", "analysis"])
+    p_run.add_argument("--timeout-seconds", type=int, default=1200)
+    p_run.add_argument("--max-cycles", type=int, default=8)
+    p_run.add_argument("--max-replans", type=int, default=2)
+    p_run.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="human")
+    p_run.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
+    p_run.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    p_run.add_argument("--skills", choices=["enabled", "disabled"], default="enabled")
+    p_run.add_argument("--experimental-domain-packs", action="store_true")
 
     p_watch = sub.add_parser("watch")
     watch_source = p_watch.add_mutually_exclusive_group(required=True)
@@ -108,18 +130,58 @@ def main(argv: list[str] | None = None) -> int:
     p_usage.add_argument("--tokscale-binary")
 
     p_benchmark = sub.add_parser("benchmark")
-    p_benchmark.add_argument("--suite", required=True)
+    p_benchmark.add_argument("--suite")
     p_benchmark.add_argument("--repo", default=".")
     p_benchmark.add_argument("--mode", choices=["routing", "system", "both"], default="both")
     p_benchmark.add_argument("--repetitions", type=int, default=5)
-    p_benchmark.add_argument("--baseline-host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
-    p_benchmark.add_argument("--baseline-model", required=True)
+    p_benchmark.add_argument("--baseline-host", choices=["claude-code", "codex", "gemini", "antigravity"])
+    p_benchmark.add_argument("--baseline-model")
     p_benchmark.add_argument("--proofloop-host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
     p_benchmark.add_argument("--timeout-seconds", type=int, default=1200)
     p_benchmark.add_argument("--seed", type=int, default=0)
+    p_benchmark.add_argument("--policy", choices=["core", "adaptive", "full", "both", "all"], default="both")
+    p_benchmark.add_argument("--environment", choices=["local", "swe-skills"], default="local")
+    p_benchmark.add_argument("--swe-upstream")
+    p_benchmark.add_argument("--docker-binary", default="docker")
+    p_benchmark.add_argument("--include-official-skill", action="store_true")
+    p_benchmark.add_argument("--dry-run", action="store_true")
+    p_benchmark.add_argument("--resume")
+    p_benchmark.add_argument("--only", action="append")
+
+    p_swe_preflight = sub.add_parser("swe-preflight")
+    p_swe_preflight.add_argument("--suite", required=True)
+    p_swe_preflight.add_argument("--upstream", required=True)
+    p_swe_preflight.add_argument("--docker-binary", default="docker")
+    p_swe_preflight.add_argument("--pull-images", action="store_true")
+
+    p_swe_import = sub.add_parser("import-swe-bench")
+    p_swe_import.add_argument("--upstream", required=True)
+    p_swe_import.add_argument(
+        "--catalog",
+        default=str(Path(__file__).resolve().parents[1] / "benchmarks" / "swe-skills-bench" / "catalog.json"),
+    )
+    p_swe_import.add_argument("--domain", action="append", choices=list(REQUIRED_DOMAINS))
+    p_swe_import.add_argument("--output", required=True)
+
+    p_swe_inspect = sub.add_parser("inspect-swe-bench")
+    p_swe_inspect.add_argument("--suite", required=True)
 
     p_compare = sub.add_parser("compare")
     p_compare.add_argument("--benchmark-dir", required=True)
+
+    p_qualify = sub.add_parser("qualify-skills")
+    p_qualify.add_argument(
+        "--root",
+        default=str(Path(__file__).resolve().parents[1] / "proofloop_domain_packs"),
+    )
+    p_qualify.add_argument("--pack", action="append")
+    p_qualify.add_argument("--external-catalog")
+    p_qualify.add_argument("--behavior-repetitions", type=int, default=0)
+    p_qualify.add_argument("--seed", type=int, default=0)
+    p_qualify.add_argument(
+        "--output",
+        default=str(Path(__file__).resolve().parents[1] / "reports" / "domain-skill-qualification.json"),
+    )
 
     p_pre = sub.add_parser("preflight")
     p_pre.add_argument("--repo", default=".")
@@ -211,6 +273,22 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         return 0
+    if args.command == "qualify-skills":
+        result = qualify_domain_packs(
+            args.root,
+            only=tuple(args.pack or ()),
+            external_catalog=args.external_catalog,
+        )
+        if args.behavior_repetitions:
+            result["behaviorBenchmark"] = build_behavior_trial_schedule(
+                result,
+                repetitions=args.behavior_repetitions,
+                seed=args.seed,
+            )
+        output = Path(args.output).resolve()
+        write_json(output, result)
+        _print({"status": result["status"], "report": str(output), "qualificationHash": result["qualificationHash"]})
+        return 0 if result["status"] == "READY_FOR_BEHAVIOR_EVAL" else 2
     if args.command == "usage":
         selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
         reconciliation = None
@@ -222,6 +300,19 @@ def main(argv: list[str] | None = None) -> int:
         _print(result)
         return 0
     if args.command == "benchmark":
+        if args.resume:
+            result = resume_benchmark(args.resume, timeout_seconds=args.timeout_seconds)
+            _print(result)
+            return 0
+        if not args.suite or not args.baseline_host or not args.baseline_model:
+            parser.error("benchmark requires --suite, --baseline-host, and --baseline-model unless --resume is used")
+        policies = (
+            ("core", "adaptive", "full")
+            if args.policy == "all"
+            else ("adaptive", "full")
+            if args.policy == "both"
+            else (args.policy,)
+        )
         result = run_benchmark(
             args.suite,
             args.repo,
@@ -232,24 +323,56 @@ def main(argv: list[str] | None = None) -> int:
             proofloop_host=_resolve_host(args.proofloop_host),
             timeout_seconds=args.timeout_seconds,
             seed=args.seed,
+            policies=policies,
+            include_official_skill=args.include_official_skill,
+            dry_run=args.dry_run,
+            environment=args.environment,
+            swe_upstream=args.swe_upstream,
+            docker_binary=args.docker_binary,
+            only_task_ids=tuple(args.only or ()),
         )
         _print(result)
         return 0
+    if args.command == "swe-preflight":
+        result = preflight_swe_environment(
+            read_json(args.suite),
+            args.upstream,
+            docker_binary=args.docker_binary,
+            pull_images=args.pull_images,
+        )
+        _print(result)
+        return 0 if result["status"] == "READY" else 2
+    if args.command == "import-swe-bench":
+        result = build_swe_suite(
+            args.upstream,
+            args.catalog,
+            domains=tuple(args.domain or REQUIRED_DOMAINS),
+        )
+        write_json(args.output, result)
+        _print({"suite": str(Path(args.output).resolve()), "inspection": inspect_swe_suite(result)})
+        return 0
+    if args.command == "inspect-swe-bench":
+        result = inspect_swe_suite(read_json(args.suite))
+        _print(result)
+        return 0 if result["status"] == "READY" else 2
     if args.command == "compare":
         result = compare_benchmark(args.benchmark_dir)
         _print(result)
         return 0
-    if args.command in {"orchestrate", "goal"}:
+    if args.command in {"orchestrate", "goal", "run"}:
         host = _resolve_host(args.host)
         request = args.request
         if args.request_file:
             request = Path(args.request_file).read_text(encoding="utf-8")
         strategy_map = {"direct": "DIRECT_VERIFIED_CHANGE", "planned": "PLANNED_IMPLEMENTATION", "high-risk": "HIGH_RISK_ENGINEERING", "analysis": "REPOSITORY_ANALYSIS"}
-        runner = converge_goal if args.command == "goal" else orchestrate
+        runner = run_proofloop if args.command == "run" else converge_goal if args.command == "goal" else orchestrate
         extra = {
             "max_goal_cycles": args.max_cycles,
             "max_replans": args.max_replans,
-        } if args.command == "goal" else {}
+        } if args.command in {"goal", "run"} else {}
+        if args.command == "run":
+            extra["mode"] = args.mode
+            extra["skills_enabled"] = args.skills == "enabled"
         result = runner(
             host,
             args.repo,
@@ -259,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             output_format=args.output_format,
             verbosity=args.verbosity,
             color=args.color,
+            experimental_domain_packs=args.experimental_domain_packs,
             **extra,
         )
     elif args.command == "host-capabilities":

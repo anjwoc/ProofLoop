@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "1.0",
+  "upstreamRepository": "https://github.com/GeniusHTX/SWE-Skills-Bench",
+  "upstreamCommit": "95b3ce519fcb58d0b19e90a5b6e5165211dc6dd1",
+  "tasks": [
+    {
+      "id": "add-admin-api-endpoint",
+      "name": "Ghost Admin API Endpoint Creator",
+      "domain": "backend",
+      "type": "feature",
+      "repoUrl": "https://github.com/TryGhost/Ghost",
+      "repoCommit": "56a3ec2fb2474025da9541c924b207db98737322",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_add_admin_api_endpoint.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "django-patterns",
+      "name": "Django Architecture Patterns",
+      "domain": "backend",
+      "type": "feature",
+      "repoUrl": "https://github.com/saleor/saleor",
+      "repoCommit": "b6051eb07680de7b1f5609f4bee706b6ceb6de92",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_django_patterns.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "springboot-tdd",
+      "name": "Spring Boot TDD",
+      "domain": "backend",
+      "type": "feature",
+      "repoUrl": "https://github.com/spring-projects/spring-petclinic",
+      "repoCommit": "edf4db28affcc4741c79850a3d95bc3f177b5ff9",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-jvm",
+      "dockerImageDigest": "sha256:3b5219f2740fc8fd3b24409856181ae025fab0e256c43680ba7567d94a12a819",
+      "checks": [["./mvnw", "compile", "-DskipTests"], ["python", "-m", "pytest", "/workspace/tests/test_springboot_tdd.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "fix",
+      "name": "React Code Fix & Linter",
+      "domain": "frontend",
+      "type": "fix",
+      "repoUrl": "https://github.com/michaelasper/upgradle",
+      "repoCommit": "5f292188e9b427a96d3573b29e5677e4cdce58ea",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_fix.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "analytics-events",
+      "name": "Metabase Frontend Analytics Events",
+      "domain": "frontend",
+      "type": "feature",
+      "repoUrl": "https://github.com/metabase/metabase",
+      "repoCommit": "d8bb291939a60c44d8ba6eb7bb132a5e0f271cf1",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_analytics_events.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "implementing-agent-modes",
+      "name": "PostHog Agent Mode Architect",
+      "domain": "frontend",
+      "type": "feature",
+      "repoUrl": "https://github.com/PostHog/posthog",
+      "repoCommit": "ded7ef313da2a3b04ff0af9e781619a30dae3517",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_implementing_agent_modes.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "github-actions-templates",
+      "name": "GitHub Actions Templates",
+      "domain": "devops",
+      "type": "feature",
+      "repoUrl": "https://github.com/actions/starter-workflows",
+      "repoCommit": "affda94109f2228d5a7f542a28d23272ae31e00b",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-python",
+      "dockerImageDigest": "sha256:51d40310cdf44d00b3e383af1c4467bc460e6a3a25fedb1f9fab6a8d7b77b974",
+      "checks": [["python", "-m", "pytest", "/workspace/tests/test_github_actions_templates.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "k8s-manifest-generator",
+      "name": "Kubernetes Manifest Generator",
+      "domain": "devops",
+      "type": "feature",
+      "repoUrl": "https://github.com/kubernetes-sigs/kustomize",
+      "repoCommit": "29bf16c673061f95dedeb502f5700cedc9cfe1f8",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-golang",
+      "dockerImageDigest": "sha256:08a709af3502f43282367befe0ae3ba641efe7300cf9d2295c01eb12564c6180",
+      "checks": [["go", "build", "./..."], ["python", "-m", "pytest", "/workspace/tests/test_k8s_manifest_generator.py", "-v", "--tb=short"]]
+    },
+    {
+      "id": "gitops-workflow",
+      "name": "GitOps Workflow for Kubernetes",
+      "domain": "devops",
+      "type": "feature",
+      "repoUrl": "https://github.com/fluxcd/flux2",
+      "repoCommit": "d9f51d047dbb2e3184539ca40740f7b6f808f8d7",
+      "dockerImage": "zhangyiiiiii/swe-skills-bench-golang",
+      "dockerImageDigest": "sha256:08a709af3502f43282367befe0ae3ba641efe7300cf9d2295c01eb12564c6180",
+      "checks": [["go", "build", "./..."], ["python", "-m", "pytest", "/workspace/tests/test_gitops_workflow.py", "-v", "--tb=short"]]
+    }
+  ]
+}

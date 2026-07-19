@@ -192,7 +192,8 @@ Do not simulate the workflow in this Antigravity session.
 RELAY_DIR="$(pwd)/.proofloop/relay/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$RELAY_DIR"
 printf '1\n' > "$RELAY_DIR/next-line"
-nohup "$HOME/.proofloop/bin/proofloop-core" goal \
+nohup "$HOME/.proofloop/bin/proofloop-core" run \
+  --mode adaptive \
   --host antigravity \
   --repo . \
   --request-file <absolute-request-file> \

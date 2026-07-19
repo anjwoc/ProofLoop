@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0",
+  "name": "ReservationFlow greenfield T3",
+  "tasks": [
+    {
+      "id": "reservation-flow-greenfield",
+      "domain": "backend",
+      "workloadTier": "T3",
+      "strategy": "high-risk",
+      "request": "Build ReservationFlow as a Python 3.10+ standard-library package. Implement reservation_flow/service.py with ReservationService(storage_path). Required methods: create_resource(resource_id, capacity), reserve(resource_id, start, end, seats, idempotency_key), cancel(reservation_id), and get_reservation(reservation_id). Time values are integer epoch seconds and end must be greater than start. Persist state in SQLite so reopening the service preserves resources and reservations. Concurrent overlapping reserve calls must never exceed resource capacity. Reusing an idempotency key with the same request returns the original reservation; reusing it with different parameters raises an error. Cancellation releases capacity and is idempotent. Return reservation dictionaries with id, resource_id, start, end, seats, status, and idempotency_key. Define domain exceptions ReservationError, ReservationConflict, and ReservationNotFound. Add focused unit tests. Do not edit benchmark_verify.py. Continue until python3 benchmark_verify.py . passes.",
+      "checks": [["python3", "benchmark_verify.py", "."]],
+      "protectedFiles": ["benchmark_verify.py"]
+    }
+  ]
+}

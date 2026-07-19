@@ -8,11 +8,24 @@ import shutil
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKSCALE_VERSION = "4.5.3"
+
+sys.path.insert(0, str(ROOT))
+from proofloop_core.skill_registry import SkillRegistry
+
+
+def builtin_skill_registry(root: Path) -> SkillRegistry:
+    return SkillRegistry(
+        [
+            *SkillRegistry.discover(root / "proofloop_protocols").skills,
+            *SkillRegistry.discover(root / "proofloop_domain_packs").skills,
+        ]
+    )
 
 
 def run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -31,7 +44,16 @@ def remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
     elif path.exists():
-        shutil.rmtree(path)
+        for attempt in range(5):
+            try:
+                shutil.rmtree(path)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
 
 def copy_tree(source: Path, target: Path) -> None:
@@ -50,8 +72,12 @@ def install_runtime(home: Path, dry_run: bool) -> dict[str, str]:
         return {"runtime": str(runtime), "wrapper": str(wrapper)}
     remove_path(runtime)
     runtime.mkdir(parents=True, exist_ok=True)
-    for name in ("proofloop_core", "references"):
+    for name in ("proofloop_core", "references", "skills", "proofloop_protocols", "proofloop_domain_packs", "benchmarks"):
         copy_tree(ROOT / name, runtime / name)
+    (runtime / "installed-skills.json").write_text(
+        json.dumps(builtin_skill_registry(runtime).to_dict(), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     bin_dir.mkdir(parents=True, exist_ok=True)
     remove_path(wrapper)
     wrapper.write_text(
@@ -307,7 +333,21 @@ def main() -> int:
             results.append(install_antigravity(output, args.scope, target, args.dry_run))
         else:
             results.append(install_claude(output, args.scope, args.dry_run))
-    print(json.dumps({"runtime": runtime, "tokscale": tokscale, "adapters": results}, indent=2))
+    payload = {"runtime": runtime, "tokscale": tokscale, "adapters": results}
+    if not args.dry_run:
+        install_manifest = {
+            "schemaVersion": "1.0",
+            "skills": builtin_skill_registry(ROOT).to_dict()["skills"],
+            "adapters": results,
+            "runtime": runtime,
+        }
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "install-manifest.json").write_text(
+            json.dumps(install_manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        payload["installManifest"] = str(home / "install-manifest.json")
+    print(json.dumps(payload, indent=2))
     return 0
 
 

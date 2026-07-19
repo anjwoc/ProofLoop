@@ -57,6 +57,30 @@ class TruthGateTest(unittest.TestCase):
             result = build_truth_report(root)
             self.assertEqual("PROVEN", result["verdict"])
 
+    def test_open_current_proof_obligation_prevents_proven(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_core_evidence(root)
+            write_json(root / "intent-contract.json", {"schemaVersion": "1.0"})
+            write_json(
+                root / "proof-graph.json",
+                {
+                    "schemaVersion": "1.0",
+                    "obligations": [
+                        {"id": "AC-001", "status": "OPEN", "revision": 1, "requiredAuthority": "DETERMINISTIC_CHECK"}
+                    ],
+                },
+            )
+            write_json(
+                root / "model-trace-summary.json",
+                {"routingClaimed": False, "routingObserved": False},
+            )
+
+            result = build_truth_report(root)
+
+            self.assertEqual("FAILED", result["verdict"])
+            self.assertIn("PROOF_OBLIGATIONS_OPEN:AC-001", result["blockers"])
+
     def test_same_model_is_not_cross_model_proof(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace = Path(tmp) / "trace.jsonl"

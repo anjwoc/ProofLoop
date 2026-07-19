@@ -70,7 +70,7 @@ def main() -> int:
         "coreLiveE2E": live,
         "observedAuthenticatedModelRouting": "PASS" if authenticated_pair_proven else "UNPROVEN",
         "observedAuthenticatedRepairLoop": "PASS" if authenticated_pair_proven else "UNPROVEN",
-        "repositoryAnalysisOrchestration": "NOT_IMPLEMENTED",
+        "repositoryAuditMode": "IMPLEMENTED_READ_ONLY",
         "overallRelease": overall,
         "commands": checks,
     }
@@ -93,7 +93,7 @@ def main() -> int:
         f"- Claude authenticated recovery live E2E: **{live['claudeRecovery']['status']}**",
         f"- Observed authenticated model routing: **{report['observedAuthenticatedModelRouting']}**",
         f"- Observed authenticated repair loop: **{report['observedAuthenticatedRepairLoop']}**",
-        "- Repository-analysis orchestration: **NOT_IMPLEMENTED**",
+        "- Repository audit mode: **IMPLEMENTED_READ_ONLY**",
         f"- Overall release: **{overall}**",
         "",
         "Simulated role processes, static checks, and requested model names cannot override missing authenticated live E2E evidence.",

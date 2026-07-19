@@ -1,0 +1,1 @@
+{"schemaVersion":"1.0","positive":["Add a CI smoke-test gate","Modify a Kubernetes deployment overlay","Fix a GitOps reconciliation dependency","Pin a workflow action version","Add a rollback-safe promotion condition"],"negative":["Add a React component","Change an API serializer","Review a local algorithm","Write a pytest fixture","Edit marketing copy"]}

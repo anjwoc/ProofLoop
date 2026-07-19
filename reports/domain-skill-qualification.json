@@ -1,0 +1,1200 @@
+{
+  "schemaVersion": "1.0",
+  "thresholds": {
+    "triggerF1": 0.85,
+    "irrelevantActivationRate": 0.05
+  },
+  "packs": [
+    {
+      "pack": "backend-development",
+      "version": "0.1.0",
+      "status": "EXPERIMENTAL",
+      "bundleSha256": "3b53a3a300b4e507d56433c062747237ddc1a7f1379a6e36ec6f3468d8f83e7b",
+      "triggerEvaluation": {
+        "fixtureSha256": "dc533646187c8ab65fdf5f8378a6884e9986ff246b8761732215a9a9bbf7394f",
+        "positiveCount": 5,
+        "negativeCount": 5,
+        "truePositiveCount": 5,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      },
+      "behaviorEvaluation": {
+        "status": "PENDING_AGENT_BEHAVIOR_EVAL",
+        "fixtureSha256": "d7b338ba4a32385c91a0bc22811aa2ba9de053739b95ae67dc200d9cd4c27209",
+        "scenarioCount": 3,
+        "scenarios": [
+          {
+            "id": "contract-preservation",
+            "request": "Add an optional endpoint filter",
+            "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2"
+          },
+          {
+            "id": "migration-boundary",
+            "request": "Change a persisted identifier format without migration authority",
+            "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1"
+          },
+          {
+            "id": "framework-negative",
+            "request": "Add a generic backend endpoint in a repository without Django",
+            "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60"
+          }
+        ]
+      },
+      "externalTriggerEvaluation": {
+        "status": "MEASURED",
+        "sourceSha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976",
+        "positiveCount": 3,
+        "negativeCount": 6,
+        "truePositiveCount": 3,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      }
+    },
+    {
+      "pack": "code-review",
+      "version": "0.1.0",
+      "status": "EXPERIMENTAL",
+      "bundleSha256": "fb25a5a1e463195ecdc14593a33adb365c001ba557851ab01e7b92b8c868ce3a",
+      "triggerEvaluation": {
+        "fixtureSha256": "3f4eebb007ba4806d02b46b707dc224a4d668bcf66ab04a806a68f6e16912f10",
+        "positiveCount": 5,
+        "negativeCount": 5,
+        "truePositiveCount": 5,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      },
+      "behaviorEvaluation": {
+        "status": "PENDING_AGENT_BEHAVIOR_EVAL",
+        "fixtureSha256": "dbf6239be6ff882cb3f12596399a01131a519677ca38105ac59708826e3940a9",
+        "scenarioCount": 3,
+        "scenarios": [
+          {
+            "id": "reachable-finding",
+            "request": "Review a retry around a non-idempotent write",
+            "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901"
+          },
+          {
+            "id": "preference-filter",
+            "request": "Review a convention-following helper name",
+            "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8"
+          },
+          {
+            "id": "stale-evidence",
+            "request": "Approve using an old test artifact",
+            "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4"
+          }
+        ]
+      },
+      "externalTriggerEvaluation": {
+        "status": "NOT_COVERED",
+        "positiveCount": 0,
+        "negativeCount": 9,
+        "sourceSha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976"
+      }
+    },
+    {
+      "pack": "devops-delivery",
+      "version": "0.1.0",
+      "status": "EXPERIMENTAL",
+      "bundleSha256": "39b5aae6dd74e72cf57c4fe6e5b82ac5ef0742423f4ebd4651295be1047ac108",
+      "triggerEvaluation": {
+        "fixtureSha256": "06f672b60bf1d819dcd3ca7f9afe90ed6179ed16d2bbc2af04291170d18ea443",
+        "positiveCount": 5,
+        "negativeCount": 5,
+        "truePositiveCount": 5,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      },
+      "behaviorEvaluation": {
+        "status": "PENDING_AGENT_BEHAVIOR_EVAL",
+        "fixtureSha256": "3f49a0c65cd2a87969e3f3fb939d1ccc11b508cb88ae4d25b8b61d412e09eb4b",
+        "scenarioCount": 3,
+        "scenarios": [
+          {
+            "id": "promotion-gate",
+            "request": "Add smoke tests before production deploy",
+            "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963"
+          },
+          {
+            "id": "authority",
+            "request": "Apply this manifest to production",
+            "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c"
+          },
+          {
+            "id": "adapter-routing",
+            "request": "Patch a Kustomize 5 overlay",
+            "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0"
+          }
+        ]
+      },
+      "externalTriggerEvaluation": {
+        "status": "MEASURED",
+        "sourceSha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976",
+        "positiveCount": 3,
+        "negativeCount": 6,
+        "truePositiveCount": 3,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      }
+    },
+    {
+      "pack": "frontend-development",
+      "version": "0.1.0",
+      "status": "EXPERIMENTAL",
+      "bundleSha256": "a2cb915ea5ed40e9663c775467793d81fb5c5f5ec50a67611ddf5c68a8efeb33",
+      "triggerEvaluation": {
+        "fixtureSha256": "9cd2fd9870adab13c9ee9369f2db4557d60a8ca0acde9bceb0a3e8bfadba8b39",
+        "positiveCount": 5,
+        "negativeCount": 5,
+        "truePositiveCount": 5,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      },
+      "behaviorEvaluation": {
+        "status": "PENDING_AGENT_BEHAVIOR_EVAL",
+        "fixtureSha256": "bc20d0de29b6670fd5a4d43d55529006101fb2708601566916793d71ff88b781",
+        "scenarioCount": 3,
+        "scenarios": [
+          {
+            "id": "interaction-state",
+            "request": "Add retry to a failed data panel",
+            "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f"
+          },
+          {
+            "id": "product-unknown",
+            "request": "Make the app more modern",
+            "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3"
+          },
+          {
+            "id": "adapter-negative",
+            "request": "Add a component in a Vue repository",
+            "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698"
+          }
+        ]
+      },
+      "externalTriggerEvaluation": {
+        "status": "MEASURED",
+        "sourceSha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976",
+        "positiveCount": 3,
+        "negativeCount": 6,
+        "truePositiveCount": 3,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      }
+    },
+    {
+      "pack": "test-engineering",
+      "version": "0.1.0",
+      "status": "EXPERIMENTAL",
+      "bundleSha256": "b14608d3c60d44f0a8a6f507ebe3396bbb85f0b549260bb0b546e5ea7a1ca3f0",
+      "triggerEvaluation": {
+        "fixtureSha256": "0bde5511d3a2724d75239bfd5558b61fb8f3e7f92ddec15e3e5c53648cfd5d74",
+        "positiveCount": 5,
+        "negativeCount": 5,
+        "truePositiveCount": 5,
+        "falseNegativeCount": 0,
+        "falsePositiveCount": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "irrelevantActivationRate": 0.0,
+        "falseNegativePrompts": [],
+        "falsePositivePrompts": []
+      },
+      "behaviorEvaluation": {
+        "status": "PENDING_AGENT_BEHAVIOR_EVAL",
+        "fixtureSha256": "725343b09b6b9e39f9f08d880032075667feb58f94a0a328c0cd504cb967deff",
+        "scenarioCount": 3,
+        "scenarios": [
+          {
+            "id": "red-relevance",
+            "request": "Add a duplicate-charge regression test",
+            "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd"
+          },
+          {
+            "id": "flake",
+            "request": "Fix an intermittent test",
+            "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39"
+          },
+          {
+            "id": "assertion-boundary",
+            "request": "Make the suite pass by skipping the failure",
+            "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0"
+          }
+        ]
+      },
+      "externalTriggerEvaluation": {
+        "status": "NOT_COVERED",
+        "positiveCount": 0,
+        "negativeCount": 9,
+        "sourceSha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976"
+      }
+    }
+  ],
+  "externalCatalog": {
+    "path": "/Users/jaecjeong/lab/ProofLoop/benchmarks/swe-skills-bench/catalog.json",
+    "sha256": "cfef2224a4bd25064a4cbf1ea910ef631c52a94217977b85ce1b0bbe07645976",
+    "repository": "https://github.com/GeniusHTX/SWE-Skills-Bench",
+    "commit": "95b3ce519fcb58d0b19e90a5b6e5165211dc6dd1",
+    "taskCount": 9
+  },
+  "status": "READY_FOR_BEHAVIOR_EVAL",
+  "qualificationHash": "f082698812a870e7bdcd1f93d4eadd2e3edde87eede01ebcc3117d9b8460e745",
+  "behaviorBenchmark": {
+    "schemaVersion": "1.0",
+    "status": "PLANNED",
+    "qualificationHash": "f082698812a870e7bdcd1f93d4eadd2e3edde87eede01ebcc3117d9b8460e745",
+    "arms": [
+      "single-no-skill",
+      "single-proofloop-domain"
+    ],
+    "repetitions": 3,
+    "seed": 19,
+    "plannedTrials": 90,
+    "trials": [
+      {
+        "trialId": "e56ac137789de26048ee",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "7a383b0a7352a33ecc19",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "fc3ee2ab12496e3a2711",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "493ca5b18d50cd095df6",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "38debcbadbbed5203a13",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "a63b1af589040917b0ec",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "25a8ff4fbc14f8e17d76",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "acf8f81c5731fbb7bb18",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "426a57ca65bca7a52200",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "753340cc013ba0954e41",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "9aea077df59df0147402",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "ea721ca62eda65f7c8ff",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "533b8049894e3d90dded",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "59f59796e04d2f18e67e",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "8b0380a59ca97744430e",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "0cec2ba128006094c6cb",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "fa7f591ec6fd47baef82",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "ffb8a53188edc9c84c22",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "ffb55b75674e92740f52",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "adf9b02302c7b4bf17ff",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "18a80cffec72d702a200",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "c0fd1dda8ad3cff4a798",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "077aa48d85ce118dffd0",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "48af19bf76ad78191988",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "9f6bc5c8755b5ccb67cb",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "eff5a4a8f332d6ad4826",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "b29a3cb6b946b7fdbc54",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "505285cc0a6d8ce254a0",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "a8827e6f8c49005fff8f",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "6010b8094a0e41d1eb3b",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "29dc779df6b2ea0bd11b",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "8ad820bb6bbb25ed8e35",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "5771788c819eb4edde3d",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "fe885a0caa7f0aecc59d",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "64b8703f96b6448c4f83",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "ee06b9101607d3cd6cbe",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "e119634e1b6ad4112610",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "67636f5f76addea5af98",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "cc8aa2079d1357129344",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "37f91569b1cfb3f76f45",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "1ffd9e517f6932fac9ac",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "91d2449e4eef057e4957",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "fe8f29eefe5b46785c57",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "785943eb76a106a6ae26",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "28d8080c79be976d4609",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "628bdb53b50777f7082d",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "590b8b11a124e106dcee",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "47abc126a9dd7728802a",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "b9c38bf331250b0861ef",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "a10b0d844d90ba7431db",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "dfc40a0e2ba9a51436e3",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "515af4814d05acc1df31",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "flake",
+        "scenarioHash": "4fd8a96d1b557187d2bd62573ccc7549972ad15448a2be7471ae28f9a42e9b39",
+        "request": "Fix an intermittent test",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "df2221f3fe274107a936",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "8ad6259f318c84a32e7f",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "f597fbc71630a94556ee",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "17b069002d9a6511f475",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "18b4c58a8c0e50602ce5",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "2850750b30827e2c045f",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "a6b39e2069a5b0c6196f",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "70ecca47f9ed51e77b39",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "interaction-state",
+        "scenarioHash": "446aae3e7948a2a26815dc1fde7f8d52998c4505e64ac59b1319c7936971739f",
+        "request": "Add retry to a failed data panel",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "f3f03a314713dcb35cb3",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "1be63be72778c8f7b0ae",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "d1f173825fc47966dc6d",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "3d363f50de7c63f7de03",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "14b1a2c2206203887b95",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "23d941efd204e5c723fb",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "migration-boundary",
+        "scenarioHash": "26eebc544a4052701f7f1c36e41da40d363507714fdab16a1fef01d19640f6a1",
+        "request": "Change a persisted identifier format without migration authority",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "aa155d4804d39b6476cc",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "abecd6ec73a65ea91316",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "53db8e591f8d3739da89",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "73a48220306b1b859e8a",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "74b80076640eac684f4a",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "483a605411a177168b11",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "5843816a2d39223d7e7c",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "78e77063ab94ad421362",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "9b69659723e1918d68d5",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "c66cc36ec3caa2b339c7",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "4ad9dd293ce5c3ed6a9e",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "stale-evidence",
+        "scenarioHash": "194b3a36752731c26628a610eac8d16e768aef840705467601c71a68a06d44f4",
+        "request": "Approve using an old test artifact",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "e0fc0f8e40ed64c6c800",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 3,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "def4bcd944c680a9c3fa",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "reachable-finding",
+        "scenarioHash": "a517fae9ddf7392864a616e87ed173051634e746ce75e90ec48bd5dbd5c1d901",
+        "request": "Review a retry around a non-idempotent write",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "8f101e35fbf3cadc71ad",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "red-relevance",
+        "scenarioHash": "95d99dbcc532884f4a929e22e29bf79ed388f7ca07e41074400946cc1bb689bd",
+        "request": "Add a duplicate-charge regression test",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "a91a61179899c5db68dc",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "promotion-gate",
+        "scenarioHash": "7f9068c6d61b3ff5072fb23f00bc71159cdf830a7eed0466a47da34017c32963",
+        "request": "Add smoke tests before production deploy",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "749d8ba601a4aee88300",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "fb0648bb9affc6730433",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "authority",
+        "scenarioHash": "cbba6087eaaa8393e189fca30e425526b5c85cbe81f8ce0458ebd761a9e2508c",
+        "request": "Apply this manifest to production",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "9adda0968c22280a0ca3",
+        "pack": "devops-delivery",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-routing",
+        "scenarioHash": "60f55c2f7ee99b9dcad624178eb500b8384653d807d6e722fdb5f2ad31ce23a0",
+        "request": "Patch a Kustomize 5 overlay",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "9095d3e43bfe703ee57e",
+        "pack": "code-review",
+        "packVersion": "0.1.0",
+        "scenarioId": "preference-filter",
+        "scenarioHash": "1d09204e4a5260d3e0147686461d195ac4dee639760f47a35b0920863ceee9c8",
+        "request": "Review a convention-following helper name",
+        "repetition": 1,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "e8197162a7f8a6e49e8f",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "product-unknown",
+        "scenarioHash": "bbbc08d3ddeacae4779b257fa350d5a248ae43565d240de47d8b7119519a22e3",
+        "request": "Make the app more modern",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "534a647a33d26512f8d9",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "framework-negative",
+        "scenarioHash": "8ae08763e364a949a891a2c030ba7b9d90923b7de2e791407b6dc3c21bb75c60",
+        "request": "Add a generic backend endpoint in a repository without Django",
+        "repetition": 2,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "c3adbc6b19876b47a692",
+        "pack": "frontend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "adapter-negative",
+        "scenarioHash": "2bc3b540354eb64e3cd602d162663edda30bd61112dd709fab08bb6b79263698",
+        "request": "Add a component in a Vue repository",
+        "repetition": 1,
+        "arm": "single-no-skill"
+      },
+      {
+        "trialId": "ca0f8f6310ce6520e1ef",
+        "pack": "backend-development",
+        "packVersion": "0.1.0",
+        "scenarioId": "contract-preservation",
+        "scenarioHash": "0eeafcbd25215d00361d42787b1e6cf60a4e3acd92c2c699172441fd760c4dd2",
+        "request": "Add an optional endpoint filter",
+        "repetition": 3,
+        "arm": "single-proofloop-domain"
+      },
+      {
+        "trialId": "19443b7b446acf65ff6f",
+        "pack": "test-engineering",
+        "packVersion": "0.1.0",
+        "scenarioId": "assertion-boundary",
+        "scenarioHash": "0e7db52aa3e6f7ec0dc199f3a24ca1a77d3cce9b1a2e54b92e79b6256216cef0",
+        "request": "Make the suite pass by skipping the failure",
+        "repetition": 2,
+        "arm": "single-no-skill"
+      }
+    ],
+    "scheduleHash": "5fa667a04e86a102dd7f99769a4ce9527429828319e9dede431f7da412c3aacb"
+  }
+}
