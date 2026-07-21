@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "verdict": "FAILED",
+  "reason": "NO_PROOFLOOP_RUN",
+  "host": "codex",
+  "scenario": "normal",
+  "hostExitCode": 1,
+  "roles": [],
+  "recoveryObserved": false,
+  "orchestratorTruthVerdict": null,
+  "expectedOutputStatus": null,
+  "expectedOutputFailures": [],
+  "source": "AUTHENTICATED_HOST_RUN"
+}

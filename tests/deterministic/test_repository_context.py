@@ -1,20 +1,38 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from proofloop_core.repository_context import ensure_codegraph, get_files_by_extension
 
+MOCK_OPT_IN = "PROOFLOOP_ALLOW_MOCK_CONTEXT"
+
 
 class RepositoryContextTest(unittest.TestCase):
-    def test_mock_initializes_index_evidence(self) -> None:
+    def test_mock_initializes_index_evidence_when_opted_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "app.py").write_text("print('x')\n", encoding="utf-8")
-            result = ensure_codegraph(root, root / "evidence.json", mock=True)
+            with patch.dict(os.environ, {MOCK_OPT_IN: "1"}):
+                result = ensure_codegraph(root, root / "evidence.json", mock=True)
             self.assertEqual("READY", result["status"])
             self.assertTrue((root / ".codegraph" / "codegraph.db").exists())
+
+    def test_mock_requires_explicit_opt_in(self) -> None:
+        # Without the explicit opt-in env var, mock must NOT fabricate a READY
+        # index — a simulated index must never leak into a proven claim.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app.py").write_text("print('x')\n", encoding="utf-8")
+            env = dict(os.environ)
+            env.pop(MOCK_OPT_IN, None)
+            with patch.dict(os.environ, env, clear=True):
+                result = ensure_codegraph(root, root / "evidence.json", mock=True)
+            self.assertNotEqual("READY", result["status"])
+            self.assertFalse((root / ".codegraph" / "codegraph.db").exists())
 
 
 class GetFilesByExtensionTest(unittest.TestCase):

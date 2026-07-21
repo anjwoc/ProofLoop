@@ -1,18 +1,17 @@
 {
   "schemaVersion": "3.0",
   "deterministicDevelopmentChecks": "PASS",
-  "automaticOrchestratorKernel": "SIMULATED_PROVEN",
+  "automaticOrchestratorKernel": "SIMULATED_MECHANICS_PROVEN",
   "oneCommandHostFixtures": {
     "codexNormal": "SIMULATED_HOST_E2E_PROVEN",
     "codexRecovery": "SIMULATED_HOST_E2E_PROVEN",
-    "antigravityNormal": "SIMULATED_HOST_E2E_PROVEN"
+    "agyNormal": "SIMULATED_HOST_E2E_PROVEN"
   },
   "importantLimit": "Simulated orchestration and fake host processes prove mechanics only, not authenticated model execution.",
   "hostAdapters": {
     "claude-code": "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
     "codex": "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
-    "antigravity": "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
-    "antigravityNativeInteractive": "ROLE_ROUTING_ONLY"
+    "agy": "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN"
   },
   "coreLiveE2E": {
     "codexNormal": {
@@ -25,15 +24,15 @@
       "status": "MISSING",
       "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/codex-recovery/truth-report.json"
     },
-    "antigravityNormal": {
-      "name": "antigravity-normal",
+    "agyNormal": {
+      "name": "agy-normal",
       "status": "MISSING",
-      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/antigravity-normal/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/agy-normal/truth-report.json"
     },
-    "antigravityRecovery": {
-      "name": "antigravity-recovery",
+    "agyRecovery": {
+      "name": "agy-recovery",
       "status": "MISSING",
-      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/antigravity-recovery/truth-report.json"
+      "path": "/Users/jaecjeong/lab/ProofLoop/reports/live/agy-recovery/truth-report.json"
     },
     "claudeNormal": {
       "name": "claude-normal",
@@ -57,7 +56,7 @@
         "scripts/validate_package.py"
       ],
       "exitCode": 0,
-      "stdout": "PACKAGE VALIDATION: PASS (143 runtime files, 826 total files)\n",
+      "stdout": "PACKAGE VALIDATION: PASS (165 runtime files, 6547 total files)\n",
       "stderr": ""
     },
     {
@@ -87,10 +86,10 @@
         "/Users/jaecjeong/.dbgpt/DB-GPT/.venv/bin/python3",
         "scripts/build_host_adapter.py",
         "--host",
-        "antigravity"
+        "agy"
       ],
       "exitCode": 0,
-      "stdout": "/Users/jaecjeong/lab/ProofLoop/dist/antigravity\n",
+      "stdout": "/Users/jaecjeong/lab/ProofLoop/dist/agy\n",
       "stderr": ""
     }
   ]

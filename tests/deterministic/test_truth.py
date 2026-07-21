@@ -31,7 +31,7 @@ class TruthGateTest(unittest.TestCase):
             root = Path(tmp)
             write_core_evidence(root)
             result = build_truth_report(root)
-            self.assertEqual("UNPROVEN", result["verdict"])
+            self.assertEqual("PARTIAL", result["verdict"])
             self.assertIn("MODEL_TRACE_MISSING", result["unproven"])
 
     def test_observed_distinct_models_can_be_proven(self) -> None:

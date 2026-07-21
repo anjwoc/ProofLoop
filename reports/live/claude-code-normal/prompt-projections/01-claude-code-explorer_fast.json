@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "invocationId": "01-claude-code-explorer_fast",
+  "role": "explorer_fast",
+  "controllerHost": "claude-code",
+  "runtime": "claude-code",
+  "model": "haiku",
+  "rendererVersion": "claude-code-v1",
+  "promptSha256": "808a5ac5735b0083ae56eb391f71993c10beba30a2f9f79553797c851b16939b"
+}

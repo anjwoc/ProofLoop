@@ -1,0 +1,81 @@
+Reading additional input from stdin...
+2026-07-21T12:20:26.232826Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-high.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.233270Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-medium.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.233899Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/plan.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.234660Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-high.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.234763Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-medium.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.234949Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/plan.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.236730Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_explorer_fast` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.236825Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_implementer_fast` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.236911Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_implementer_recovery` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.236995Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_planner_deep` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.237091Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_reviewer_deep` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.241582Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-high.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.241850Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-medium.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.242413Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/plan.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.243389Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-high.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.243506Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/lazycodex-worker-medium.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.243639Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: failed to deserialize agent role file at /Users/jaecjeong/.codex/agents/plan.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh`
+
+2026-07-21T12:20:26.245908Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_explorer_fast` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.245997Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_implementer_fast` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.246077Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_implementer_recovery` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.246152Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_planner_deep` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.246231Z  WARN codex_core::config::agent_roles: Ignoring malformed agent role definition: duplicate agent role name `proofloop_reviewer_deep` discovered in /Users/jaecjeong/.codex/agents
+2026-07-21T12:20:26.249778Z ERROR codex_models_manager::cache: failed to load models cache: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` at line 29 column 25
+2026-07-21T12:20:26.589585Z  WARN codex_models_manager::model_info: Unknown model gpt-5.6 is used. This will use fallback model metadata.
+2026-07-21T12:20:26.589778Z  WARN codex_protocol::openai_models: Model personality requested but model_messages is missing, falling back to base instructions. model=gpt-5.6 personality=pragmatic
+2026-07-21T12:20:26.742130Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:26.742155Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:26.742191Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:26.742196Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:26.887060Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/jaecjeong/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-21T12:20:27.855955Z  WARN codex_core_skills::loader: skills scan truncated after 2000 directories (root: /Users/jaecjeong/.agents/skills)
+2026-07-21T12:20:27.909311Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:27.909335Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:27.972309Z ERROR codex_core::session::session: failed to load skill /Users/jaecjeong/.codex/plugins/cache/sisyphuslabs/omo/4.19.0/skills/teammode/SKILL.md: invalid description: exceeds maximum length of 1024 characters
+2026-07-21T12:20:28.003246Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.029142Z  WARN codex_models_manager::model_info: Unknown model gpt-5.6 is used. This will use fallback model metadata.
+2026-07-21T12:20:28.030102Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.053975Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.077034Z  WARN codex_models_manager::model_info: Unknown model gpt-5.6 is used. This will use fallback model metadata.
+2026-07-21T12:20:28.077384Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.101083Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.125444Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.147650Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.171224Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.194610Z  WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+2026-07-21T12:20:28.905767Z  WARN codex_rmcp_client::stdio_server_launcher: Failed to terminate MCP process group 15817: Operation not permitted (os error 1)
+2026-07-21T12:20:58.081158Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/jaecjeong/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-21T12:20:58.116824Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.116845Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.117446Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.117453Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.118133Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.118144Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.118950Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.118960Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.119702Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.119714Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.121181Z  WARN codex_core_skills::loader: ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.121192Z  WARN codex_core_skills::loader: ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/
+2026-07-21T12:20:58.844899Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/jaecjeong/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-21T12:20:58.860621Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/jaecjeong/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-21T12:20:58.860709Z  WARN codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters path=/Users/jaecjeong/.codex/.tmp/plugins/plugins/ngs-analysis/.codex-plugin/plugin.json
+2026-07-21T12:20:59.289305Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_reasoning_summaries` at line 79 column 5
+2026-07-21T12:20:59.513456Z  WARN codex_mcp::rmcp_client: failed to initialize MCP client during shutdown: MCP startup failed: timed out handshaking with MCP server after 30s
+2026-07-21T12:20:59.513491Z  WARN codex_mcp::rmcp_client: failed to initialize MCP client during shutdown: MCP startup failed: timed out handshaking with MCP server after 30s
+2026-07-21T12:20:59.513553Z  WARN codex_mcp::rmcp_client: failed to initialize MCP client during shutdown: MCP startup failed: timed out handshaking with MCP server after 30s
+2026-07-21T12:20:59.513558Z  WARN codex_mcp::rmcp_client: failed to initialize MCP client during shutdown: MCP startup failed: timed out handshaking with MCP server after 30s
+2026-07-21T12:20:59.514037Z  WARN codex_mcp::rmcp_client: failed to initialize MCP client during shutdown: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response

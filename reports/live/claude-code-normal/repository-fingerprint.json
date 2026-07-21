@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0",
+  "repository": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace",
+  "taskTypes": [
+    "backend-development",
+    "test-engineering"
+  ],
+  "languages": [],
+  "frameworks": {},
+  "packageManagers": [],
+  "signals": [],
+  "verifiers": [],
+  "configFiles": [],
+  "targets": [],
+  "fingerprintSha256": "08f63833701a98d00b42e705ba4fe24e8d210aaecb18277e2fe8b134cc77c4b8"
+}

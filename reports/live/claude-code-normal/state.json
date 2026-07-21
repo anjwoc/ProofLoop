@@ -1,0 +1,6 @@
+{
+  "timestampEpoch": 1784636188.283502,
+  "state": "BLOCKED",
+  "code": "EXPLORER_FAST_INVOCATION_FAILED",
+  "message": "explorer_fast invocation failed: 1"
+}

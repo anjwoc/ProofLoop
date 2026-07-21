@@ -1,0 +1,36 @@
+{
+  "snapshotId": "a499a122-afb5-4284-80ac-26baec41949f",
+  "requestId": "20260721T211536-f7543354",
+  "repoRoot": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace",
+  "gitBranch": "main",
+  "gitHead": "ce6f1ed9af7c6dbd28498d448b3e6131b1ad2fcc",
+  "dirtyPaths": [],
+  "instructionFiles": [
+    {
+      "path": "README.md",
+      "contentHash": "bc6acac2f63b04ff96a56eb1b1b236a6d7ad5b230ec050ecb4c83295eea63b80"
+    }
+  ],
+  "manifests": [],
+  "relevantFiles": [],
+  "detectedCommands": {
+    "tests": [
+      "python3 -m unittest discover -s tests"
+    ],
+    "lint": [],
+    "typecheck": [],
+    "build": []
+  },
+  "detectedLanguages": [],
+  "detectedFrameworks": [],
+  "detectedTestSurfaces": [],
+  "hostCapabilities": {
+    "canExecuteTests": null,
+    "canReadLogs": null,
+    "canWriteFiles": null,
+    "canRunGit": null
+  },
+  "unresolvedQuestions": [],
+  "injectionSignals": [],
+  "tier": "T3"
+}

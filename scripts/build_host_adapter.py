@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from proofloop_core.hosts import antigravity_workflow, capability, write_codex_agents
+from proofloop_core.hosts import agy_workflow, capability, write_codex_agents
 from proofloop_core.skill_registry import SkillRegistry
 
 
@@ -41,7 +41,15 @@ def specialize_entry_skill(skill_root: Path, host: str) -> None:
         raise FileNotFoundError(path)
     text = path.read_text(encoding="utf-8")
     text = text.replace("--host <current-host>", f"--host {host}")
-    text = text.replace("Determine the current host as exactly one of `claude-code`, `codex`, or `antigravity`.", f"Use the fixed installed host `{host}`.")
+    text = text.replace("Determine the current host as exactly one of `claude-code`, `codex`, or `agy`.", f"Use the fixed installed host `{host}`.")
+    if host == "agy":
+        # Goalng invokes AGY with this permission mode.  The entry host has
+        # already received the user's mutation request, and the detached
+        # child roles must inherit the same non-interactive permission mode.
+        text = text.replace(
+            "nohup $HOME/.proofloop/bin/proofloop-core run \\",
+            "PROOFLOOP_AGY_BYPASS_PERMISSIONS=1 nohup $HOME/.proofloop/bin/proofloop-core run \\",
+        )
     path.write_text(text, encoding="utf-8")
 
 
@@ -150,23 +158,22 @@ def build_codex(root: Path, output: Path) -> None:
     write_codex_agents(output / "agents")
 
 
-def build_antigravity(root: Path, output: Path) -> None:
+def build_agy(root: Path, output: Path) -> None:
     copy_tree(root / "skills", output / "skills")
     copy_tree(root / "proofloop_protocols", output / "proofloop_protocols")
     copy_tree(root / "proofloop_domain_packs", output / "proofloop_domain_packs")
-    specialize_entry_skill(output / "skills", "antigravity")
+    specialize_entry_skill(output / "skills", "agy")
     write_skill_manifest(output / "proofloop_protocols", output / "proofloop_domain_packs", output / "installed-skills.json")
     (output / "workflows").mkdir(parents=True, exist_ok=True)
-    (output / "workflows" / "proofloop.md").write_text(antigravity_workflow(), encoding="utf-8")
+    (output / "workflows" / "proofloop.md").write_text(agy_workflow(), encoding="utf-8")
     (output / "capability.json").write_text(
         json.dumps(
             {
-                "host": "antigravity",
-                "mode": "ROLE_ROUTING_ONLY",
-                "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
-                "crossModelRouting": False,
+                "host": "agy",
+                "mode": "EXTERNAL_MODEL_ROUTING",
+                "crossModelRouting": True,
                 "deterministicSidecar": "$HOME/.proofloop/bin/proofloop-core",
-                "roles": capability("antigravity")["roles"],
+                "roles": capability("agy")["roles"],
             },
             indent=2,
         )
@@ -177,7 +184,7 @@ def build_antigravity(root: Path, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a ProofLoop host adapter")
-    parser.add_argument("--host", choices=["claude-code", "codex", "antigravity"], required=True)
+    parser.add_argument("--host", choices=["claude-code", "codex", "agy"], required=True)
     parser.add_argument("--root", default=str(ROOT))
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -192,7 +199,7 @@ def main() -> int:
     elif args.host == "codex":
         build_codex(root, output)
     else:
-        build_antigravity(root, output)
+        build_agy(root, output)
     print(output)
     return 0
 

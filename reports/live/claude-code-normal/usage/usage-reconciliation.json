@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0",
+  "status": "PASS",
+  "tokscale": {
+    "status": "PASS",
+    "binary": "/Users/jaecjeong/.proofloop/bin/tokscale",
+    "version": "tokscale 4.5.3",
+    "exitCode": 0
+  },
+  "matchedSessions": 1,
+  "requestedSessions": 1,
+  "matches": [
+    {
+      "invocationId": "01-claude-code-explorer_fast",
+      "sessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "tokscaleSessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "model": "claude-haiku-4-5",
+      "status": "MISMATCH",
+      "differences": {
+        "input": {
+          "provider": 542,
+          "tokscale": 3432
+        }
+      }
+    },
+    {
+      "invocationId": "01-claude-code-explorer_fast",
+      "sessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "tokscaleSessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "model": "<synthetic>",
+      "status": "MISMATCH",
+      "differences": {
+        "input": {
+          "provider": 542,
+          "tokscale": 0
+        },
+        "output": {
+          "provider": 3273,
+          "tokscale": 0
+        },
+        "cacheRead": {
+          "provider": 273108,
+          "tokscale": 0
+        },
+        "cacheWrite": {
+          "provider": 19635,
+          "tokscale": 0
+        }
+      }
+    }
+  ]
+}

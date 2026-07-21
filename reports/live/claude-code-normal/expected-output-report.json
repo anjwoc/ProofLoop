@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "1.0",
+  "contractSource": "docs/roadmap/expected-output.md",
+  "status": "FAIL",
+  "runDir": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace/.proofloop/runs/20260721T211536-f7543354",
+  "runId": "20260721T211536-f7543354",
+  "repository": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace",
+  "terminal": true,
+  "requireTerminal": true,
+  "checks": [
+    {
+      "id": "repository_binding",
+      "status": "PASS",
+      "reason": "run, request envelope, and grounding reference the requested repository"
+    },
+    {
+      "id": "immutable_request",
+      "status": "PASS",
+      "reason": "raw request, hash, and run identity are preserved"
+    },
+    {
+      "id": "intent_and_authority_visibility",
+      "status": "PASS",
+      "reason": "IntentGate and authority decision are persisted and emitted"
+    },
+    {
+      "id": "refined_intent_contract",
+      "status": "PASS",
+      "reason": "objective, acceptance criteria, and authority boundary are inspectable"
+    },
+    {
+      "id": "grounding_wave_zero",
+      "status": "PASS",
+      "reason": "repository grounding and detected verification surfaces are persisted"
+    },
+    {
+      "id": "strategy_and_execution_brief",
+      "status": "PASS",
+      "reason": "workload strategy and scoped execution brief are inspectable"
+    },
+    {
+      "id": "observable_role_progress",
+      "status": "PASS",
+      "reason": "active role progress and a rendered role prompt are available"
+    },
+    {
+      "id": "model_trace_honesty",
+      "status": "PASS",
+      "reason": "requested and observed-or-unavailable model evidence is emitted"
+    },
+    {
+      "id": "private_reasoning_redacted",
+      "status": "PASS",
+      "reason": "host transcripts contain no provider private reasoning blocks"
+    },
+    {
+      "id": "evidence_backed_truth_verdict",
+      "status": "FAIL",
+      "reason": "terminal Truth verdict, current verification evidence, or invocation model trace is missing"
+    }
+  ],
+  "failures": [
+    "evidence_backed_truth_verdict"
+  ]
+}

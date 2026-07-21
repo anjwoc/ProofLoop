@@ -6,7 +6,7 @@
   "kind": "DOMAIN_PACK",
   "source": {"license": "Apache-2.0", "provenance": ["ProofLoop built-in generic workflow"]},
   "activation": {"modes": ["adaptive", "goal"], "taskTypes": ["frontend-development"], "positiveSignals": [], "negativeSignals": []},
-  "compatibility": {"hosts": ["claude-code", "codex", "antigravity"], "tiers": ["T0", "T1", "T2", "T3"], "languages": [], "frameworks": [], "requiredTools": []},
+  "compatibility": {"hosts": ["claude-code", "codex", "agy"], "tiers": ["T0", "T1", "T2", "T3"], "languages": [], "frameworks": [], "requiredTools": []},
   "dependencies": [], "conflicts": [],
   "proof": {"closes": [], "adds": ["frontend-user-outcome-verified", "frontend-accessibility-preserved"], "minimumAuthority": "DETERMINISTIC_CHECK", "selfClosureAllowed": false},
   "context": {"required": ["intent-contract.json", "repository-fingerprint.json"], "maxInjectedTokens": 1800},

@@ -246,6 +246,8 @@ class TokenLedger:
             "byTask": task_groups,
             "byTier": tier_groups,
         }
+        from .tokscale import enrich_usage_costs
+        enrich_usage_costs(summary)
         write_json(self.root / "usage-summary.json", summary)
         return summary
 
@@ -334,8 +336,16 @@ def _aggregate_observations(items: list[dict[str, Any]]) -> dict[str, Any]:
             tokens[field] += sum(int(item.get("tokens", {}).get(field, 0)) for item in deltas)
         tokens = {field: value for field, value in tokens.items() if value}
         chosen = primary[-1]
-    cost_items = [item for item in items if isinstance(item.get("costUsd"), (int, float))]
+    cost_items = [item for item in items if isinstance(item.get("costUsd"), (int, float)) and item.get("costUsd") > 0]
     cost_item = cost_items[-1] if cost_items else None
+    if cost_item:
+        cost_usd = float(cost_item["costUsd"])
+        cost_source = cost_item.get("costSource")
+    else:
+        from .tokscale import calculate_invocation_cost
+        model_name = chosen.get("model") or chosen.get("requestedModel") or "unknown"
+        cost_usd = calculate_invocation_cost(model_name, tokens)
+        cost_source = "tokscale_native" if cost_usd > 0 else None
     return {
         "taskId": chosen.get("taskId"),
         "role": chosen.get("role"),
@@ -348,8 +358,8 @@ def _aggregate_observations(items: list[dict[str, Any]]) -> dict[str, Any]:
         "tokens": tokens,
         "rawTotal": sum(tokens.values()),
         "budgetedTotal": budgeted_token_total(tokens),
-        "costUsd": float(cost_item["costUsd"]) if cost_item else None,
-        "costSource": cost_item.get("costSource") if cost_item else None,
+        "costUsd": cost_usd,
+        "costSource": cost_source,
         "evidenceLevel": chosen.get("evidenceLevel", "UNAVAILABLE"),
     }
 

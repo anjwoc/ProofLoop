@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "repository": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace",
+  "isGitRepository": true,
+  "gitStatus": {
+    "command": [
+      "git",
+      "status",
+      "--porcelain=v1"
+    ],
+    "exitCode": 0,
+    "stdout": "?? .proofloop-adapter/\n?? .proofloop/",
+    "stderr": ""
+  },
+  "projectMarkers": {
+    "node": false,
+    "python": false,
+    "java": false,
+    "go": false,
+    "rust": false
+  },
+  "codegraph": {
+    "available": true,
+    "path": "/Users/jaecjeong/.local/bin/codegraph",
+    "version": "error: unknown command 'version'"
+  }
+}

@@ -56,20 +56,19 @@ result = {
             "invocation": "$proofloop <request> or /skills",
             "note": "The default skill calls proofloop-core run --mode adaptive, which selects bounded roles from the workload profile and proof gaps. Explicit goal mode continues until convergence or budget exhaustion.",
         },
-        "antigravity": {
-            **probe("antigravity"),
-            "defaultProofLoopMode": "ROLE_ROUTING_ONLY",
-            "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
-            "crossModelRouting": False,
+        "agy": {
+            **probe("agy"),
+            "defaultProofLoopMode": "EXTERNAL_MODEL_ROUTING",
+            "crossModelRouting": True,
             "globalSkill": exists(home / ".gemini" / "config" / "skills" / "proofloop" / "SKILL.md"),
             "cliSkill": exists(home / ".gemini" / "antigravity-cli" / "skills" / "proofloop" / "SKILL.md"),
             "workflow": exists(home / ".gemini" / "config" / "global_workflows" / "proofloop.md"),
             "invocation": "/proofloop <request>",
             "permissionBypass": {
-                "enabled": os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1",
-                "optInVariable": "PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1",
+                "enabled": os.environ.get("PROOFLOOP_AGY_BYPASS_PERMISSIONS") == "1",
+                "optInVariable": "PROOFLOOP_AGY_BYPASS_PERMISSIONS=1",
             },
-            "note": "The workflow launches role-isolated Antigravity processes on the current session model; cross-model routing is not claimed.",
+            "note": "The workflow launches role-isolated AGY processes using the configured per-role model routing policy.",
         },
     },
     "truth": {

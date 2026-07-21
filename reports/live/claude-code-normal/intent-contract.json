@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1.0",
+  "originalRequest": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.\n Do not simulate ProofLoop states and do not call internal invoke-role or record-attempt commands manually. The skill must launch proofloop-core run --mode adaptive and report the resulting truth verdict exactly.\n",
+  "originalRequestHash": "95488396fbec73c85bd1f00a004aad0155968cbba87ddb2f41a9481e4adb29bd",
+  "objective": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.",
+  "acceptanceCriteria": [
+    {
+      "id": "AC-001",
+      "statement": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests."
+    }
+  ],
+  "constraints": [
+    "Preserve behavior outside the accepted objective."
+  ],
+  "nonGoals": [
+    "Unrequested production operations or external side effects."
+  ],
+  "authorizationBoundary": "Modify repository files required by the accepted objective; external writes require separate authorization.",
+  "assumptions": [],
+  "unknowns": [
+    "Acceptance checks are not explicit and must be derived from repository tests and observable behavior."
+  ],
+  "riskSignals": [],
+  "targetArtifacts": []
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0",
+  "strategy": "HIGH_RISK_ENGINEERING",
+  "risk": "high",
+  "plannerRequired": true,
+  "reviewerRequired": true,
+  "contextRequired": false,
+  "reason": [
+    "high-risk engineering term detected"
+  ],
+  "tier": "T3",
+  "explorerRequired": true,
+  "scores": {
+    "risk": 3,
+    "complexity": 1,
+    "uncertainty": 0
+  },
+  "hardGates": [
+    "HIGH_RISK_DOMAIN"
+  ],
+  "repositorySignals": {
+    "targetFileCount": 0,
+    "matchingTestCount": 0,
+    "publicContract": false,
+    "persistentState": false,
+    "criticalPath": false,
+    "greenfieldRepository": false
+  }
+}

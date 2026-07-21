@@ -1,0 +1,4 @@
+{
+  "schemaVersion": "1.0",
+  "request": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.\n Do not simulate ProofLoop states and do not call internal invoke-role or record-attempt commands manually. The skill must launch proofloop-core run --mode adaptive and report the resulting truth verdict exactly."
+}

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from proofloop_core.benchmark import (
+    arm_policy,
     build_builtin_domain_context,
     build_skill_scorecards,
     build_single_agent_prompt,
@@ -16,6 +17,7 @@ from proofloop_core.benchmark import (
     determine_trial_success,
     load_benchmark_suite,
     run_benchmark,
+    skill_comparison_policy,
     snapshot_protected_files,
     verify_protected_files,
 )
@@ -37,6 +39,29 @@ def trial(arm: str, repetition: int, tokens: int, *, proven: bool = True) -> dic
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_benchmark_wrapper_help_is_non_executing(self) -> None:
+        completed = subprocess.run(
+            ["bash", "scripts/run_benchmarks.sh", "--help"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("Plan benchmark schedules by default", completed.stdout)
+        self.assertIn("--execute", completed.stdout)
+
+    def test_benchmark_wrapper_refuses_execution_without_a_pinned_baseline_model(self) -> None:
+        completed = subprocess.run(
+            ["bash", "scripts/run_benchmarks.sh", "--reservation", "--execute"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("--execute requires --baseline-model", completed.stderr)
+
     def test_official_evaluator_is_authoritative_over_agent_self_verdict(self) -> None:
         self.assertTrue(
             determine_trial_success(
@@ -78,7 +103,7 @@ class BenchmarkTest(unittest.TestCase):
             seed=17,
         )
 
-        self.assertEqual(24, len(schedule))
+        self.assertEqual(36, len(schedule))
         for task_id in ("backend", "frontend"):
             for repetition in (1, 2):
                 arms = {
@@ -88,15 +113,78 @@ class BenchmarkTest(unittest.TestCase):
                 }
                 self.assertEqual(
                     {
-                        "single-no-skill-system",
-                        "single-proofloop-domain-system",
-                        "single-official-skill-system",
+                        "arm-A-current-system",
+                        "arm-B-deterministic-system",
+                        "arm-C-raw-meta-system",
+                        "arm-D-grounded-meta-system",
+                        "arm-E-grounded-model-system",
+                        "arm-F-large-baseline-system",
                         "proofloop-core-system",
                         "proofloop-adaptive-system",
                         "proofloop-full-system",
                     },
                     arms,
                 )
+
+    def test_ablation_arms_have_distinct_hashed_execution_policies(self) -> None:
+        policies = [arm_policy(f"arm-{code}-{label}-system", "system") for code, label in (
+            ("A", "current"),
+            ("B", "deterministic"),
+            ("C", "raw-meta"),
+            ("D", "grounded-meta"),
+            ("E", "grounded-model"),
+            ("F", "large-baseline"),
+        )]
+
+        self.assertEqual(6, len({item["policySha256"] for item in policies}))
+        self.assertEqual("proofloop-goal", policies[0]["execution"])
+        self.assertEqual("proofloop-adaptive", policies[1]["execution"])
+        self.assertEqual("single-agent", policies[2]["execution"])
+        self.assertEqual("snapshot", policies[3]["promptGrounding"])
+        self.assertEqual("model-specific", policies[4]["renderer"])
+        self.assertEqual("large-directive", policies[5]["promptVariant"])
+
+    def test_official_skill_schedule_adds_paired_external_and_domain_arms(self) -> None:
+        schedule = build_trial_schedule(
+            [{"id": "task-1", "request": "do it", "skillDocument": "skills/task-1/SKILL.md"}],
+            modes=("system",), repetitions=1, policies=("core", "adaptive", "full"),
+            include_official_skill=True, seed=3,
+        )
+        arms = {item["arm"] for item in schedule}
+        self.assertIn("single-official-skill-system", arms)
+        self.assertIn("single-proofloop-domain-system", arms)
+        official = next(item["policy"] for item in schedule if item["arm"] == "single-official-skill-system")
+        self.assertEqual(skill_comparison_policy("single-official-skill-system", "system"), official)
+        self.assertEqual("official", official["injectedSkill"])
+
+    def test_ablation_comparison_uses_large_directive_as_the_fixed_baseline(self) -> None:
+        trials = []
+        for repetition in range(1, 3):
+            trials.extend(
+                [
+                    trial("arm-F-large-baseline-system", repetition, 1_000),
+                    trial("arm-A-current-system", repetition, 700),
+                    trial("arm-B-deterministic-system", repetition, 600),
+                ]
+            )
+
+        comparisons = compare_trials(trials)["comparisons"]
+
+        self.assertEqual(["arm-A-current-system", "arm-B-deterministic-system"], [item["policy"]["arm"] for item in comparisons])
+        self.assertEqual(30.0, comparisons[0]["tokenEfficiencyGainPct"])
+        self.assertEqual(40.0, comparisons[1]["tokenEfficiencyGainPct"])
+
+    def test_skill_comparison_arms_are_compared_with_the_fixed_baseline(self) -> None:
+        trials = [
+            {**trial("arm-F-large-baseline-system", 1, 1_000), "policy": arm_policy("arm-F-large-baseline-system", "system")},
+            {**trial("single-official-skill-system", 1, 900), "policy": skill_comparison_policy("single-official-skill-system", "system")},
+            {**trial("single-proofloop-domain-system", 1, 800), "policy": skill_comparison_policy("single-proofloop-domain-system", "system")},
+        ]
+
+        comparisons = compare_trials(trials)["comparisons"]
+        by_arm = {item["policy"]["arm"]: item for item in comparisons}
+        self.assertEqual(10.0, by_arm["single-official-skill-system"]["tokenEfficiencyGainPct"])
+        self.assertEqual(20.0, by_arm["single-proofloop-domain-system"]["tokenEfficiencyGainPct"])
 
     def test_builtin_domain_only_context_uses_generic_pack_and_matching_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,6 +221,14 @@ class BenchmarkTest(unittest.TestCase):
         self.assertIn("Implement sample", skilled)
         self.assertNotIn("/workspace/tests", plain)
         self.assertNotIn("/workspace/tests", skilled)
+
+    def test_model_specific_benchmark_renderer_preserves_the_task_and_marks_contract_boundary(self) -> None:
+        task = {"id": "sample", "request": "Implement sample", "checks": []}
+
+        rendered = build_single_agent_prompt(task, renderer_kind="model-specific")
+
+        self.assertIn("structured benchmark contract", rendered)
+        self.assertIn("Implement sample", rendered)
 
     def test_swe_environment_materializes_each_catalog_repository(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -191,7 +287,7 @@ class BenchmarkTest(unittest.TestCase):
                     swe_upstream=upstream,
                 )
 
-            self.assertEqual(3, result["completedTrials"])
+            self.assertEqual(9, result["completedTrials"])
 
     def test_dry_run_persists_schedule_without_executing_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,10 +310,10 @@ class BenchmarkTest(unittest.TestCase):
                 )
 
             self.assertEqual("DRY_RUN", result["status"])
-            self.assertEqual(6, result["plannedTrials"])
+            self.assertEqual(9, result["plannedTrials"])
             execute.assert_not_called()
             schedule = json.loads((Path(result["benchmarkDir"]) / "schedule.json").read_text())
-            self.assertEqual(6, len(schedule["trials"]))
+            self.assertEqual(9, len(schedule["trials"]))
 
     def test_resume_skips_completed_trial_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,7 +331,7 @@ class BenchmarkTest(unittest.TestCase):
                     baseline_model="gpt-test",
                     proofloop_host="codex",
                 )
-                self.assertEqual(3, execute.call_count)
+                self.assertEqual(9, execute.call_count)
 
             with patch("proofloop_core.benchmark._execute_trial", side_effect=AssertionError("duplicate trial")) as execute:
                 resumed = run_benchmark(
@@ -251,8 +347,8 @@ class BenchmarkTest(unittest.TestCase):
                 )
 
             execute.assert_not_called()
-            self.assertEqual(3, resumed["completedTrials"])
-            self.assertEqual(3, resumed["skippedTrials"])
+            self.assertEqual(9, resumed["completedTrials"])
+            self.assertEqual(9, resumed["skippedTrials"])
 
     def test_comparison_reports_quality_adjusted_token_gain(self) -> None:
         trials = []
@@ -455,7 +551,7 @@ class BenchmarkTest(unittest.TestCase):
 
             root = Path(result["benchmarkDir"])
             trials = (root / "trials.jsonl").read_text(encoding="utf-8").splitlines()
-            self.assertEqual(3, len(trials))
+            self.assertEqual(9, len(trials))
             self.assertTrue((root / "comparison.json").exists())
             self.assertEqual([], subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True).stdout.split("worktree ")[2:])
 
@@ -493,3 +589,42 @@ class BenchmarkTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_evaluate_promotion_requires_minimum_trials(self) -> None:
+        from proofloop_core.benchmark import evaluate_promotion
+        baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
+        candidate = {"trials": 29, "taskPassRate": 0.6, "tokensPerProven": 1000}
+        result = evaluate_promotion(baseline, candidate)
+        self.assertFalse(result["promoted"])
+        self.assertIn("insufficient trials", result["reason"])
+
+    def test_evaluate_promotion_requires_no_false_proven_increase(self) -> None:
+        from proofloop_core.benchmark import evaluate_promotion
+        baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000, "falseProvenRate": 0.05}
+        candidate = {"trials": 30, "taskPassRate": 0.6, "tokensPerProven": 1000, "falseProvenRate": 0.1}
+        result = evaluate_promotion(baseline, candidate)
+        self.assertFalse(result["promoted"])
+        self.assertIn("false PROVEN rate increased", result["reason"])
+
+    def test_evaluate_promotion_pass_rate_improvement(self) -> None:
+        from proofloop_core.benchmark import evaluate_promotion
+        baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
+        candidate = {"trials": 30, "taskPassRate": 0.55, "tokensPerProven": 1000}
+        result = evaluate_promotion(baseline, candidate)
+        self.assertTrue(result["promoted"])
+        self.assertIn("pass rate improved", result["reason"])
+
+    def test_evaluate_promotion_token_reduction(self) -> None:
+        from proofloop_core.benchmark import evaluate_promotion
+        baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
+        candidate = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 800}
+        result = evaluate_promotion(baseline, candidate)
+        self.assertTrue(result["promoted"])
+        self.assertIn("tokens decreased", result["reason"])
+
+    def test_evaluate_promotion_fails_if_tokens_decrease_but_pass_drops(self) -> None:
+        from proofloop_core.benchmark import evaluate_promotion
+        baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
+        candidate = {"trials": 30, "taskPassRate": 0.49, "tokensPerProven": 800}
+        result = evaluate_promotion(baseline, candidate)
+        self.assertFalse(result["promoted"])

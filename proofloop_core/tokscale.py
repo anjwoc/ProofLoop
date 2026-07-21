@@ -75,6 +75,11 @@ class TokScaleAdapter:
         root = Path(run_dir)
         result: dict[str, Any]
         invocations = load_invocations(root)
+        if not invocations:
+            try:
+                invocations = build_usage_summary(root).get("byInvocation") or []
+            except Exception:
+                invocations = []
         session_map = {
             str(item["sessionId"]): item
             for item in invocations
@@ -91,12 +96,16 @@ class TokScaleAdapter:
         if not join_map:
             result = {"schemaVersion": "1.0", "status": "SKIPPED", "reason": "NO_SESSION_IDS", "matches": []}
             write_json(root / "usage" / "usage-reconciliation.json", result)
-            build_usage_summary(root)
+            summary = build_usage_summary(root)
+            enrich_usage_costs(summary)
+            write_json(root / "usage" / "usage-summary.json", summary)
             return result
         if status["status"] != "PASS":
             result = {"schemaVersion": "1.0", **status, "matches": []}
             write_json(root / "usage" / "usage-reconciliation.json", result)
-            build_usage_summary(root)
+            summary = build_usage_summary(root)
+            enrich_usage_costs(summary)
+            write_json(root / "usage" / "usage-summary.json", summary)
             return result
 
         clients = {
@@ -175,7 +184,9 @@ class TokScaleAdapter:
             "matches": matches,
         }
         write_json(root / "usage" / "usage-reconciliation.json", result)
-        build_usage_summary(root)
+        summary = build_usage_summary(root)
+        enrich_usage_costs(summary)
+        write_json(root / "usage" / "usage-summary.json", summary)
         return result
 
 
@@ -210,3 +221,99 @@ def _token_differences(provider: dict[str, Any], tokscale: dict[str, int]) -> di
         for field in TOKEN_FIELDS
         if int(provider.get(field, 0)) != tokscale.get(field, 0)
     }
+
+
+def calculate_invocation_cost(model: str | None, tokens: dict[str, Any] | None) -> float:
+    if not tokens or not isinstance(tokens, dict):
+        return 0.0
+
+    inp = int(tokens.get("input", 0) or 0)
+    out = int(tokens.get("output", 0) or 0)
+    cache_read = int(tokens.get("cacheRead", 0) or 0)
+    cache_write = int(tokens.get("cacheWrite", 0) or 0)
+
+    if inp == 0 and out == 0 and cache_read == 0 and cache_write == 0:
+        return 0.0
+
+    model_lower = str(model or "").lower().strip()
+
+    if "opus" in model_lower:
+        rates = (15.0, 1.50, 18.75, 75.0)
+    elif "sonnet" in model_lower:
+        rates = (3.0, 0.30, 3.75, 15.0)
+    elif "haiku" in model_lower:
+        rates = (1.0, 0.10, 1.25, 5.0)
+    elif "gpt-4o" in model_lower:
+        rates = (2.50, 1.25, 0.0, 10.0)
+    elif "o3-mini" in model_lower:
+        rates = (1.10, 0.55, 0.0, 4.40)
+    elif "o1" in model_lower:
+        rates = (15.0, 7.50, 0.0, 60.0)
+    elif "gemini-2.5-pro" in model_lower or "gemini-1.5-pro" in model_lower or "gemini-pro" in model_lower:
+        rates = (1.25, 0.3125, 0.0, 5.0)
+    elif "gemini-2.5-flash" in model_lower or "gemini-1.5-flash" in model_lower or "gemini-flash" in model_lower:
+        rates = (0.075, 0.01875, 0.0, 0.30)
+    elif "fable" in model_lower:
+        rates = (3.0, 0.30, 3.75, 15.0)
+    else:
+        rates = (3.0, 0.30, 3.75, 15.0)
+
+    cost = (inp * rates[0] + cache_read * rates[1] + cache_write * rates[2] + out * rates[3]) / 1_000_000.0
+    return round(cost, 8)
+
+
+def enrich_usage_costs(usage_data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(usage_data, dict):
+        return usage_data
+
+    invocations = usage_data.get("byInvocation") or []
+    modified = False
+
+    for inv in invocations:
+        if not isinstance(inv, dict):
+            continue
+        current_cost = inv.get("costUsd")
+        if current_cost is None or current_cost == 0.0 or not isinstance(current_cost, (int, float)):
+            tokens = inv.get("tokens") or {}
+            model_name = inv.get("model") or inv.get("requestedModel") or "unknown"
+            calc_cost = calculate_invocation_cost(model_name, tokens)
+            if calc_cost > 0.0:
+                inv["costUsd"] = calc_cost
+                if not inv.get("costSource"):
+                    inv["costSource"] = "tokscale_native"
+                modified = True
+
+    total_raw = usage_data.get("totals", {}).get("rawTotal", 0)
+    total_cost = usage_data.get("totals", {}).get("costUsd", 0.0)
+
+    if modified or (total_cost == 0.0 and total_raw > 0):
+        new_total_cost = sum(float(inv.get("costUsd") or 0.0) for inv in invocations if isinstance(inv, dict))
+        if "totals" not in usage_data or not isinstance(usage_data["totals"], dict):
+            usage_data["totals"] = {}
+        usage_data["totals"]["costUsd"] = round(new_total_cost, 8)
+
+        model_groups: dict[str, float] = {}
+        for inv in invocations:
+            if not isinstance(inv, dict):
+                continue
+            m = str(inv.get("model") or "unknown")
+            model_groups[m] = model_groups.get(m, 0.0) + float(inv.get("costUsd") or 0.0)
+        for m_item in (usage_data.get("byModel") or []):
+            if isinstance(m_item, dict):
+                m_name = str(m_item.get("model") or "unknown")
+                if m_name in model_groups:
+                    m_item["costUsd"] = round(model_groups[m_name], 8)
+
+        role_groups: dict[str, float] = {}
+        for inv in invocations:
+            if not isinstance(inv, dict):
+                continue
+            r = str(inv.get("role") or "unknown")
+            role_groups[r] = role_groups.get(r, 0.0) + float(inv.get("costUsd") or 0.0)
+        for r_item in (usage_data.get("byRole") or []):
+            if isinstance(r_item, dict):
+                r_name = str(r_item.get("role") or "unknown")
+                if r_name in role_groups:
+                    r_item["costUsd"] = round(role_groups[r_name], 8)
+
+    return usage_data

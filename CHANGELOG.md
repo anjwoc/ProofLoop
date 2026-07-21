@@ -2,6 +2,21 @@
 
 ## 0.4.0-alpha — Automatic orchestrator kernel
 
+- Implemented G-01: Execution Brief schema & shadow synthesizer.
+- Implemented G-02: Role View projector and prompt envelope.
+- Implemented G-03: T2/T3 refinement proposal reconciler.
+- Implemented G-06: Model/session/usage evidence normalization and coverage.
+- Implemented G-07: Docker official evaluator (read-only, clean container).
+- Implemented G-08: 6-arm benchmark runner (resume, paired key, timeout, partial failures).
+- Implemented G-09: ReservationFlow repeatable benchmark support.
+- Implemented G-10: Workload telemetry (T0-T3 tier tracking).
+- Implemented G-11: Fingerprint-based recovery bounds (UNRECOVERABLE after repeated failures).
+- Implemented G-12: Goal resume, cancel, and crash recovery.
+- Implemented G-13: 90-paired trial runner for Domain Pack evaluation.
+- Implemented G-14: Domain trigger sets implementation.
+- Implemented G-15: Clean install isolation verification (`scripts/verify_clean_install.py`).
+- Implemented G-16: CI artifact integrity report via release checks.
+- Implemented G-17: CLI log realtime redaction for secrets (OpenAI, Anthropic, GCP, GitHub).
 - Added the user-hidden `proofloop-core orchestrate` command.
 - Added direct, planned, high-risk, and honestly blocked analysis strategies.
 - Moved role order, verification, retry, recovery, review repair, and truth completion into the core runtime.

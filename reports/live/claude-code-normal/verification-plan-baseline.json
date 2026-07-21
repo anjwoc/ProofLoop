@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "1.0",
+  "criterionIds": [
+    "AC-001"
+  ],
+  "mandatoryChecks": [
+    {
+      "checkId": "CORE-TEST-001",
+      "name": "core-repository-tests",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests"
+      ],
+      "commandSha256": "e6c2abe11967546f8c4770818f3cf0b23caaa1d049ec07dfe66d94b765f50009",
+      "source": "REPOSITORY_DISCOVERED",
+      "authority": "DETERMINISTIC_CHECK",
+      "criterionIds": [],
+      "mandatory": true
+    }
+  ],
+  "candidateChecks": [],
+  "repositoryBaseline": "7c11424b2704f617ac36ae09ad48e6368d1fc0d8",
+  "evaluatorInputs": [],
+  "status": "READY",
+  "planSha256": "2397a0924be35b567ac3a787c37f551acdca04aef9f2252add0918d2b6e3f7cf"
+}

@@ -4,7 +4,7 @@
 
 > **판단은 강한 모델에게. 반복은 빠른 모델에게. 완료 판정은 증거에게.**
 
-ProofLoop는 Codex, Claude Code, Antigravity에서 사용하는 스킬 우선 소프트웨어 엔지니어링
+ProofLoop는 Codex CLI, Claude Code CLI, AGY CLI(Antigravity 연동)에서 사용하는 스킬 우선 소프트웨어 엔지니어링
 런타임입니다. 하나의 공개 스킬이 사용자의 요청을 범위 보존형 intent contract로 정제하고,
 작업량에 맞는 흐름을 선택하고, 역할을 분리해 실행하고, 실제 저장소 증거를 검증하고, 제한된
 복구를 수행한 뒤 명시적인 truth 상태로 종료합니다.
@@ -49,7 +49,7 @@ benchmark로 증명되지 않았으므로 확정된 성능처럼 표현하지 �
 담당자를 결정하고, Proof는 루프를 계속할 이유와 완료를 선언할 자격을 결정합니다.
 
 그림의 모델명은 하드코딩된 의존성이 아니라 구체적인 라우팅 예시입니다. 호스트는 강한 판단에
-Claude Opus, Fable, GPT-5.6 Sol을 사용하고, 검증 피드백이 있는 구현 반복에는 Claude Haiku나
+Claude Opus 또는 GPT-5.6 Sol을 사용하고, 검증 피드백이 있는 구현 반복에는 Claude Haiku나
 Gemini 3.5 Flash를 사용할 수 있습니다. 실제 Registry 설정, 호스트 능력, 모델 가용성, 관측된
 model trace가 최종 기준입니다.
 
@@ -71,6 +71,12 @@ model trace가 최종 기준입니다.
 
 기본 repair 예산은 fast attempt 최대 2회 이후 recovery attempt 최대 1회입니다. Task brief는 더
 엄격한 예산을 지정할 수 있으며, 모든 전환과 승격 이유는 event stream과 artifact에 기록됩니다.
+
+#### 첫 Diff 재분류와 Task Blueprint
+
+처음에 단순(`T0` 또는 `T1`)으로 분류된 작업이라도 ProofLoop는 구현 경계를 계속 감시합니다. **첫 Diff 감시(First-Diff Guard)** 메커니즘은 구현자가 만든 첫 번째 Diff가 보안, 결제, 동시성 경계를 건드리거나 3개 최상위 루트 또는 4개 이상의 파일을 변경하면 즉시 작업량을 `T2` 또는 `T3`로 동적 승격(`Reclassify`)하고 독립 검토자(`reviewer`)를 의무 할당합니다.
+
+복잡한 변경에서 실수가 연쇄되는 것을 막기 위해 기획자(`planner`)는 작업을 **의존성 기반 과제 청사진(Task Blueprint)**(`TASK-1: 재현 테스트`, `TASK-2: 영속성 경계`, `TASK-3: 계약 검증`)으로 분할합니다. 각 과제는 독립적인 허용 경로, 보호 경로, 종료 조건을 강제합니다.
 
 ## ProofLoop를 만드는 이유
 
@@ -110,13 +116,22 @@ ProofLoop는 실수가 누적될 만큼 큰 작업, 검사 실패 가능성이 �
 서로 다른 모델을 역할별로 사용하는 기능은 호스트 능력에도 의존합니다. Codex와 Claude Code는
 역할별 모델을 요청할 수 있지만, 현재 Antigravity는 역할을 격리하되 현재 세션 모델을 사용합니다.
 
+### 실패 지문 기반 제한 복구 (Bounded Recovery)
+
+검사(`check`)가 실패했을 때 ProofLoop는 맹목적으로 모델에게 "다시 시도해"라고 지시하지 않습니다. 실패 출력에서 **실패 지문(Failure Fingerprint)**(`카테고리 + 서명`)을 추출하여 체계적인 복구를 통제합니다:
+
+- **집중 빠른 재시도:** 로컬 코드 및 테스트 수정(`implementer_fast`)에 최대 2회의 빠른 시도를 허용합니다.
+- **복구 컨트롤러 승격:** 동일한 실패 지문이 반복되면 단순 재시도를 중단하고, 과거 시도의 모순을 분석하는 전문 `recovery` 역할로 전환합니다.
+- **구조적 재기획(Re-plan):** 실패 지문이 `DESIGN_CONFLICT`(설계 충돌), `SPEC_AMBIGUITY`(명세 모호), `CONTRACT_CHANGE`(계약 변경)를 나타내면, 구현 반복에 토큰을 낭비하지 않고 상위 강한 기획자(`planner_deep`)에게 경로를 되돌립니다.
+- **예산 소진:** 모든 실행은 명시적인 토큰 및 시도 횟수 예산(`Budgeted Tokens`) 안에서 작동합니다. 한계에 도달하면 증거 기록과 함께 정직하게 `FAILED` 또는 `BLOCKED`로 종료합니다.
+
 ## 시작하기
 
 ### 요구사항
 
 - Python 3.10 이상이 설치된 macOS 또는 Linux
 - Git
-- Codex, Claude Code, Antigravity 중 하나 이상의 CLI
+- `codex`, `claude`, `agy`(Antigravity) 중 하나 이상의 지원 CLI
 - 고정된 로컬 tokScale 설치에 사용하는 npm
 
 ### 설치
@@ -172,23 +187,29 @@ proofloop-core usage --run latest --repo . --reconcile
 python3 -m json.tool .proofloop/runs/<run-id>/truth-report.json
 ```
 
-## 실행 과정
+## 5단계 증명 파이프라인 (How ProofLoop Works)
 
-```text
-공개 proofloop 스킬
-  → intent contract: 원 요청, 범위, 미확정 사항, 권한 보존
-  → workload profile: 위험도·변경 면적·불확실성으로 T0–T3 분류
-  → 저장소 preflight와 Git snapshot
-  → proof graph: 닫아야 할 증명 의무 정의
-  → 조건부 protocol, domain pack, 역할, 모델 선택
-  → 역할·모델·검사 이벤트를 실시간 표시하며 구현
-  → 첫 diff 이후 재분류
-  → 결정론적 검사, diff guard, 보호 증거 확인
-  → 실패 fingerprint를 이용한 제한된 복구
-  → 필요한 경우 독립 리뷰
-  → truth gate와 anti-bloat gate
-  → PROVEN | UNPROVEN | FAILED | BLOCKED
-```
+ProofLoop는 모든 엔지니어링 요청을 불변의 증명 우선 파이프라인으로 처리합니다:
+
+1. **의도 해석 및 Grounding (Wave 0):**
+   - 원본 사용자 요청을 불변으로 동결합니다(`request-envelope.json`).
+   - 질문하기 전에 저장소(`AGENTS.md`, `pyproject.toml`, Git 상태, CodeGraph 경계)를 우선 조사하여 정확한 프레임워크 경계, 기존 테스트 명령어, 보호할 사용자 파일을 파악합니다.
+
+2. **저장소 기반 프롬프트 컴파일 및 Reconciler 검증:**
+   - 메타 컴파일러가 목표, 저장소 사실, 권한 경계를 구조화된 `Prompt IR (v1)`로 변환합니다.
+   - **사전 계약 검증기(Intent Reconciler Guard)**가 코딩 전 계약을 감사하여 모델의 환각성 부수 효과(무단 운영 배포, PR 생성 등)나 기존 테스트 약화 시도를 차단하고 수정합니다.
+
+3. **작업량 적응형 라우팅 및 청사진 분할:**
+   - 복잡도, 불확실성, 위험도, 영향 범위에 따라 작업을 `T0`부터 `T3`까지 분류합니다.
+   - 단일 프롬프트 대신 허용/보호 경로가 엄격히 제어되는 의존성 과제 청사진(`TASK-1`, `TASK-2` 등)으로 쪼갭니다.
+
+4. **격리된 역할 실행 및 실시간 터미널 중계:**
+   - 특화된 역할(`explorer`, `planner`, `implementer`, `reviewer`)에 모델별 최적 프롬프트(`gpt56-outcome-v1`, `claude-review-v1`)를 분배합니다.
+   - **터미널 중계(`proofloop-core relay`)**는 자식 프로세스의 진행률, 모델 변경, 검사 결과를 호스트 CLI(AGY, Claude Code, Codex) 세션 대화창에 커서 기반으로 깔끔하게 보여주며, 공급자의 비공개 추론(`thinking`)은 마스킹하여 유출하지 않습니다.
+
+5. **Truth Engine 및 최종 판정:**
+   - 모델의 단순 완료 주장을 거부합니다. 결정론적 커널이 부모 소유의 검사, Diff 범위 무결성, 테스트 비약화를 직접 검증합니다.
+   - 증거를 바탕으로 공식 판정(`PROVEN`, `PARTIAL`, `FAILED`, `BLOCKED`)을 내립니다.
 
 사용자 모드는 세 가지입니다.
 
@@ -223,6 +244,26 @@ TUI·relay·CI를 위한 JSONL 출력도 지원합니다.
 ```bash
 proofloop-core run --mode adaptive --host codex --repo . --request-file request.txt \
   --output-format jsonl
+```
+
+### 기계 검증: Expected Output 계약
+
+모든 완료된 런은 `expected-output-report.json`을 발행합니다. 이는 런타임이 10가지 관측성 및 증명 규율을 준수했는지 기계적으로 감사한 결과입니다:
+
+1. `repository_binding`: 런, 요청 봉투, Grounding 스냅샷이 정확히 동일한 저장소 루트를 가리킴.
+2. `immutable_request`: 원본 사용자 요청과 SHA-256 해시가 변조 없이 보존됨.
+3. `intent_and_authority_visibility`: IntentGate 권한 판단 및 판정 기록 보존.
+4. `refined_intent_contract`: 목표, 관측 가능한 수용 기준, 권한 경계가 감사 가능함.
+5. `grounding_wave_zero`: 사전 조사 사실과 검증된 테스트 명령어가 보존됨.
+6. `strategy_and_execution_brief`: 작업량 등급(`T0-T3`)과 범위 제한 청사진 기록.
+7. `observable_role_progress`: 진행 단계 전이 및 렌더링된 프롬프트 IR 보존.
+8. `model_trace_honesty`: 요청 모델과 관측된 모델 증거를 속임 없이 정직하게 기록.
+9. `private_reasoning_redacted`: 모든 호스트 로그에서 공급자의 비공개 추론(`thinking` 블록)이 완벽히 마스킹됨.
+10. `evidence_backed_truth_verdict`: 최종 `PROVEN`, `PARTIAL`, `BLOCKED`, `FAILED` 판정이 실제 검사, Diff, 리뷰, 토큰 사용량 아티팩트로 뒷받침됨.
+
+아래 명령어로 직접 어떤 런이든 기계적 감사를 수행할 수 있습니다:
+```bash
+python3 scripts/verify_expected_output.py .proofloop/runs/<run-id> --require-terminal
 ```
 
 ## ProofLoop와 Superpowers, 일반 스킬의 차이
@@ -314,6 +355,12 @@ artifact, 검사, truth gate가 제대로 연결됐는지 확인할 수 있습�
 | Claude Code | `/proofloop <요청>` | 전체 런타임, 실시간 이벤트, 검사, 복구, artifact, truth | 역할별 모델을 요청할 수 있지만 관측된 model trace가 있어야 실제 사용을 증명 |
 | Antigravity | `/proofloop <요청>` | 역할별로 격리된 Antigravity 프로세스를 포함한 전체 경로 | `ROLE_ROUTING_ONLY`; 현재 세션 모델을 사용 |
 
+### 정직한 모델 추적 및 가용성 정산
+
+ProofLoop는 모든 호스트에서 엄격한 보고 계약을 준수합니다:
+- **Codex & Claude Code:** 역할별 모델 요청을 지원합니다. 하지만 요청한 모델 이름(`requestedModel`)만으로는 사용을 증명하지 않으며, API 실행 헤더나 로그로 확인된 관측 모델(`observedModel`) 증거가 있을 때만 실제 사용을 인정합니다.
+- **Antigravity (AGY CLI):** 현재 세션 모델을 사용하는 `ROLE_ROUTING_ONLY` 모드로 동작합니다. ProofLoop는 이를 숨기거나 허위로 다중 모델을 쓴 것처럼 포장하지 않고 정직하게 `CLI_REQUESTED_ONLY` 및 대체 모델(`candidate substitution`) 상태로 기록합니다.
+
 세 호스트 모두 같은 기준으로 테스트합니다.
 
 1. 설치 후 해당 호스트를 재시작합니다.
@@ -336,19 +383,35 @@ $proofloop 영속성·충돌 처리·회귀 테스트가 있는 멱등 예약 AP
 /proofloop 영속성·충돌 처리·회귀 테스트가 있는 멱등 예약 API를 구현해줘.
 ```
 
-현재 유지 관리되는 인증 acceptance 자동화는 Codex와 Antigravity를 지원합니다.
+인증 acceptance harness는 세 호스트 CLI를 모두 지원합니다. 성공한 실행은 보존된 host transcript와
+부모 프로세스가 소유한 ProofLoop artifact를 생성합니다. 다만 model trace에 관측값이 없으면 요청한
+모델이 실제 사용됐다고 주장할 수 없습니다.
 
 ```bash
 python3 scripts/run_host_live.py --host codex --scenario normal --keep-workspace
 python3 scripts/run_host_live.py --host codex --scenario recovery --keep-workspace
+python3 scripts/run_host_live.py --host claude-code --scenario normal --keep-workspace
+python3 scripts/run_host_live.py --host claude-code --scenario recovery --keep-workspace
 python3 scripts/run_host_live.py --host antigravity --scenario normal --keep-workspace
 python3 scripts/run_host_live.py --host antigravity --scenario recovery --keep-workspace
 python3 scripts/release_check.py
 ```
 
-Claude Code는 `/proofloop`를 통한 대화형 테스트가 가능하지만, `run_host_live.py`에는 아직 Claude
-acceptance 시나리오가 없습니다. 이는 자동화된 릴리스 증거의 공백이며 Claude가 이미 live-proven이라고
-주장해서는 안 됩니다.
+Claude Code harness는 일회성으로 생성한 local plugin을 `--plugin-dir`로만 로드합니다. 전역 plugin에
+의존하지 않지만, 인증 환경에서 normal/recovery artifact를 실제로 생성하기 전에는 Claude가
+live-proven이라고 주장해서는 안 됩니다.
+
+`scripts/run_benchmarks.sh`는 기본적으로 안전한 dry-run schedule만 생성합니다. `--execute`와
+명시적인 baseline model을 함께 주지 않으면 인증된 모델 실험을 시작하지 않습니다.
+
+```bash
+# 안전한 schedule만 생성한다. 모델 CLI는 호출하지 않는다.
+bash scripts/run_benchmarks.sh --reservation
+
+# schedule과 예산을 검토한 뒤에만 명시적으로 실측한다.
+bash scripts/run_benchmarks.sh --reservation --execute \
+  --baseline-host codex --baseline-model <baseline-model>
+```
 
 Antigravity의 권한 우회는 기본적으로 꺼져 있습니다. 격리된 무인 테스트 환경에서만
 `PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1`을 사용하세요.

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.0",
+  "closureRatio": 0.0,
+  "obligations": [
+    {
+      "id": "intent-alignment",
+      "statement": "The final diff satisfies the original intent.",
+      "requiredAuthority": "MODEL_REVIEW",
+      "revision": 0,
+      "status": "OPEN",
+      "evidenceIds": [],
+      "lastReason": null
+    },
+    {
+      "id": "deterministic-checks",
+      "statement": "All required deterministic checks pass.",
+      "requiredAuthority": "DETERMINISTIC_CHECK",
+      "revision": 0,
+      "status": "OPEN",
+      "evidenceIds": [],
+      "lastReason": null
+    },
+    {
+      "id": "scope-integrity",
+      "statement": "The final diff remains inside the authorized scope.",
+      "requiredAuthority": "DIFF_GUARD",
+      "revision": 0,
+      "status": "OPEN",
+      "evidenceIds": [],
+      "lastReason": null
+    },
+    {
+      "id": "simplicity",
+      "statement": "The implementation is the smallest sufficient change.",
+      "requiredAuthority": "MODEL_REVIEW",
+      "revision": 0,
+      "status": "OPEN",
+      "evidenceIds": [],
+      "lastReason": null
+    },
+    {
+      "id": "AC-001",
+      "statement": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.",
+      "requiredAuthority": "DETERMINISTIC_CHECK",
+      "revision": 0,
+      "status": "OPEN",
+      "evidenceIds": [],
+      "lastReason": null
+    }
+  ],
+  "evidence": []
+}

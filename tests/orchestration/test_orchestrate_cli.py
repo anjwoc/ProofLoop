@@ -68,6 +68,16 @@ elif "deep planner" in prompt:
         }]
     }
     result_payload = plan
+elif "fast implementer for a direct verified change" in prompt:
+    (repo / "src" / "value.py").write_text('def get_value():\n    return "fixed"\n', encoding="utf-8")
+    result_payload = {
+        "id": "TASK-001", "objective": "fix value",
+        "allowedPaths": ["src/**", "tests/**"], "protectedPaths": [],
+        "requiredChecks": [{"name": "unit", "command": ["python3", "-m", "unittest", "discover", "-s", "tests"], "timeoutSeconds": 30}],
+        "changeBudget": {"maxChangedFiles": 2, "maxAddedLines": 20, "maxNewFiles": 0, "allowDependencyChanges": False},
+        "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "one function", "considered": ["reuse existing"]},
+        "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1}
+    }
 elif "Role: implementer_fast" in prompt:
     count_path = repo / ".proofloop" / "fake-fast-count"
     count_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +123,8 @@ class OrchestrateCLITest(unittest.TestCase):
         recovery: bool = False,
         output_format: str | None = None,
         command_name: str = "orchestrate",
+        watch: bool = False,
+        skills_enabled: bool = True,
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -146,6 +158,10 @@ class OrchestrateCLITest(unittest.TestCase):
         command = [sys.executable, "-m", "proofloop_core.cli", command_name, "--host", host, "--repo", str(repo), "--request", "Implement the bounded value behavior", "--strategy", "planned", "--timeout-seconds", "30"]
         if output_format is not None:
             command.extend(["--output-format", output_format, "--verbosity", "info", "--color", "never"])
+        if watch:
+            command.append("--watch")
+        if command_name == "run" and not skills_enabled:
+            command.extend(["--skills", "disabled"])
         completed = subprocess.run(
             command,
             cwd=ROOT, env=env, capture_output=True, text=True, check=False, timeout=90,
@@ -216,6 +232,37 @@ class OrchestrateCLITest(unittest.TestCase):
         self.assertIn("observed: gpt-5.6", completed.stdout)
         self.assertIn("TRUTH PROVEN", completed.stdout)
         self.assertNotIn('"truthReport":', completed.stdout)
+
+    def test_run_watch_renders_event_bus_panels(self) -> None:
+        completed, _ = self._run(
+            "codex",
+            output_format="human",
+            command_name="run",
+            watch=True,
+            skills_enabled=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        self.assertIn("[ProofLoop Watch]", completed.stdout)
+        self.assertIn("status: PROVEN", completed.stdout)
+        self.assertIn("proof:", completed.stdout)
+        self.assertIn("budget:", completed.stdout)
+
+    def test_run_watch_keeps_jsonl_stdout_machine_readable(self) -> None:
+        completed, _ = self._run(
+            "codex",
+            output_format="jsonl",
+            command_name="run",
+            watch=True,
+            skills_enabled=False,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr + completed.stdout)
+        events = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertTrue(events)
+        self.assertTrue(all(event["schemaVersion"] == "1" for event in events))
+        self.assertIn("[ProofLoop Watch]", completed.stderr)
+        self.assertIn("status: PROVEN", completed.stderr)
 
 
 if __name__ == "__main__":

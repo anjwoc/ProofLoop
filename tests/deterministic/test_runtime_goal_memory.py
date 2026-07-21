@@ -16,7 +16,7 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
     def test_goal_registry_routes_roles_across_available_runtimes(self) -> None:
         available = {
             "claude": "/bin/claude",
-            "gemini": "/bin/gemini",
+            "agy": "/bin/agy",
             "codex": "/bin/codex",
         }
         with patch("proofloop_core.runtime.shutil.which", side_effect=lambda name: available.get(name)), patch(
@@ -28,9 +28,27 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
 
         self.assertEqual("claude-code", explorer.runtime_id)
         self.assertEqual("haiku", explorer.model)
-        self.assertEqual("gemini", recovery.runtime_id)
-        self.assertEqual("gemini-3.1-pro-preview", recovery.model)
+        self.assertEqual("agy", recovery.runtime_id)
+        self.assertEqual("Gemini 3.1 Pro (High)", recovery.model)
         self.assertEqual("legacy-cli", recovery.transport)
+
+    def test_codex_account_default_override_is_explicit_in_the_resolved_trace(self) -> None:
+        with patch.dict("os.environ", {"PROOFLOOP_CODEX_MODEL": "CURRENT_ACCOUNT_DEFAULT"}), patch(
+            "proofloop_core.runtime.shutil.which", return_value="/bin/codex"
+        ), patch("proofloop_core.runtime.acp_sdk_available", return_value=False):
+            resolved = RuntimeRegistry().resolve("codex", "implementer_fast")
+
+        self.assertEqual("CURRENT_ACCOUNT_DEFAULT", resolved.model)
+        self.assertEqual("codex", resolved.runtime_id)
+
+    def test_claude_default_reviewer_uses_an_available_default_model(self) -> None:
+        with patch("proofloop_core.runtime.shutil.which", return_value="/bin/claude"), patch(
+            "proofloop_core.runtime.acp_sdk_available", return_value=False
+        ):
+            resolved = RuntimeRegistry().resolve("claude-code", "reviewer_deep")
+
+        self.assertEqual("claude-code", resolved.runtime_id)
+        self.assertEqual("opus", resolved.model)
 
     def test_goal_fsm_rejects_illegal_transition_and_persists_legal_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

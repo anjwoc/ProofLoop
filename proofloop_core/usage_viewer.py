@@ -60,6 +60,15 @@ def scan_runs(repo_root: Path) -> list[dict[str, Any]]:
             except Exception:
                 usage_data = {"totals": {}, "byInvocation": []}
 
+        from .tokscale import enrich_usage_costs
+        enrich_usage_costs(usage_data)
+        if usage_summary_path.exists() and (usage_data.get("totals", {}).get("costUsd") or 0.0) > 0.0 and (read_json(usage_summary_path).get("totals", {}).get("costUsd") or 0.0) == 0.0:
+            try:
+                from .io import write_json
+                write_json(usage_summary_path, usage_data)
+            except Exception:
+                pass
+
         # Load truth report
         truth_file = run_path / "truth-report.json"
         truth_report = read_json(truth_file) if truth_file.exists() else {}

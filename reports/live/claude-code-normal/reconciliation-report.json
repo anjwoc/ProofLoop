@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0",
+  "status": "PASS",
+  "mode": "CONSERVATIVE_RECONCILIATION",
+  "shadowBriefSha256": "97c12755659f0c75130f1a2891e7145de5540a156fadf8fd206a8c5e562f3b3d",
+  "reconciledBriefSha256": "062f4689ae9e64e9cf99a9cbbcc45498f72772a1eca82d4914f88b8f2c2d696b",
+  "changedFields": [
+    "kind",
+    "scope.approvedPaths",
+    "scope.status",
+    "provenance.briefSha256"
+  ],
+  "proposalAuthority": "PROOFLOOP_CORE"
+}

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "2.0",
+  "routingClaimed": true,
+  "routingConfigured": false,
+  "routingObserved": false,
+  "requiredRoles": [
+    "planner_deep",
+    "implementer_fast",
+    "reviewer_deep"
+  ],
+  "observedModelsByRole": {
+    "explorer_fast": [
+      "claude-haiku-4-5-20251001"
+    ]
+  },
+  "requestedModelsByRole": {
+    "explorer_fast": [
+      "haiku"
+    ]
+  },
+  "weakEvidenceRoles": [],
+  "missingRoles": [
+    "planner_deep",
+    "implementer_fast",
+    "reviewer_deep"
+  ],
+  "eventCount": 1,
+  "host": "claude-code",
+  "capabilityMode": "EXTERNAL_MODEL_ROUTING"
+}

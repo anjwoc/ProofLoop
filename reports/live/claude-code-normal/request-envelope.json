@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0",
+  "requestId": "20260721T211536-f7543354",
+  "rawText": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.\n Do not simulate ProofLoop states and do not call internal invoke-role or record-attempt commands manually. The skill must launch proofloop-core run --mode adaptive and report the resulting truth verdict exactly.\n",
+  "rawHash": "sha256:95488396fbec73c85bd1f00a004aad0155968cbba87ddb2f41a9481e4adb29bd",
+  "receivedAt": "2026-07-21T12:15:36.872797+00:00",
+  "repoRoot": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace",
+  "hostRequested": "claude-code",
+  "explicitPermissions": [],
+  "explicitDenials": [],
+  "userConstraints": [],
+  "invocationSource": "claude-code"
+}

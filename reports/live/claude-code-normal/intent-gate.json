@@ -1,0 +1,10 @@
+{
+  "intentKind": "mutate",
+  "clarity": "clear",
+  "authority": "repository_mutation",
+  "confidence": 0.9,
+  "signals": [],
+  "groundingRequired": true,
+  "ownerQuestion": null,
+  "blockedReason": null
+}

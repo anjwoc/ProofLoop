@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--host", choices=["claude-code", "codex"], default="codex")
     args, _ = parser.parse_known_args()
+    # A nested role cannot create truth-report.json; only the parent
+    # orchestrator can. Blocking it here creates a self-loop after a valid
+    # planner/reviewer result has already been returned.
+    if os.environ.get("PROOFLOOP_ROLE_CHILD") == "1":
+        if args.host == "codex":
+            print("{}")
+        return 0
     try:
         payload = json.load(sys.stdin)
     except Exception:

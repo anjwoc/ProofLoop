@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "2.0",
+  "verdict": "BLOCKED",
+  "blockers": [
+    "EXPLORER_FAST_INVOCATION_FAILED"
+  ],
+  "unproven": [],
+  "message": "explorer_fast invocation failed: 1",
+  "evidence": {}
+}

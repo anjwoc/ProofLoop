@@ -40,7 +40,7 @@ class HostOutputParserTest(unittest.TestCase):
         self.assertEqual([], ClaudeOutputParser().feed("stdout", "All tests passed.\n"))
         self.assertEqual([], CodexOutputParser().feed("stdout", "Using gpt-5.6-terra now.\n"))
 
-    def test_codex_claude_and_gemini_stream_semantic_session_updates(self) -> None:
+    def test_codex_claude_and_agy_stream_semantic_session_updates(self) -> None:
         codex = CodexOutputParser().feed(
             "stdout",
             '{"type":"item.completed","item":{"type":"agent_message","text":"implemented"}}\n',
@@ -56,7 +56,7 @@ class HostOutputParserTest(unittest.TestCase):
         self.assertEqual("agent_message_chunk", codex[0].data["kind"])
         self.assertEqual("tool_call_started", claude[0].data["kind"])
         self.assertEqual("tool_call_updated", gemini[0].data["kind"])
-        self.assertIsInstance(parser_for("gemini"), GeminiOutputParser)
+        self.assertIsInstance(parser_for("agy"), GeminiOutputParser)
 
     def test_structured_rate_limit_permission_and_host_errors_are_normalized(self) -> None:
         rate = CodexOutputParser().feed(
@@ -128,6 +128,19 @@ class HostOutputParserTest(unittest.TestCase):
             AntigravityOutputParser().feed("stdout", '{"event":"session_started","sessionId":"c4"}\n'),
         )
         self.assertEqual(["c1", "c2", "c3", "c4"], [items[0].data["sessionId"] for items in events])
+
+    def test_session_start_exposes_only_safe_identity_metadata(self) -> None:
+        events = ClaudeOutputParser().feed(
+            "stdout",
+            '{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku","permissionMode":"dontAsk","tools":["Write"],"plugins":["private-plugin"]}\n',
+        )
+        session = next(item for item in events if item.event_type == "session.started")
+
+        self.assertEqual("s1", session.data["sessionId"])
+        self.assertEqual("claude-haiku", session.data["update"]["model"])
+        self.assertEqual("dontAsk", session.data["update"]["permissionMode"])
+        self.assertNotIn("tools", session.data["update"])
+        self.assertNotIn("plugins", session.data["update"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,512 @@
+{
+  "schemaVersion": "1.0",
+  "mode": "adaptive",
+  "tier": "T3",
+  "tokenBudget": 360000,
+  "skillsEnabled": true,
+  "selected": [
+    {
+      "id": "proofloop-intent",
+      "name": "proofloop-intent",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal",
+          "audit"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T0",
+          "T1",
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "intent-alignment"
+        ],
+        "adds": [],
+        "minimumAuthority": "STATIC_INSPECTION",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "STATIC_INSPECTION",
+      "requiredContext": [
+        "request.json"
+      ],
+      "context": {
+        "required": [
+          "request.json"
+        ],
+        "maxInjectedTokens": 1800
+      },
+      "budget": {
+        "maxTokens": 1000,
+        "maxSeconds": 30,
+        "maxInvocations": 1
+      },
+      "completionArtifact": "intent-contract.json",
+      "completion": {
+        "artifact": "intent-contract.json",
+        "schema": null
+      },
+      "escalationOn": [
+        "AUTHORIZATION_AMBIGUOUS",
+        "ACCEPTANCE_UNKNOWN"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "95fb553ca5c8d9e39972936264b8f75a804485499b38f128d1cf9af175e2d411",
+      "contentHash": "95fb553ca5c8d9e39972936264b8f75a804485499b38f128d1cf9af175e2d411"
+    },
+    {
+      "id": "proofloop-design",
+      "name": "proofloop-design",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "intent-alignment",
+          "simplicity"
+        ],
+        "adds": [],
+        "minimumAuthority": "MODEL_REVIEW",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "MODEL_REVIEW",
+      "requiredContext": [
+        "intent-contract.json",
+        "repository-context.json",
+        "proof-graph.json"
+      ],
+      "context": {
+        "required": [
+          "intent-contract.json",
+          "repository-context.json",
+          "proof-graph.json"
+        ],
+        "maxInjectedTokens": 2500
+      },
+      "budget": {
+        "maxTokens": 20000,
+        "maxSeconds": 600,
+        "maxInvocations": 2
+      },
+      "completionArtifact": "design.json",
+      "completion": {
+        "artifact": "design.json",
+        "schema": null
+      },
+      "escalationOn": [
+        "DESIGN_CONFLICT",
+        "UNKNOWN_CONSTRAINT"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "d17069d4c24e8ccd7c76a584d5e7941a36db85f20445d0dcd591cd2414fd65d7",
+      "contentHash": "d17069d4c24e8ccd7c76a584d5e7941a36db85f20445d0dcd591cd2414fd65d7"
+    },
+    {
+      "id": "proofloop-plan",
+      "name": "proofloop-plan",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "scope-integrity"
+        ],
+        "adds": [],
+        "minimumAuthority": "MODEL_REVIEW",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "MODEL_REVIEW",
+      "requiredContext": [
+        "intent-contract.json",
+        "repository-context.json",
+        "proof-graph.json"
+      ],
+      "context": {
+        "required": [
+          "intent-contract.json",
+          "repository-context.json",
+          "proof-graph.json"
+        ],
+        "maxInjectedTokens": 2300
+      },
+      "budget": {
+        "maxTokens": 18000,
+        "maxSeconds": 600,
+        "maxInvocations": 3
+      },
+      "completionArtifact": "plan.json",
+      "completion": {
+        "artifact": "plan.json",
+        "schema": null
+      },
+      "escalationOn": [
+        "PLAN_NOT_EXECUTABLE",
+        "SCOPE_UNKNOWN"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "14cbd9729d0b79b28efbe71c2c7c46e43b6ec301fa2072cb820d76d6935a7ed4",
+      "contentHash": "14cbd9729d0b79b28efbe71c2c7c46e43b6ec301fa2072cb820d76d6935a7ed4"
+    },
+    {
+      "id": "proofloop-implement",
+      "name": "proofloop-implement",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T0",
+          "T1",
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "deterministic-checks"
+        ],
+        "adds": [],
+        "minimumAuthority": "DETERMINISTIC_CHECK",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "DETERMINISTIC_CHECK",
+      "requiredContext": [
+        "intent-contract.json",
+        "proof-graph.json"
+      ],
+      "context": {
+        "required": [
+          "intent-contract.json",
+          "proof-graph.json"
+        ],
+        "maxInjectedTokens": 2200
+      },
+      "budget": {
+        "maxTokens": 15000,
+        "maxSeconds": 900,
+        "maxInvocations": 4
+      },
+      "completionArtifact": "attempts.jsonl",
+      "completion": {
+        "artifact": "attempts.jsonl",
+        "schema": null
+      },
+      "escalationOn": [
+        "REPEATED_FINGERPRINT",
+        "SCOPE_VIOLATION",
+        "CHECK_FAILED"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "554d58d4673899d995133c0cc7515a4ba1a5ec109ec8378e2b7c94eb014cfc3e",
+      "contentHash": "554d58d4673899d995133c0cc7515a4ba1a5ec109ec8378e2b7c94eb014cfc3e"
+    },
+    {
+      "id": "proofloop-review",
+      "name": "proofloop-review",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "intent-alignment",
+          "simplicity"
+        ],
+        "adds": [],
+        "minimumAuthority": "MODEL_REVIEW",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "MODEL_REVIEW",
+      "requiredContext": [
+        "intent-contract.json",
+        "proof-graph.json",
+        "checks/checks.json",
+        "diff-guard.json"
+      ],
+      "context": {
+        "required": [
+          "intent-contract.json",
+          "proof-graph.json",
+          "checks/checks.json",
+          "diff-guard.json"
+        ],
+        "maxInjectedTokens": 2400
+      },
+      "budget": {
+        "maxTokens": 30000,
+        "maxSeconds": 600,
+        "maxInvocations": 2
+      },
+      "completionArtifact": "review.json",
+      "completion": {
+        "artifact": "review.json",
+        "schema": null
+      },
+      "escalationOn": [
+        "FIX_REQUIRED",
+        "DESIGN_CONFLICT",
+        "CANNOT_VERIFY"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "2340772a9d66e8ccd4019dd5e9e5fca3a27e39869820fa0fbf45ab8c325ed8d1",
+      "contentHash": "2340772a9d66e8ccd4019dd5e9e5fca3a27e39869820fa0fbf45ab8c325ed8d1"
+    },
+    {
+      "id": "proofloop-verify",
+      "name": "proofloop-verify",
+      "version": "1.0.0",
+      "status": "EXPERIMENTAL",
+      "kind": "PROCESS_PROTOCOL",
+      "activation": {
+        "modes": [
+          "adaptive",
+          "goal"
+        ],
+        "taskTypes": [],
+        "positiveSignals": [],
+        "negativeSignals": []
+      },
+      "compatibility": {
+        "hosts": [
+          "claude-code",
+          "codex",
+          "antigravity"
+        ],
+        "tiers": [
+          "T0",
+          "T1",
+          "T2",
+          "T3"
+        ],
+        "languages": [],
+        "frameworks": [],
+        "requiredTools": []
+      },
+      "dependencies": [],
+      "conflicts": [],
+      "proof": {
+        "closes": [
+          "deterministic-checks",
+          "scope-integrity"
+        ],
+        "adds": [],
+        "minimumAuthority": "DETERMINISTIC_CHECK",
+        "selfClosureAllowed": false
+      },
+      "minimumAuthority": "DETERMINISTIC_CHECK",
+      "requiredContext": [
+        "intent-contract.json",
+        "proof-graph.json"
+      ],
+      "context": {
+        "required": [
+          "intent-contract.json",
+          "proof-graph.json"
+        ],
+        "maxInjectedTokens": 2600
+      },
+      "budget": {
+        "maxTokens": 1000,
+        "maxSeconds": 900,
+        "maxInvocations": 8
+      },
+      "completionArtifact": "proof-graph.json",
+      "completion": {
+        "artifact": "proof-graph.json",
+        "schema": null
+      },
+      "escalationOn": [
+        "CHECK_FAILED",
+        "SCOPE_VIOLATION",
+        "STALE_EVIDENCE"
+      ],
+      "source": {
+        "license": "MIT",
+        "provenance": [
+          "ProofLoop built-in process protocol"
+        ]
+      },
+      "evaluation": {
+        "evidenceLevel": "E0",
+        "validUntil": null,
+        "scorecard": null
+      },
+      "bundleSha256": "2d427f12c2970d21dc9295d00baed1a9a6237451bce3994cf09d61a60f7ae513",
+      "contentHash": "2d427f12c2970d21dc9295d00baed1a9a6237451bce3994cf09d61a60f7ae513"
+    }
+  ],
+  "processProtocols": [
+    "proofloop-intent",
+    "proofloop-design",
+    "proofloop-plan",
+    "proofloop-implement",
+    "proofloop-review",
+    "proofloop-verify"
+  ],
+  "domainPacks": [],
+  "experimentalDomainPacks": false
+}

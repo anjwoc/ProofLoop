@@ -1,14 +1,14 @@
 # ProofLoop Core release check
 
 - Deterministic development checks: **PASS**
-- Automatic orchestrator kernel: **SIMULATED_PROVEN**
+- Automatic orchestrator kernel: **SIMULATED_MECHANICS_PROVEN**
 - Codex one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**
 - Codex one-command recovery fixture: **SIMULATED_HOST_E2E_PROVEN**
-- Antigravity one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**
+- AGY one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**
 - Codex authenticated normal live E2E: **MISSING**
 - Codex authenticated recovery live E2E: **MISSING**
-- Antigravity authenticated normal live E2E: **MISSING**
-- Antigravity authenticated recovery live E2E: **MISSING**
+- AGY authenticated normal live E2E: **MISSING**
+- AGY authenticated recovery live E2E: **MISSING**
 - Claude authenticated normal live E2E: **MISSING**
 - Claude authenticated recovery live E2E: **MISSING**
 - Observed authenticated model routing: **UNPROVEN**

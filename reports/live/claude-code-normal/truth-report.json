@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "verdict": "UNPROVEN",
+  "reason": "EXPECTED_OUTPUT_CONTRACT_FAILED",
+  "host": "claude-code",
+  "scenario": "normal",
+  "hostExitCode": 1,
+  "roles": [
+    "explorer_fast"
+  ],
+  "recoveryObserved": false,
+  "orchestratorTruthVerdict": "BLOCKED",
+  "expectedOutputStatus": "FAIL",
+  "expectedOutputFailures": [
+    "evidence_backed_truth_verdict"
+  ],
+  "source": "AUTHENTICATED_HOST_RUN"
+}

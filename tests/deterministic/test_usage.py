@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.usage import TokenLedger, UsageObservation, normalize_tokens
+from proofloop_core.usage import TokenLedger, UsageObservation, budgeted_token_total, normalize_tokens
 
 
 class UsageTest(unittest.TestCase):
@@ -24,6 +24,13 @@ class UsageTest(unittest.TestCase):
                 }
             ),
         )
+
+    def test_budgeted_total_discounts_only_cache_reads_when_breakdown_exists(self) -> None:
+        self.assertEqual(
+            26,
+            budgeted_token_total({"input": 10, "output": 3, "cacheWrite": 5, "cacheRead": 80}),
+        )
+        self.assertEqual(125, budgeted_token_total({"rawTotal": 125}))
 
     def test_ledger_deduplicates_and_aggregates_cumulative_usage(self) -> None:
         ledger = TokenLedger(self.root)

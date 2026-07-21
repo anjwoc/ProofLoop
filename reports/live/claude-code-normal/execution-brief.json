@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "1.0",
+  "kind": "EXECUTION_BRIEF",
+  "provenance": {
+    "requestArtifactSha256": "70f8cbfb0d276ddf88e8292f34e65022bedc1e745f63ad15e629741e8f42ccde",
+    "originalRequestSha256": "95488396fbec73c85bd1f00a004aad0155968cbba87ddb2f41a9481e4adb29bd",
+    "intentContractSha256": "44f4e66deee51911afcf5e082c02516b93f7a18a2016f849fee93fadca027565",
+    "strategySha256": "adba250f85a0e170f6cb09f51f5274fd7f9cf5937422b4dcae51fc4ca6f6029a",
+    "repositoryContextSha256": "52294d876a33937ffece88946a8ccb04dfd72c77da77f4d494659ad324e35157",
+    "repositoryBaseline": "7c11424b2704f617ac36ae09ad48e6368d1fc0d8",
+    "composerPolicyVersion": "1.0",
+    "briefSha256": "062f4689ae9e64e9cf99a9cbbcc45498f72772a1eca82d4914f88b8f2c2d696b"
+  },
+  "objective": {
+    "statement": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.",
+    "provenance": "user_explicit"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC-001",
+      "statement": "Fix the concurrency bug in `IdempotencyExecutor` without changing the public API or weakening tests.",
+      "provenance": "user_explicit"
+    }
+  ],
+  "constraints": [
+    {
+      "statement": "Preserve behavior outside the accepted objective.",
+      "provenance": "user_explicit"
+    }
+  ],
+  "nonGoals": [
+    {
+      "statement": "Unrequested production operations or external side effects.",
+      "provenance": "user_explicit"
+    }
+  ],
+  "authorizationBoundary": {
+    "statement": "Modify repository files required by the accepted objective; external writes require separate authorization.",
+    "provenance": "user_explicit"
+  },
+  "assumptions": [],
+  "unknowns": [
+    {
+      "statement": "Acceptance checks are not explicit and must be derived from repository tests and observable behavior.",
+      "provenance": "user_explicit"
+    }
+  ],
+  "riskSignals": [],
+  "scope": {
+    "candidates": [],
+    "approvedPaths": [],
+    "protectedPaths": [],
+    "status": "CONSTRAINED"
+  },
+  "facts": [],
+  "inferences": [],
+  "openQuestions": [
+    {
+      "id": "OQ-001",
+      "statement": "Acceptance checks are not explicit and must be derived from repository tests and observable behavior.",
+      "blocking": true,
+      "sourceRefs": [
+        {
+          "artifact": "intent-contract.json",
+          "pointer": "/unknowns/0"
+        }
+      ]
+    }
+  ]
+}

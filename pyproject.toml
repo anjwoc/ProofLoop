@@ -12,3 +12,7 @@ proofloop-core = "proofloop_core.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["proofloop_core*"]
+
+[tool.ruff.lint.per-file-ignores]
+# CLI entry scripts extend sys.path before importing the local package.
+"scripts/*.py" = ["E402"]

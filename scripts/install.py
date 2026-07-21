@@ -221,7 +221,7 @@ def install_codex(output: Path, scope: str, target: Path, dry_run: bool) -> dict
     }
 
 
-def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -> dict[str, object]:
+def install_agy(output: Path, scope: str, target: Path, dry_run: bool) -> dict[str, object]:
     home = Path.home()
     destinations: list[tuple[Path, Path]] = []
     if scope == "user":
@@ -239,7 +239,7 @@ def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -
     for source_root, destination_root in destinations:
         if dry_run:
             print(
-                "DRY remove Antigravity ProofLoop skills -> "
+                "DRY remove AGY ProofLoop skills -> "
                 f"{destination_root}/proofloop* and {destination_root / 'using-proofloop'}"
             )
         if not dry_run and destination_root.exists():
@@ -250,26 +250,25 @@ def install_antigravity(output: Path, scope: str, target: Path, dry_run: bool) -
             destination = destination_root / source.name
             installed_skills.append(str(destination))
             if dry_run:
-                print(f"DRY copy Antigravity skill -> {destination}")
+                print(f"DRY copy AGY skill -> {destination}")
             else:
                 destination_root.mkdir(parents=True, exist_ok=True)
                 copy_tree(source, destination)
     if dry_run:
-        print(f"DRY remove Antigravity workflow -> {workflow_target}")
-        print(f"DRY copy Antigravity workflow -> {workflow_target}")
+        print(f"DRY remove AGY workflow -> {workflow_target}")
+        print(f"DRY copy AGY workflow -> {workflow_target}")
     else:
         workflow_target.parent.mkdir(parents=True, exist_ok=True)
         remove_path(workflow_target)
         shutil.copy2(output / "workflows" / "proofloop.md", workflow_target)
     return {
-        "host": "antigravity",
-        "mode": "ROLE_ROUTING_ONLY",
+        "host": "agy",
+        "mode": "EXTERNAL_MODEL_ROUTING",
         "skills": installed_skills,
         "workflow": str(workflow_target),
-        "nativeInteractiveMode": "ROLE_ROUTING_ONLY",
-        "crossModelRouting": False,
-        "permissionBypass": "OPT_IN_WITH_PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1",
-        "next": "Restart Antigravity and invoke /proofloop <request>.",
+        "crossModelRouting": True,
+        "permissionBypass": "ENABLED_FOR_PROOFLOOP_AGY_CHILDREN",
+        "next": "Restart AGY/Antigravity and invoke /proofloop <request>.",
     }
 
 
@@ -304,7 +303,7 @@ def install_claude(output: Path, scope: str, dry_run: bool) -> dict[str, object]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and install ProofLoop Core adapters")
-    parser.add_argument("--host", choices=["claude-code", "codex", "antigravity", "all"], default="all")
+    parser.add_argument("--host", choices=["claude-code", "codex", "agy", "all"], default="all")
     parser.add_argument("--scope", choices=["user", "project", "local"], default="user")
     parser.add_argument("--target", default=".")
     parser.add_argument("--dry-run", action="store_true")
@@ -319,7 +318,7 @@ def main() -> int:
         if args.without_tokscale or args.build_only
         else install_tokscale(home, args.dry_run)
     )
-    hosts: Iterable[str] = ("claude-code", "codex", "antigravity") if args.host == "all" else (args.host,)
+    hosts: Iterable[str] = ("claude-code", "codex", "agy") if args.host == "all" else (args.host,)
     results: list[dict[str, object]] = []
     for host in hosts:
         name = "claude" if host == "claude-code" else host
@@ -329,8 +328,8 @@ def main() -> int:
             results.append({"host": host, "built": str(output)})
         elif host == "codex":
             results.append(install_codex(output, args.scope, target, args.dry_run))
-        elif host == "antigravity":
-            results.append(install_antigravity(output, args.scope, target, args.dry_run))
+        elif host == "agy":
+            results.append(install_agy(output, args.scope, target, args.dry_run))
         else:
             results.append(install_claude(output, args.scope, args.dry_run))
     payload = {"runtime": runtime, "tokscale": tokscale, "adapters": results}

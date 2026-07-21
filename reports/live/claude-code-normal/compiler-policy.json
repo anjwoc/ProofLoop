@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "policyVersion": "1.0",
+  "activeTiers": [
+    "T2",
+    "T3"
+  ],
+  "active": true,
+  "activationSource": "DEFAULT_T2_T3"
+}

@@ -1,7 +1,7 @@
 ---
 name: proofloop-reviewer-deep
 description: Independent deep reviewer for an implemented ProofLoop task or final branch. Checks specification compliance, factual support, code quality, and over-engineering without editing.
-model: fable
+model: opus
 effort: high
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit

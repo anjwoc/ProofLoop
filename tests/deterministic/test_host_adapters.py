@@ -13,6 +13,7 @@ from proofloop_core.adapters import ExternalCLIAdapter, RoleInvocation
 from proofloop_core.events import EventEmitter
 from proofloop_core.host_runner import invoke_role
 from proofloop_core.hosts import capability, role_only_trace_summary
+from proofloop_core.runtime import ACCOUNT_DEFAULT_MODEL
 from proofloop_core.run_state import start_run
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +85,39 @@ class HostAdapterTest(unittest.TestCase):
             self.assertIn('model = "gpt-5.6-terra"', fast)
             self.assertIn('sandbox_mode = "workspace-write"', fast)
 
+    def test_entry_skill_requires_an_absolute_repository_root_before_launch(self) -> None:
+        entry = (ROOT / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("git rev-parse --show-toplevel", entry)
+        self.assertIn('cd "$repo_root"', entry)
+        self.assertIn('--repo "$repo_root"', entry)
+        self.assertIn('--request-file "$request_file"', entry)
+
+    def test_entry_skill_relays_live_parent_events_in_every_host_conversation(self) -> None:
+        entry = (ROOT / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("nohup", entry)
+        self.assertIn('relay_dir="$repo_root/.proofloop/relay/', entry)
+        self.assertIn("PROOFLOOP_RELAY_ACTIVE", entry)
+        self.assertIn("PROOFLOOP_RELAY_FINISHED", entry)
+        self.assertIn("Relay every new `[ProofLoop]` line", entry)
+        self.assertIn("expected-output-report.json", entry)
+
+    def test_claude_adapter_layout_contains_the_specialized_entry_skill(self) -> None:
+        """Exercise the real Claude package builder, not a hand-built fixture."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "claude"
+            completed = subprocess.run(
+                ["python3", "scripts/build_host_adapter.py", "--host", "claude-code", "--output", str(output)],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            plugin = output / "plugins" / "proofloop"
+            manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+            self.assertEqual("proofloop", manifest["name"])
+            entry_skill = plugin / "skills" / "proofloop" / "SKILL.md"
+            self.assertTrue(entry_skill.is_file())
+            self.assertIn("--host claude-code", entry_skill.read_text(encoding="utf-8"))
+            self.assertTrue((plugin / "installed-skills.json").is_file())
+
     def test_antigravity_adapter_has_recognizable_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "antigravity"
@@ -93,7 +127,7 @@ class HostAdapterTest(unittest.TestCase):
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
             workflow = (output / "workflows" / "proofloop.md").read_text(encoding="utf-8")
-            self.assertTrue(workflow.startswith("---\ndescription:"))
+            self.assertTrue(workflow.startswith("---\nname: proofloop\ndescription:"))
             self.assertIn("proofloop-core\" run", workflow)
             self.assertIn("--mode adaptive", workflow)
             self.assertNotIn("invoke-role --host antigravity", workflow)
@@ -114,7 +148,7 @@ class HostAdapterTest(unittest.TestCase):
             self.assertIn("--host antigravity", entry)
             self.assertIn("--output-format human", entry)
             self.assertIn("--verbosity info", entry)
-            self.assertIn("--color auto", entry)
+            self.assertIn("--color never", entry)
             self.assertNotIn("invoke-role", entry)
             built_capability = json.loads((output / "capability.json").read_text(encoding="utf-8"))
             self.assertEqual("ROLE_ROUTING_ONLY", built_capability["mode"])
@@ -248,7 +282,7 @@ class HostAdapterTest(unittest.TestCase):
             )
             workflow = home / ".gemini" / "config" / "global_workflows" / "proofloop.md"
             self.assertTrue(workflow.exists())
-            self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\ndescription:"))
+            self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\nname: proofloop\ndescription:"))
             self.assertIn("proofloop-core\" run", workflow.read_text(encoding="utf-8"))
             self.assertIn("--mode adaptive", workflow.read_text(encoding="utf-8"))
             self.assertTrue((home / ".proofloop" / "bin" / "proofloop-core").exists())
@@ -328,7 +362,7 @@ class HostAdapterTest(unittest.TestCase):
             )
             workflow = target / ".agent" / "workflows" / "proofloop.md"
             self.assertTrue(workflow.exists())
-            self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\ndescription:"))
+            self.assertTrue(workflow.read_text(encoding="utf-8").startswith("---\nname: proofloop\ndescription:"))
 
     def test_antigravity_external_role_invocation_records_requested_model_without_faking_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -370,6 +404,30 @@ class HostAdapterTest(unittest.TestCase):
             self.assertFalse(summary["routingObserved"])
             self.assertFalse(summary["routingClaimed"])
             self.assertEqual("ROLE_ROUTING_ONLY", summary["capabilityMode"])
+
+    def test_codex_account_default_omits_the_unsupported_model_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "codex"
+            capture = root / "args.json"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['CODEX_ARGS']).write_text(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with patch.dict(os.environ, {"CODEX_ARGS": str(capture)}):
+                invoke_role(
+                    "codex",
+                    "implementer_fast",
+                    root,
+                    root / "run",
+                    binary=str(fake),
+                    model_override=ACCOUNT_DEFAULT_MODEL,
+                )
+            self.assertNotIn("--model", json.loads(capture.read_text(encoding="utf-8")))
 
     def test_antigravity_role_emits_output_and_heartbeat_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -490,10 +548,10 @@ class HostAdapterTest(unittest.TestCase):
             invocation = json.loads((Path(result["invocationDir"]) / "invocation.json").read_text(encoding="utf-8"))
             self.assertNotIn("--model", invocation["command"])
 
-    def test_gemini_read_only_role_uses_plan_approval_mode(self) -> None:
+    def test_agy_read_only_role_uses_plan_approval_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            fake = root / "gemini"
+            fake = root / "agy"
             capture = root / "args.json"
             fake.write_text(
                 "#!/usr/bin/env python3\n"
@@ -505,7 +563,7 @@ class HostAdapterTest(unittest.TestCase):
             fake.chmod(0o755)
             with patch.dict(os.environ, {"GEMINI_ARGS": str(capture)}):
                 result = invoke_role(
-                    "gemini",
+                    "agy",
                     "explorer_fast",
                     root,
                     root / "run",
@@ -519,6 +577,69 @@ class HostAdapterTest(unittest.TestCase):
             approval_index = args.index("--approval-mode")
             self.assertEqual("plan", args[approval_index + 1])
             self.assertIn("stream-json", args)
+
+    def test_claude_read_only_role_is_noninteractive_and_denies_write_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "claude"
+            capture = root / "args.json"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "Path(os.environ['CLAUDE_ARGS']).write_text(json.dumps(sys.argv[1:]))\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with patch.dict(os.environ, {"CLAUDE_ARGS": str(capture)}):
+                result = invoke_role(
+                    "claude-code",
+                    "explorer_fast",
+                    root,
+                    root / "run",
+                    prompt="Inspect only.",
+                    binary=str(fake),
+                    access_mode="read-only",
+                )
+
+            self.assertEqual("PASS", result["verdict"])
+            args = json.loads(capture.read_text(encoding="utf-8"))
+            permission_index = args.index("--permission-mode")
+            self.assertEqual("dontAsk", args[permission_index + 1])
+            denied_index = args.index("--disallowedTools")
+            self.assertEqual("Edit,Write,NotebookEdit", args[denied_index + 1])
+            strict_index = args.index("--strict-mcp-config")
+            self.assertEqual("--mcp-config", args[strict_index + 1])
+            config = Path(args[strict_index + 2])
+            self.assertEqual({"mcpServers": {}}, json.loads(config.read_text(encoding="utf-8")))
+            self.assertNotIn("plan", args)
+
+    def test_host_runner_redacts_private_reasoning_from_persisted_host_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake = root / "claude"
+            fake.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "print(json.dumps({'type':'assistant','message':{'content':[{'type':'thinking','thinking':'private chain','signature':'opaque'},{'type':'text','text':'visible update'}]}}))\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            result = invoke_role(
+                "claude-code",
+                "explorer_fast",
+                root,
+                root / "run",
+                prompt="Inspect only.",
+                binary=str(fake),
+                access_mode="read-only",
+            )
+
+            transcript = (Path(result["invocationDir"]) / "stdout.log").read_text(encoding="utf-8")
+            self.assertNotIn("private chain", transcript)
+            self.assertNotIn("opaque", transcript)
+            self.assertIn('"redacted":true', transcript)
+            self.assertIn("visible update", transcript)
 
     def test_built_entry_skills_call_fixed_orchestrator_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -546,7 +667,7 @@ class HostAdapterTest(unittest.TestCase):
                 self.assertIn(expected, text)
                 self.assertIn("--output-format human", text)
                 self.assertIn("--verbosity info", text)
-                self.assertIn("--color auto", text)
+                self.assertIn("--color never", text)
                 self.assertNotIn("--host <current-host>", text)
                 self.assertNotIn("invoke-role", text)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -41,6 +42,22 @@ class ClaudeHookTest(unittest.TestCase):
             (Path(active["runDir"]) / "truth-report.json").write_text('{"verdict":"FAILED"}\n', encoding="utf-8")
             allowed = subprocess.run(["python3", "scripts/claude_stop_hook.py"], cwd=ROOT, input=json.dumps(payload), text=True, capture_output=True, check=False)
             self.assertEqual(0, allowed.returncode)
+
+    def test_stop_hook_allows_a_nested_proofloop_role_to_finish(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            start_run(repo, "test")
+            payload = {"cwd": str(repo), "stop_hook_active": False}
+            completed = subprocess.run(
+                ["python3", "scripts/claude_stop_hook.py"],
+                cwd=ROOT,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={**os.environ, "PROOFLOOP_ROLE_CHILD": "1"},
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
 
 
 if __name__ == "__main__":

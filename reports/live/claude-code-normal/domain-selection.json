@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0",
+  "fingerprint": "/private/var/folders/hb/3xs5_1_x2jb5wy_x9yy657wc0000gp/T/proofloop-normal-live-53guo7_w/workspace/.proofloop/runs/20260721T211536-f7543354/repository-fingerprint.json",
+  "selected": [],
+  "skipped": [
+    {
+      "skill": "backend-development",
+      "status": "EXPERIMENTAL",
+      "reasonCode": "EXPERIMENTAL_REQUIRES_OPT_IN"
+    },
+    {
+      "skill": "test-engineering",
+      "status": "EXPERIMENTAL",
+      "reasonCode": "EXPERIMENTAL_REQUIRES_OPT_IN"
+    }
+  ],
+  "policy": {
+    "primary": 1,
+    "maxAdjunct": 2,
+    "technologyAdaptersAreConditional": true
+  }
+}

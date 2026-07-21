@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "1.0",
+  "totals": {
+    "input": 542,
+    "output": 3273,
+    "cacheRead": 273108,
+    "cacheWrite": 19635,
+    "reasoning": 0,
+    "rawTotal": 296558,
+    "budgetedTotal": 50761,
+    "costUsd": 0.0
+  },
+  "coverage": {
+    "expectedInvocations": 1,
+    "measuredInvocations": 1,
+    "tokenCoverageRatio": 1.0,
+    "costedInvocations": 1
+  },
+  "byInvocation": [
+    {
+      "invocationId": "01-claude-code-explorer_fast",
+      "taskId": null,
+      "role": "explorer_fast",
+      "phase": "EXPLORE",
+      "attempt": null,
+      "runtime": "claude-code",
+      "workloadTier": null,
+      "sessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "model": "claude-haiku-4-5-20251001",
+      "tokens": {
+        "input": 542,
+        "output": 3273,
+        "cacheRead": 273108,
+        "cacheWrite": 19635
+      },
+      "rawTotal": 296558,
+      "budgetedTotal": 50761,
+      "costUsd": 0.0,
+      "costSource": "tokscale",
+      "evidenceLevel": "PROVIDER_REPORTED"
+    }
+  ],
+  "byModel": [
+    {
+      "model": "claude-haiku-4-5-20251001",
+      "tokens": {
+        "input": 542,
+        "output": 3273,
+        "cacheRead": 273108,
+        "cacheWrite": 19635,
+        "reasoning": 0
+      },
+      "costUsd": 0.0,
+      "invocations": 1,
+      "rawTotal": 296558,
+      "budgetedTotal": 50761
+    }
+  ],
+  "byRole": [
+    {
+      "role": "explorer_fast",
+      "tokens": {
+        "input": 542,
+        "output": 3273,
+        "cacheRead": 273108,
+        "cacheWrite": 19635,
+        "reasoning": 0
+      },
+      "costUsd": 0.0,
+      "invocations": 1,
+      "rawTotal": 296558,
+      "budgetedTotal": 50761
+    }
+  ],
+  "byTask": [
+    {
+      "taskId": "unattributed",
+      "tokens": {
+        "input": 542,
+        "output": 3273,
+        "cacheRead": 273108,
+        "cacheWrite": 19635,
+        "reasoning": 0
+      },
+      "costUsd": 0.0,
+      "invocations": 1,
+      "rawTotal": 296558,
+      "budgetedTotal": 50761
+    }
+  ],
+  "byTier": [
+    {
+      "workloadTier": "unattributed",
+      "tokens": {
+        "input": 542,
+        "output": 3273,
+        "cacheRead": 273108,
+        "cacheWrite": 19635,
+        "reasoning": 0
+      },
+      "costUsd": 0.0,
+      "invocations": 1,
+      "rawTotal": 296558,
+      "budgetedTotal": 50761
+    }
+  ]
+}

@@ -1,8 +1,26 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 from pathlib import Path
-import sys
-import unittest
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root))
-suite = unittest.defaultTestLoader.discover(str(root / "tests"), top_level_dir=str(root))
-raise SystemExit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_arguments() -> list[str]:
+    """Return the canonical test collection used by development and release gates."""
+    return [
+        str(ROOT / "tests" / "deterministic"),
+        str(ROOT / "tests" / "orchestration"),
+        "-q",
+    ]
+
+
+def main() -> int:
+    return int(pytest.main(test_arguments()))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

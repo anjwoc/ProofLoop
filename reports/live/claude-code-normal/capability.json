@@ -1,0 +1,83 @@
+{
+  "host": "claude-code",
+  "mode": "EXTERNAL_MODEL_ROUTING",
+  "roles": {
+    "planner_deep": {
+      "model": "opus",
+      "reasoning": "high",
+      "sandbox": "read-only",
+      "runtime": "claude-code"
+    },
+    "explorer_fast": {
+      "model": "haiku",
+      "reasoning": "low",
+      "sandbox": "read-only",
+      "runtime": "claude-code"
+    },
+    "implementer_fast": {
+      "model": "haiku",
+      "reasoning": "medium",
+      "sandbox": "workspace-write",
+      "runtime": "claude-code"
+    },
+    "implementer_recovery": {
+      "model": "sonnet",
+      "reasoning": "high",
+      "sandbox": "workspace-write",
+      "runtime": "claude-code"
+    },
+    "reviewer_deep": {
+      "model": "opus",
+      "reasoning": "high",
+      "sandbox": "read-only",
+      "runtime": "claude-code"
+    }
+  },
+  "externalMode": null,
+  "externalRoles": null,
+  "available": true,
+  "path": "/opt/homebrew/bin/claude",
+  "version": "2.1.159 (Claude Code)",
+  "modelRoutingStatus": "CONFIGURED_UNPROVEN",
+  "runtimeCatalog": [
+    {
+      "runtime": "claude-code",
+      "displayName": "Claude Code",
+      "available": true,
+      "executable": "/opt/homebrew/bin/claude",
+      "transport": "legacy-cli",
+      "fixedArgs": [],
+      "supportsACP": true
+    },
+    {
+      "runtime": "codex",
+      "displayName": "Codex",
+      "available": true,
+      "executable": "/Users/jaecjeong/.local/bin/codex",
+      "transport": "legacy-cli",
+      "fixedArgs": [],
+      "supportsACP": true
+    },
+    {
+      "runtime": "agy",
+      "displayName": "AGY CLI",
+      "available": true,
+      "executable": "/opt/homebrew/bin/agy",
+      "transport": "legacy-cli",
+      "fixedArgs": [],
+      "supportsACP": true
+    },
+    {
+      "runtime": "antigravity",
+      "displayName": "Antigravity",
+      "available": true,
+      "executable": "/opt/homebrew/bin/agy",
+      "transport": "legacy-cli",
+      "fixedArgs": [],
+      "supportsACP": false
+    }
+  ],
+  "versionExitCode": 0,
+  "nativeMode": "NATIVE_MODEL_ROUTING",
+  "routingPolicy": "controller"
+}

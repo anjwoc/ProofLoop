@@ -1,0 +1,53 @@
+{
+  "groupBy": "client,session,model",
+  "entries": [
+    {
+      "client": "claude",
+      "mergedClients": null,
+      "sessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "model": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "input": 3432,
+      "output": 3273,
+      "cacheRead": 273108,
+      "cacheWrite": 19635,
+      "reasoning": 0,
+      "messageCount": 9,
+      "cost": 0.07165155,
+      "performance": {
+        "msPer1KTokens": 153.68663128291936,
+        "totalDurationMs": 45577,
+        "timedTokens": 296558,
+        "sampleCount": 9,
+        "tokenCoverage": 0.9903489086585985
+      }
+    },
+    {
+      "client": "claude",
+      "mergedClients": null,
+      "sessionId": "7da63874-d135-4224-8b98-128243e1c3e6",
+      "model": "<synthetic>",
+      "provider": "unknown",
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "reasoning": 0,
+      "messageCount": 1,
+      "cost": 0.0,
+      "performance": {
+        "msPer1KTokens": null,
+        "totalDurationMs": 0,
+        "timedTokens": 0,
+        "sampleCount": 0,
+        "tokenCoverage": 0.0
+      }
+    }
+  ],
+  "tokscale": {
+    "status": "PASS",
+    "binary": "/Users/jaecjeong/.proofloop/bin/tokscale",
+    "version": "tokscale 4.5.3",
+    "exitCode": 0
+  }
+}

@@ -16,11 +16,51 @@ def run(command: list[str]) -> dict[str, object]:
     return {"command": command, "exitCode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
 
 
-def live_status(name: str) -> dict[str, object]:
+def live_status(name: str, *, expected_host: str, expected_scenario: str) -> dict[str, object]:
     path = ROOT / "reports" / "live" / name / "truth-report.json"
     if not path.exists():
         return {"name": name, "status": "MISSING", "path": str(path)}
-    report = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"name": name, "status": "INVALID_ARTIFACT", "path": str(path), "reason": "INVALID_JSON"}
+    required = {
+        "source": "AUTHENTICATED_HOST_RUN",
+        "host": expected_host,
+        "scenario": expected_scenario,
+        "hostExitCode": 0,
+    }
+    mismatches = [key for key, value in required.items() if report.get(key) != value]
+    original = path.parent / "orchestrator-truth-report.json"
+    if not original.is_file():
+        mismatches.append("orchestratorTruthReport")
+    else:
+        try:
+            original_report = json.loads(original.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            mismatches.append("orchestratorTruthReport")
+        else:
+            if original_report.get("verdict") != "PROVEN":
+                mismatches.append("orchestratorTruthVerdict")
+    required_artifacts = ("events.jsonl", "invocations.jsonl", "usage/usage-summary.json", "expected-output-report.json")
+    missing_artifacts = [item for item in required_artifacts if not (path.parent / item).is_file()]
+    expected_output = path.parent / "expected-output-report.json"
+    if expected_output.is_file():
+        try:
+            experience = json.loads(expected_output.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            mismatches.append("expectedOutputReport")
+        else:
+            if experience.get("status") != "PASS" or experience.get("requireTerminal") is not True:
+                mismatches.append("expectedOutputContract")
+    if mismatches or missing_artifacts:
+        return {
+            "name": name,
+            "status": "INVALID_ARTIFACT",
+            "path": str(path),
+            "mismatches": mismatches,
+            "missingArtifacts": missing_artifacts,
+        }
     return {"name": name, "status": report.get("verdict"), "path": str(path)}
 
 
@@ -32,44 +72,43 @@ def main() -> int:
     checks = [run([sys.executable, "scripts/validate_package.py"])]
     if os.environ.get("PROOFLOOP_RELEASE_CHECK_TEST_MODE") != "1":
         checks.append(run([sys.executable, "scripts/run_tests.py"]))
-    for host in ("claude-code", "codex", "antigravity"):
+    for host in ("claude-code", "codex", "agy"):
         checks.append(run([sys.executable, "scripts/build_host_adapter.py", "--host", host]))
 
     deterministic_pass = all(item["exitCode"] == 0 for item in checks)
     live = {
-        "codexNormal": live_status("codex-normal"),
-        "codexRecovery": live_status("codex-recovery"),
-        "antigravityNormal": live_status("antigravity-normal"),
-        "antigravityRecovery": live_status("antigravity-recovery"),
-        "claudeNormal": live_status("claude-normal"),
-        "claudeRecovery": live_status("claude-recovery"),
+        "codexNormal": live_status("codex-normal", expected_host="codex", expected_scenario="normal"),
+        "codexRecovery": live_status("codex-recovery", expected_host="codex", expected_scenario="recovery"),
+        "agyNormal": live_status("agy-normal", expected_host="agy", expected_scenario="normal"),
+        "agyRecovery": live_status("agy-recovery", expected_host="agy", expected_scenario="recovery"),
+        "claudeNormal": live_status("claude-normal", expected_host="claude-code", expected_scenario="normal"),
+        "claudeRecovery": live_status("claude-recovery", expected_host="claude-code", expected_scenario="recovery"),
     }
 
     codex_pair = live["codexNormal"]["status"] == "PROVEN" and live["codexRecovery"]["status"] == "PROVEN"
-    antigravity_pair = live["antigravityNormal"]["status"] == "PROVEN" and live["antigravityRecovery"]["status"] == "PROVEN"
+    agy_pair = live["agyNormal"]["status"] == "PROVEN" and live["agyRecovery"]["status"] == "PROVEN"
     claude_pair = live["claudeNormal"]["status"] == "PROVEN" and live["claudeRecovery"]["status"] == "PROVEN"
-    authenticated_pair_proven = codex_pair or antigravity_pair or claude_pair
-    overall = "PASS" if deterministic_pass and authenticated_pair_proven else "FAIL"
+    authenticated_pairs_proven = codex_pair and agy_pair and claude_pair
+    overall = "PASS" if deterministic_pass and authenticated_pairs_proven else "FAIL"
 
     report = {
         "schemaVersion": "3.0",
         "deterministicDevelopmentChecks": "PASS" if deterministic_pass else "FAIL",
-        "automaticOrchestratorKernel": "SIMULATED_PROVEN",
+        "automaticOrchestratorKernel": "SIMULATED_MECHANICS_PROVEN",
         "oneCommandHostFixtures": {
             "codexNormal": "SIMULATED_HOST_E2E_PROVEN",
             "codexRecovery": "SIMULATED_HOST_E2E_PROVEN",
-            "antigravityNormal": "SIMULATED_HOST_E2E_PROVEN",
+            "agyNormal": "SIMULATED_HOST_E2E_PROVEN",
         },
         "importantLimit": "Simulated orchestration and fake host processes prove mechanics only, not authenticated model execution.",
         "hostAdapters": {
             "claude-code": "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
             "codex": "PROVEN" if codex_pair else "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
-            "antigravity": "PROVEN" if antigravity_pair else "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
-            "antigravityNativeInteractive": "ROLE_ROUTING_ONLY",
+            "agy": "PROVEN" if agy_pair else "EXTERNAL_ROUTING_CONFIGURED_LIVE_UNPROVEN",
         },
         "coreLiveE2E": live,
-        "observedAuthenticatedModelRouting": "PASS" if authenticated_pair_proven else "UNPROVEN",
-        "observedAuthenticatedRepairLoop": "PASS" if authenticated_pair_proven else "UNPROVEN",
+        "observedAuthenticatedModelRouting": "PASS" if authenticated_pairs_proven else "UNPROVEN",
+        "observedAuthenticatedRepairLoop": "PASS" if authenticated_pairs_proven else "UNPROVEN",
         "repositoryAuditMode": "IMPLEMENTED_READ_ONLY",
         "overallRelease": overall,
         "commands": checks,
@@ -81,14 +120,14 @@ def main() -> int:
         "# ProofLoop Core release check",
         "",
         f"- Deterministic development checks: **{report['deterministicDevelopmentChecks']}**",
-        "- Automatic orchestrator kernel: **SIMULATED_PROVEN**",
+        "- Automatic orchestrator kernel: **SIMULATED_MECHANICS_PROVEN**",
         "- Codex one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**",
         "- Codex one-command recovery fixture: **SIMULATED_HOST_E2E_PROVEN**",
-        "- Antigravity one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**",
+        "- AGY one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**",
         f"- Codex authenticated normal live E2E: **{live['codexNormal']['status']}**",
         f"- Codex authenticated recovery live E2E: **{live['codexRecovery']['status']}**",
-        f"- Antigravity authenticated normal live E2E: **{live['antigravityNormal']['status']}**",
-        f"- Antigravity authenticated recovery live E2E: **{live['antigravityRecovery']['status']}**",
+        f"- AGY authenticated normal live E2E: **{live['agyNormal']['status']}**",
+        f"- AGY authenticated recovery live E2E: **{live['agyRecovery']['status']}**",
         f"- Claude authenticated normal live E2E: **{live['claudeNormal']['status']}**",
         f"- Claude authenticated recovery live E2E: **{live['claudeRecovery']['status']}**",
         f"- Observed authenticated model routing: **{report['observedAuthenticatedModelRouting']}**",
