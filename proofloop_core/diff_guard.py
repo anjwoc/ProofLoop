@@ -141,11 +141,13 @@ def inspect_diff(task: TaskBrief, repository: str | Path, baseline: str = "HEAD"
             violations.append({"code": "TEST_DELETED", "path": path, "detail": "test file deleted"})
 
     for relative in untracked:
-        path = repo / relative
-        if not path.is_file():
+        untracked_path = repo / relative
+        if not untracked_path.is_file():
             continue
         try:
-            patch += "\n+++ b/" + relative + "\n" + "\n".join("+" + line for line in path.read_text(encoding="utf-8").splitlines())
+            patch += "\n+++ b/" + relative + "\n" + "\n".join(
+                "+" + line for line in untracked_path.read_text(encoding="utf-8").splitlines()
+            )
         except UnicodeDecodeError:
             pass
 

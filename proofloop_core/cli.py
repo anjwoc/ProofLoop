@@ -8,6 +8,7 @@ from pathlib import Path
 from .checks import run_checks
 from .diff_guard import inspect_diff
 from .fingerprint import fingerprint_check_report
+from .redact import redact_secrets
 from .io import read_json, write_json
 from .repair import decide_next
 from .task_brief import load_task_brief
@@ -22,7 +23,9 @@ from .attempts import record_attempt
 from .hosts import capability, probe
 from .host_runner import invoke_role
 from .orchestrator import converge_goal, orchestrate, run_proofloop
-from .watch import resolve_run_dir, watch_events
+from .events import EventBus
+from .watch import WatchPanels, render_watch_panels, resolve_run_dir, watch_events
+from .relay import wait_and_poll_relay
 from .tokscale import TokScaleAdapter
 from .usage import build_usage_summary
 from .benchmark import compare_benchmark, resume_benchmark, run_benchmark
@@ -32,7 +35,7 @@ from .skill_qualification import build_behavior_trial_schedule, qualify_domain_p
 
 
 def _print(value: object) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False))
+    print(json.dumps(redact_secrets(value), indent=2, ensure_ascii=False))
 
 
 
@@ -43,17 +46,17 @@ def _resolve_host(value: str) -> str:
     import shutil
 
     explicit = os.environ.get("PROOFLOOP_HOST")
-    if explicit in {"claude-code", "codex", "antigravity"}:
+    if explicit in {"claude-code", "codex", "agy"}:
         return explicit
     signals = [
         ("codex", os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")),
         ("claude-code", os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDECODE")),
-        ("antigravity", os.environ.get("ANTIGRAVITY_SESSION_ID") or os.environ.get("AGY_SESSION_ID")),
+        ("agy", os.environ.get("ANTIGRAVITY_SESSION_ID") or os.environ.get("AGY_SESSION_ID")),
     ]
     detected = [host for host, signal in signals if signal]
     if len(detected) == 1:
         return detected[0]
-    installed = [host for host, binary in (("codex", "codex"), ("antigravity", "agy"), ("claude-code", "claude")) if shutil.which(binary)]
+    installed = [host for host, binary in (("codex", "codex"), ("agy", "agy"), ("claude-code", "claude")) if shutil.which(binary)]
     if len(installed) == 1:
         return installed[0]
     raise ValueError("cannot auto-detect host; pass --host or set PROOFLOOP_HOST")
@@ -65,20 +68,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
     p_orchestrate = sub.add_parser("orchestrate")
-    p_orchestrate.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_orchestrate.add_argument("--host", choices=["auto", "claude-code", "codex", "agy"], default="auto")
     p_orchestrate.add_argument("--repo", default=".")
     request_group = p_orchestrate.add_mutually_exclusive_group(required=True)
     request_group.add_argument("--request")
     request_group.add_argument("--request-file")
     p_orchestrate.add_argument("--strategy", choices=["direct", "planned", "high-risk", "analysis"])
     p_orchestrate.add_argument("--timeout-seconds", type=int, default=1200)
-    p_orchestrate.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="quiet")
+    p_orchestrate.add_argument("--output-format", choices=["human", "jsonl", "quiet", "tui"], default="quiet")
     p_orchestrate.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_orchestrate.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p_orchestrate.add_argument("--experimental-domain-packs", action="store_true")
 
     p_goal = sub.add_parser("goal")
-    p_goal.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_goal.add_argument("--host", choices=["auto", "claude-code", "codex", "agy"], default="auto")
     p_goal.add_argument("--repo", default=".")
     goal_request_group = p_goal.add_mutually_exclusive_group(required=True)
     goal_request_group.add_argument("--request")
@@ -87,14 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     p_goal.add_argument("--timeout-seconds", type=int, default=1200)
     p_goal.add_argument("--max-cycles", type=int, default=8)
     p_goal.add_argument("--max-replans", type=int, default=2)
-    p_goal.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="human")
+    p_goal.add_argument("--output-format", choices=["human", "jsonl", "quiet", "tui"], default="human")
     p_goal.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_goal.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p_goal.add_argument("--experimental-domain-packs", action="store_true")
 
     p_run = sub.add_parser("run")
     p_run.add_argument("--mode", choices=["adaptive", "goal", "audit"], default="adaptive")
-    p_run.add_argument("--host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_run.add_argument("--host", choices=["auto", "claude-code", "codex", "agy"], default="auto")
     p_run.add_argument("--repo", default=".")
     run_request_group = p_run.add_mutually_exclusive_group(required=True)
     run_request_group.add_argument("--request")
@@ -103,23 +106,40 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--timeout-seconds", type=int, default=1200)
     p_run.add_argument("--max-cycles", type=int, default=8)
     p_run.add_argument("--max-replans", type=int, default=2)
-    p_run.add_argument("--output-format", choices=["human", "jsonl", "quiet"], default="human")
+    p_run.add_argument("--output-format", choices=["human", "jsonl", "quiet", "tui"], default="human")
     p_run.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_run.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p_run.add_argument("--skills", choices=["enabled", "disabled"], default="enabled")
     p_run.add_argument("--experimental-domain-packs", action="store_true")
+    p_run.add_argument("--watch", action="store_true")
 
     p_watch = sub.add_parser("watch")
     watch_source = p_watch.add_mutually_exclusive_group(required=True)
     watch_source.add_argument("--run")
     watch_source.add_argument("--run-dir")
     p_watch.add_argument("--repo", default=".")
-    p_watch.add_argument("--format", choices=["human", "jsonl"], default="human")
+    p_watch.add_argument("--format", choices=["human", "jsonl", "tui"], default="human")
     p_watch.add_argument("--verbosity", choices=["info", "verbose", "debug"], default="info")
     p_watch.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     p_watch.add_argument("--task")
     p_watch.add_argument("--level", choices=["debug", "info", "warning", "error"])
     p_watch.add_argument("--no-follow", action="store_true")
+    p_watch.add_argument("--panels", action="store_true")
+    p_watch.add_argument("--tab", default="summary")
+
+    p_tui = sub.add_parser("tui")
+    tui_source = p_tui.add_mutually_exclusive_group(required=False)
+    tui_source.add_argument("--run")
+    tui_source.add_argument("--run-dir")
+    p_tui.add_argument("--repo", default=".")
+    p_tui.add_argument("--tab", default="summary")
+    p_tui.add_argument("--no-follow", action="store_true")
+
+    p_relay = sub.add_parser("relay")
+    p_relay.add_argument("--relay-dir", required=True)
+    p_relay.add_argument("--wait-seconds", type=float, default=3.0)
+    p_relay.add_argument("--tui", action="store_true")
+    p_relay.add_argument("--tab", default="summary")
 
     p_usage = sub.add_parser("usage")
     usage_source = p_usage.add_mutually_exclusive_group(required=True)
@@ -134,9 +154,9 @@ def main(argv: list[str] | None = None) -> int:
     p_benchmark.add_argument("--repo", default=".")
     p_benchmark.add_argument("--mode", choices=["routing", "system", "both"], default="both")
     p_benchmark.add_argument("--repetitions", type=int, default=5)
-    p_benchmark.add_argument("--baseline-host", choices=["claude-code", "codex", "gemini", "antigravity"])
+    p_benchmark.add_argument("--baseline-host", choices=["claude-code", "codex", "agy"])
     p_benchmark.add_argument("--baseline-model")
-    p_benchmark.add_argument("--proofloop-host", choices=["auto", "claude-code", "codex", "antigravity"], default="auto")
+    p_benchmark.add_argument("--proofloop-host", choices=["auto", "claude-code", "codex", "agy"], default="auto")
     p_benchmark.add_argument("--timeout-seconds", type=int, default=1200)
     p_benchmark.add_argument("--seed", type=int, default=0)
     p_benchmark.add_argument("--policy", choices=["core", "adaptive", "full", "both", "all"], default="both")
@@ -192,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--run-dir", required=True)
     p_record.add_argument("--role", choices=["implementer_fast", "implementer_recovery"], required=True)
     p_record.add_argument("--observed-model")
+    p_record.add_argument("--classification", choices=["DESIGN_CONFLICT", "SPEC_AMBIGUITY", "CONTRACT_CHANGE"])
 
     p_start = sub.add_parser("start-run")
     p_start.add_argument("--repo", default=".")
@@ -239,11 +260,11 @@ def main(argv: list[str] | None = None) -> int:
     p_trace.add_argument("--output", required=True)
 
     p_host = sub.add_parser("host-capabilities")
-    p_host.add_argument("--host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
+    p_host.add_argument("--host", choices=["claude-code", "codex", "agy"], required=True)
     p_host.add_argument("--probe", action="store_true")
 
     p_invoke = sub.add_parser("invoke-role")
-    p_invoke.add_argument("--host", choices=["claude-code", "codex", "gemini", "antigravity"], required=True)
+    p_invoke.add_argument("--host", choices=["claude-code", "codex", "agy"], required=True)
     p_invoke.add_argument("--role", choices=["planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"], required=True)
     p_invoke.add_argument("--repo", default=".")
     p_invoke.add_argument("--run-dir", required=True)
@@ -257,8 +278,61 @@ def main(argv: list[str] | None = None) -> int:
     p_truth.add_argument("--output")
 
     args = parser.parse_args(argv)
+    if args.command == "relay":
+        try:
+            poll = wait_and_poll_relay(args.relay_dir, wait_seconds=args.wait_seconds)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if getattr(args, "tui", False):
+            from .tui import render_relay_tui
+
+            print(render_relay_tui(args.relay_dir, tab=getattr(args, "tab", "summary")))
+        else:
+            for line in poll.lines:
+                print(line)
+        print("PROOFLOOP_RELAY_ACTIVE" if poll.active else "PROOFLOOP_RELAY_FINISHED")
+        return 0
+    if args.command == "tui":
+        from .tui import watch_tui
+
+        selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
+        try:
+            watch_tui(
+                selected,
+                stream=sys.stdout,
+                tab=getattr(args, "tab", "summary"),
+                follow=not args.no_follow,
+            )
+        except KeyboardInterrupt:
+            pass
+        return 0
     if args.command == "watch":
         selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
+        if args.format == "tui":
+            from .tui import watch_tui
+
+            try:
+                watch_tui(
+                    selected,
+                    stream=sys.stdout,
+                    tab=getattr(args, "tab", "summary"),
+                    follow=not args.no_follow,
+                )
+            except KeyboardInterrupt:
+                pass
+            return 0
+        event_bus = None
+        if args.panels:
+            event_bus = EventBus()
+            panels = WatchPanels()
+            event_bus.subscribe(panels.consume)
+            panel_stream = sys.stderr if args.format == "jsonl" else sys.stdout
+
+            def render_panels(_: object) -> None:
+                panel_stream.write(render_watch_panels(panels) + "\n")
+                panel_stream.flush()
+
+            event_bus.subscribe(render_panels)
         try:
             watch_events(
                 selected,
@@ -269,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_id=args.task,
                 minimum_level=args.level,
                 follow=not args.no_follow,
+                event_bus=event_bus,
             )
         except KeyboardInterrupt:
             pass
@@ -373,6 +448,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run":
             extra["mode"] = args.mode
             extra["skills_enabled"] = args.skills == "enabled"
+            if args.watch:
+                event_bus = EventBus()
+                panels = WatchPanels()
+                event_bus.subscribe(panels.consume)
+                panel_stream = sys.stderr if args.output_format == "jsonl" else sys.stdout
+
+                def render_panels(_: object) -> None:
+                    panel_stream.write(render_watch_panels(panels) + "\n")
+                    panel_stream.flush()
+
+                event_bus.subscribe(render_panels)
+                extra["event_bus"] = event_bus
         result = runner(
             host,
             args.repo,
@@ -390,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "invoke-role":
         result = invoke_role(args.host, args.role, args.repo, args.run_dir, args.prompt, args.task, args.binary, args.timeout_seconds)
     elif args.command == "record-attempt":
-        result = record_attempt(args.task, args.run_dir, args.role, args.observed_model)
+        result = record_attempt(args.task, args.run_dir, args.role, args.observed_model, args.classification)
     elif args.command == "start-run":
         result = start_run(args.repo, args.request)
     elif args.command == "abort-run":
@@ -436,7 +523,10 @@ def main(argv: list[str] | None = None) -> int:
             repo = repo.parent
         if (repo / ".proofloop").exists():
             finalize_run(repo, result)
-    if args.command not in {"orchestrate", "goal"} or args.output_format == "quiet":
+    if (
+        args.command not in {"orchestrate", "goal"}
+        or args.output_format == "quiet"
+    ) and not (args.command == "run" and args.watch and args.output_format == "jsonl"):
         _print(result)
     if args.command in {"orchestrate", "goal"}:
         return 0 if result.get("verdict") == "PROVEN" else 2

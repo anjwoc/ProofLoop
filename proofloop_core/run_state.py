@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -9,8 +9,32 @@ from typing import Any
 from .io import read_json, write_json
 
 
+def _prune_old_records(repo: Path, keep: int = 30) -> None:
+    proofloop_dir = repo / ".proofloop"
+    if not proofloop_dir.exists():
+        return
+    for subdir_name in ("runs", "relay", "requests"):
+        target_dir = proofloop_dir / subdir_name
+        if not target_dir.exists():
+            continue
+        try:
+            items = sorted(target_dir.iterdir(), key=lambda p: (p.stat().st_mtime, p.name))
+        except OSError:
+            continue
+        if len(items) > keep:
+            for item in items[:-keep]:
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                    else:
+                        item.unlink(missing_ok=True)
+                except OSError:
+                    continue
+
+
 def start_run(repository: str | Path, request: str = "") -> dict[str, Any]:
     repo = Path(repository).resolve()
+    _prune_old_records(repo, keep=30)
     run_id = time.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
     run_dir = repo / ".proofloop" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=False)

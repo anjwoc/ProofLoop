@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -12,6 +13,7 @@ from .host_runner import invoke_role
 from .hosts import probe
 from .runtime import ResolvedRuntime, RuntimeRegistry
 from .usage import record_normalized_usage
+from .host_adapter import HostCapability, HostEvent, HostRunHandle, HostResult
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,12 @@ class HostAdapter(Protocol):
 
     def invoke(self, invocation: RoleInvocation) -> dict[str, Any]: ...
 
+    def detect_capabilities(self) -> HostCapability: ...
+    def start_role(self, invocation: RoleInvocation) -> HostRunHandle: ...
+    def stream_events(self, handle: HostRunHandle) -> Iterator[HostEvent]: ...
+    def cancel(self, handle: HostRunHandle) -> None: ...
+    def collect_result(self, handle: HostRunHandle) -> HostResult: ...
+
 
 class ExternalCLIAdapter:
     """Reference adapter that invokes isolated host CLI processes.
@@ -62,15 +70,58 @@ class ExternalCLIAdapter:
     def probe(self) -> dict[str, Any]:
         result = probe(self.host)
         configured = result.get("mode")
-        if self.host == "antigravity":
-            result["nativeMode"] = configured
-            result["modelRoutingStatus"] = "ROLE_ROUTING_ONLY"
-        elif result.get("available"):
+        if result.get("available"):
             result["mode"] = "EXTERNAL_MODEL_ROUTING"
             result["nativeMode"] = configured
         result["routingPolicy"] = self.routing_policy
         result["runtimeCatalog"] = self.registry.catalog()
         return result
+
+    def detect_capabilities(self) -> HostCapability:
+        from .hosts import capability
+        cap = capability(self.host)
+        mode = cap.get("mode", "ROLE_ROUTING_ONLY")
+        roles = cap.get("roles", {})
+        models = tuple(sorted(set(r.get("model") for r in roles.values() if r.get("model"))))
+        return HostCapability(
+            host_name=self.host,
+            version=cap.get("version"),
+            supports_streaming=True,
+            supports_structured_output=True,
+            supports_subagents=self.host == "claude",
+            supports_model_selection=mode != "ROLE_ROUTING_ONLY",
+            supports_tool_restriction=True,
+            supports_session_resume=self.host == "claude",
+            supports_json_output=True,
+            supports_worktree_isolation=False,
+            supports_prompt_injection=True,
+            available_models=models,
+            limitations=()
+        )
+
+    def start_role(self, invocation: RoleInvocation) -> HostRunHandle:
+        resolved = invocation.runtime or self.resolve_role(invocation.role)
+        invocation_root = invocation.run_dir / "invocations"
+        sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
+        invocation_id = invocation.invocation_id or f"{sequence:02d}-{resolved.runtime_id}-{invocation.role}"
+        return HostRunHandle(
+            invocation_id=invocation_id,
+            host_name=self.host,
+            role=invocation.role,
+            internal_state={"invocation": invocation, "resolved": resolved}
+        )
+
+    def stream_events(self, handle: HostRunHandle) -> Iterator[HostEvent]:
+        yield HostEvent("lifecycle", "Started role execution (synchronous block)", {})
+
+    def cancel(self, handle: HostRunHandle) -> None:
+        pass
+
+    def collect_result(self, handle: HostRunHandle) -> HostResult:
+        state = handle.internal_state or {}
+        invocation = state["invocation"]
+        result = self.invoke(invocation)
+        return HostResult(payload=result)
 
     def resolve_role(self, role: str) -> ResolvedRuntime:
         resolved = self.registry.resolve(self.host, role, policy=self.routing_policy)

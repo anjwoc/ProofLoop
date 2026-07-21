@@ -23,6 +23,10 @@ def build_renderer(
         return JsonlRenderer(stream)
     if output_format == "quiet":
         return QuietRenderer()
+    if output_format == "tui":
+        from ..tui import TuiRenderer
+
+        return TuiRenderer(stream)
     raise ValueError(f"unsupported output format: {output_format}")
 
 

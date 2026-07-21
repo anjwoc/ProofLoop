@@ -12,6 +12,11 @@ from .io import write_json
 
 
 TOKEN_FIELDS = ("input", "output", "cacheRead", "cacheWrite", "reasoning")
+# Cache reads remain fully visible in ``rawTotal``. They are deliberately
+# discounted only for the run budget: unlike new prompt/output work, they
+# generally cost less and do not represent new agent work.
+CACHE_READ_BUDGET_WEIGHT_NUMERATOR = 1
+CACHE_READ_BUDGET_WEIGHT_DENOMINATOR = 10
 
 _TOKEN_ALIASES = {
     "input": ("input", "input_tokens", "inputTokens", "promptTokenCount", "inputTokenCount", "input_other"),
@@ -66,6 +71,33 @@ def normalize_tokens(value: dict[str, Any]) -> dict[str, int]:
     return result
 
 
+def budgeted_token_total(value: dict[str, Any]) -> int:
+    """Return the conservative total used by ProofLoop hard token budgets.
+
+    ``rawTotal`` remains the fully reported and benchmarked quantity. When a
+    provider exposes a field-level breakdown, cache reads count at 10% for
+    scheduling while new input, output, cache creation, and reasoning count in
+    full. A legacy result with only ``rawTotal`` counts in full, so unknown
+    usage never silently buys extra budget.
+    """
+    nested = value.get("tokens")
+    tokens = nested if isinstance(nested, dict) else value
+    fields = {
+        field: int(tokens[field])
+        for field in TOKEN_FIELDS
+        if isinstance(tokens.get(field), int) and not isinstance(tokens.get(field), bool)
+    }
+    if not fields:
+        raw_total = value.get("rawTotal")
+        return int(raw_total) if isinstance(raw_total, int) and not isinstance(raw_total, bool) else 0
+    cache_read = fields.get("cacheRead", 0)
+    direct = sum(amount for field, amount in fields.items() if field != "cacheRead")
+    discounted_cache_read = (
+        cache_read * CACHE_READ_BUDGET_WEIGHT_NUMERATOR + CACHE_READ_BUDGET_WEIGHT_DENOMINATOR - 1
+    ) // CACHE_READ_BUDGET_WEIGHT_DENOMINATOR
+    return direct + discounted_cache_read
+
+
 @dataclass(frozen=True)
 class UsageObservation:
     run_id: str
@@ -80,6 +112,7 @@ class UsageObservation:
     phase: str | None = None
     attempt: int | None = None
     session_id: str | None = None
+    workload_tier: str | None = None
     requested_model: str | None = None
     evidence_level: str = "PROVIDER_REPORTED"
     source_event_id: str | None = None
@@ -97,6 +130,7 @@ class UsageObservation:
             "requestedModel": self.requested_model,
             "sessionId": self.session_id,
             "taskId": self.task_id,
+            "workloadTier": self.workload_tier,
             "phase": self.phase,
             "attempt": self.attempt,
             "tokens": {field: self.tokens[field] for field in TOKEN_FIELDS if field in self.tokens},
@@ -186,13 +220,20 @@ class TokenLedger:
         model_groups = _group_summaries(invocation_summaries, "model")
         role_groups = _group_summaries(invocation_summaries, "role")
         task_groups = _group_summaries(invocation_summaries, "taskId")
+        tier_groups = _group_summaries(invocation_summaries, "workloadTier")
         known_ids = set(grouped)
         expected_ids = {str(item.get("invocationId")) for item in invocation_rows if item.get("invocationId")}
         expected_count = len(expected_ids or known_ids)
         measured_count = len(known_ids & expected_ids) if expected_ids else len(known_ids)
+        raw_total = sum(totals.values())
         summary = {
             "schemaVersion": "1.0",
-            "totals": {**totals, "rawTotal": sum(totals.values()), "costUsd": round(total_cost, 8)},
+            "totals": {
+                **totals,
+                "rawTotal": raw_total,
+                "budgetedTotal": budgeted_token_total(totals),
+                "costUsd": round(total_cost, 8),
+            },
             "coverage": {
                 "expectedInvocations": expected_count,
                 "measuredInvocations": measured_count,
@@ -203,6 +244,7 @@ class TokenLedger:
             "byModel": model_groups,
             "byRole": role_groups,
             "byTask": task_groups,
+            "byTier": tier_groups,
         }
         write_json(self.root / "usage-summary.json", summary)
         return summary
@@ -264,6 +306,7 @@ def record_normalized_usage(
             model=model,
             requested_model=requested_model,
             session_id=str(data.get("sessionId")) if data.get("sessionId") else None,
+            workload_tier=str(data.get("workloadTier")) if data.get("workloadTier") else None,
             task_id=task_id,
             phase=phase,
             attempt=attempt,
@@ -299,10 +342,12 @@ def _aggregate_observations(items: list[dict[str, Any]]) -> dict[str, Any]:
         "phase": chosen.get("phase"),
         "attempt": chosen.get("attempt"),
         "runtime": chosen.get("runtime"),
+        "workloadTier": chosen.get("workloadTier"),
         "sessionId": chosen.get("sessionId"),
         "model": chosen.get("model") or chosen.get("requestedModel") or "unknown",
         "tokens": tokens,
         "rawTotal": sum(tokens.values()),
+        "budgetedTotal": budgeted_token_total(tokens),
         "costUsd": float(cost_item["costUsd"]) if cost_item else None,
         "costSource": cost_item.get("costSource") if cost_item else None,
         "evidenceLevel": chosen.get("evidenceLevel", "UNAVAILABLE"),
@@ -322,6 +367,7 @@ def _group_summaries(items: list[dict[str, Any]], key: str) -> list[dict[str, An
     result = []
     for group in groups.values():
         group["rawTotal"] = sum(group["tokens"].values())
+        group["budgetedTotal"] = budgeted_token_total(group["tokens"])
         group["costUsd"] = round(group["costUsd"], 8)
         result.append(group)
     return sorted(result, key=lambda item: item[key])

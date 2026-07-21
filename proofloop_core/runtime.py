@@ -8,6 +8,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+# A real CLI account may not expose every model ID in the default registry.
+# This opt-in sentinel preserves requested/observed-model honesty while letting
+# a live harness use the account's own selected Codex model.
+ACCOUNT_DEFAULT_MODEL = "CURRENT_ACCOUNT_DEFAULT"
+
+
 @dataclass(frozen=True)
 class Launcher:
     command: str
@@ -76,21 +82,15 @@ RUNTIME_SPECS: dict[str, RuntimeSpec] = {
         full_access_mode="agent-full-access",
         read_only_mode="read-only",
     ),
-    "gemini": RuntimeSpec(
-        runtime_id="gemini",
-        display_name="Gemini CLI",
-        launcher=Launcher("gemini"),
+    "agy": RuntimeSpec(
+        runtime_id="agy",
+        display_name="AGY CLI",
+        launcher=Launcher("agy"),
         cli_output_format="stream-json",
         supports_acp=True,
-        acp_launcher=Launcher("gemini", ("--acp",)),
+        acp_launcher=Launcher("agy", ("--acp",)),
         full_access_mode="yolo",
         read_only_mode="plan",
-    ),
-    "antigravity": RuntimeSpec(
-        runtime_id="antigravity",
-        display_name="Antigravity",
-        launcher=Launcher("agy"),
-        cli_output_format="text",
     ),
 }
 
@@ -101,7 +101,11 @@ CONTROLLER_ROUTES: dict[str, dict[str, RoleRoute]] = {
         "explorer_fast": RoleRoute("claude-code", "haiku", "low", "read-only"),
         "implementer_fast": RoleRoute("claude-code", "haiku", "medium", "workspace-write"),
         "implementer_recovery": RoleRoute("claude-code", "sonnet", "high", "workspace-write"),
-        "reviewer_deep": RoleRoute("claude-code", "fable", "high", "read-only"),
+        # Use a Claude Code model ID that is available to the reference host.
+        # Fable can still be selected through an explicit routing override when
+        # an account exposes it, but it must not make the default workflow
+        # unusable on a normal Claude Code installation.
+        "reviewer_deep": RoleRoute("claude-code", "opus", "high", "read-only"),
     },
     "codex": {
         "planner_deep": RoleRoute("codex", "gpt-5.6", "high", "read-only"),
@@ -110,22 +114,15 @@ CONTROLLER_ROUTES: dict[str, dict[str, RoleRoute]] = {
         "implementer_recovery": RoleRoute("codex", "gpt-5.6", "high", "workspace-write"),
         "reviewer_deep": RoleRoute("codex", "gpt-5.6", "high", "read-only"),
     },
-    "gemini": {
-        "planner_deep": RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "read-only"),
-        "explorer_fast": RoleRoute("gemini", "flash", "low", "read-only"),
-        "implementer_fast": RoleRoute("gemini", "flash", "medium", "workspace-write"),
-        "implementer_recovery": RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "workspace-write"),
-        "reviewer_deep": RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "read-only"),
-    },
-    "antigravity": {
-        role: RoleRoute("antigravity", "current-session-model", None, "host-managed")
-        for role in (
-            "planner_deep",
-            "explorer_fast",
-            "implementer_fast",
-            "implementer_recovery",
-            "reviewer_deep",
-        )
+    "agy": {
+        # These are the canonical IDs advertised by ``agy models``.  Keep
+        # runtime routing executable rather than using display labels that
+        # the CLI cannot resolve.
+        "planner_deep": RoleRoute("agy", "gemini-3.1-pro-high", "high", "read-only"),
+        "explorer_fast": RoleRoute("agy", "gemini-3.5-flash-medium", "low", "read-only"),
+        "implementer_fast": RoleRoute("agy", "gemini-3.5-flash-medium", "medium", "workspace-write"),
+        "implementer_recovery": RoleRoute("agy", "gemini-3.1-pro-high", "high", "workspace-write"),
+        "reviewer_deep": RoleRoute("agy", "gemini-3.1-pro-high", "high", "read-only"),
     },
 }
 
@@ -133,30 +130,28 @@ CONTROLLER_ROUTES: dict[str, dict[str, RoleRoute]] = {
 GOAL_ROUTES: dict[str, tuple[RoleRoute, ...]] = {
     "planner_deep": (
         RoleRoute("claude-code", "opus", "high", "read-only"),
-        RoleRoute("claude-code", "fable", "high", "read-only"),
         RoleRoute("codex", "gpt-5.6", "high", "read-only"),
-        RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "read-only"),
+        RoleRoute("agy", "gemini-3.1-pro-high", "high", "read-only"),
     ),
     "explorer_fast": (
         RoleRoute("claude-code", "haiku", "low", "read-only"),
-        RoleRoute("gemini", "flash", "low", "read-only"),
+        RoleRoute("agy", "gemini-3.5-flash-medium", "low", "read-only"),
         RoleRoute("codex", "gpt-5.6-terra", "low", "read-only"),
     ),
     "implementer_fast": (
         RoleRoute("claude-code", "haiku", "medium", "workspace-write"),
-        RoleRoute("gemini", "gemini-3.1-pro-preview", "medium", "workspace-write"),
+        RoleRoute("agy", "gemini-3.1-pro-high", "medium", "workspace-write"),
         RoleRoute("codex", "gpt-5.6-terra", "medium", "workspace-write"),
     ),
     "implementer_recovery": (
-        RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "workspace-write"),
+        RoleRoute("agy", "gemini-3.1-pro-high", "high", "workspace-write"),
         RoleRoute("claude-code", "haiku", "high", "workspace-write"),
         RoleRoute("codex", "gpt-5.6", "high", "workspace-write"),
     ),
     "reviewer_deep": (
-        RoleRoute("claude-code", "fable", "high", "read-only"),
         RoleRoute("claude-code", "opus", "high", "read-only"),
         RoleRoute("codex", "gpt-5.6", "high", "read-only"),
-        RoleRoute("gemini", "gemini-3.1-pro-preview", "high", "read-only"),
+        RoleRoute("agy", "gemini-3.1-pro-high", "high", "read-only"),
     ),
 }
 
@@ -179,7 +174,7 @@ def _configured_goal_routes() -> dict[str, tuple[RoleRoute, ...]]:
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("PROOFLOOP_ROLE_ROUTING_JSON must contain an object")
-    configured = dict(GOAL_ROUTES)
+    configured: dict[str, tuple[RoleRoute, ...]] = dict(GOAL_ROUTES)
     for role, candidates in value.items():
         if role not in GOAL_ROUTES or not isinstance(candidates, list) or not candidates:
             raise ValueError(f"invalid role route override: {role}")
@@ -208,6 +203,7 @@ class RuntimeRegistry:
     def resolve(self, controller_host: str, role: str, *, policy: str = "controller") -> ResolvedRuntime:
         if controller_host not in CONTROLLER_ROUTES:
             raise ValueError(f"unsupported controller host: {controller_host}")
+        candidates: tuple[RoleRoute, ...]
         if policy == "controller":
             candidates = (CONTROLLER_ROUTES[controller_host][role],)
         elif policy == "goal":
@@ -223,7 +219,7 @@ class RuntimeRegistry:
                     controller_host=controller_host,
                     role=role,
                     runtime_id=route.runtime_id,
-                    model=route.model,
+                    model=_effective_model(route),
                     reasoning=route.reasoning,
                     access_mode=route.access_mode,
                     transport=transport,
@@ -240,7 +236,7 @@ class RuntimeRegistry:
             controller_host=controller_host,
             role=role,
             runtime_id=controller_host,
-            model=controller_route.model,
+            model=_effective_model(controller_route),
             reasoning=controller_route.reasoning,
             access_mode=controller_route.access_mode,
             transport="legacy-cli",
@@ -275,3 +271,18 @@ class RuntimeRegistry:
                 }
             )
         return result
+
+
+def _effective_model(route: RoleRoute) -> str:
+    """Apply an explicit local account override without changing the registry.
+
+    The normal registry remains the product routing policy. The override is
+    solely for an authenticated environment whose account cannot accept that
+    product model ID; callers retain the sentinel in the trace until the host
+    emits an observed model.
+    """
+    if route.runtime_id == "codex":
+        override = os.environ.get("PROOFLOOP_CODEX_MODEL")
+        if override:
+            return override
+    return route.model

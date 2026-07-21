@@ -13,6 +13,7 @@ from typing import BinaryIO, Callable, Mapping
 
 LineCallback = Callable[[str, str], None]
 HeartbeatCallback = Callable[[int, float], None]
+OutputFilter = Callable[[str, str], str]
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class ProcessResult:
     duration_seconds: float
     stdout_ref: str
     stderr_ref: str
+    timeout_reason: str | None = None
 
 
 class ProcessRunner:
@@ -58,7 +60,9 @@ class ProcessRunner:
         stderr_path: str | Path,
         env: Mapping[str, str] | None = None,
         timeout_seconds: float | None = None,
+        initial_output_timeout_seconds: float | None = None,
         on_line: LineCallback | None = None,
+        output_filter: OutputFilter | None = None,
         stdin_data: str | bytes | None = None,
         on_heartbeat: HeartbeatCallback | None = None,
         heartbeat_interval_seconds: float = 5.0,
@@ -73,6 +77,8 @@ class ProcessRunner:
             raise ValueError("command must be a non-empty sequence of strings")
         if timeout_seconds is not None and timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        if initial_output_timeout_seconds is not None and initial_output_timeout_seconds <= 0:
+            raise ValueError("initial_output_timeout_seconds must be positive")
         if heartbeat_interval_seconds <= 0:
             raise ValueError("heartbeat_interval_seconds must be positive")
 
@@ -108,12 +114,12 @@ class ProcessRunner:
             threads = [
                 threading.Thread(
                     target=self._read_stream,
-                    args=("stdout", process.stdout, stdout_handle, messages, stop_readers, self.poll_interval),
+                    args=("stdout", process.stdout, stdout_handle, messages, stop_readers, self.poll_interval, output_filter),
                     daemon=True,
                 ),
                 threading.Thread(
                     target=self._read_stream,
-                    args=("stderr", process.stderr, stderr_handle, messages, stop_readers, self.poll_interval),
+                    args=("stderr", process.stderr, stderr_handle, messages, stop_readers, self.poll_interval, output_filter),
                     daemon=True,
                 ),
             ]
@@ -131,7 +137,9 @@ class ProcessRunner:
 
             finished_streams: set[str] = set()
             timed_out = False
+            timeout_reason: str | None = None
             cancelled = False
+            received_output = False
             termination_started: float | None = None
             kill_started: float | None = None
             killed = False
@@ -161,8 +169,18 @@ class ProcessRunner:
                         cancelled = True
                         termination_started = now
                         self._terminate(process)
+                    elif (
+                        initial_output_timeout_seconds is not None
+                        and not received_output
+                        and now - started >= initial_output_timeout_seconds
+                    ):
+                        timed_out = True
+                        timeout_reason = "INITIAL_OUTPUT_TIMEOUT"
+                        termination_started = now
+                        self._terminate(process)
                     elif timeout_seconds is not None and now - started >= timeout_seconds:
                         timed_out = True
+                        timeout_reason = "TOTAL_TIMEOUT"
                         termination_started = now
                         self._terminate(process)
                 elif (
@@ -196,6 +214,7 @@ class ProcessRunner:
                 if line is None:
                     finished_streams.add(stream_name)
                     continue
+                received_output = True
                 if on_line is not None and callback_error is None:
                     try:
                         on_line(stream_name, line)
@@ -231,6 +250,7 @@ class ProcessRunner:
             duration_seconds=round(time.monotonic() - started, 6),
             stdout_ref=str(stdout_file),
             stderr_ref=str(stderr_file),
+            timeout_reason=timeout_reason,
         )
 
     @staticmethod
@@ -256,6 +276,7 @@ class ProcessRunner:
         messages: queue.Queue[tuple[str, str | None, BaseException | None]],
         stop_event: threading.Event,
         poll_interval: float,
+        output_filter: OutputFilter | None,
     ) -> None:
         pending = bytearray()
         try:
@@ -267,20 +288,36 @@ class ProcessRunner:
                     continue
                 if not chunk:
                     break
-                output.write(chunk)
-                output.flush()
+                if output_filter is None:
+                    output.write(chunk)
+                    output.flush()
                 pending.extend(chunk)
                 while b"\n" in pending:
                     boundary = pending.index(b"\n") + 1
                     raw_line = bytes(pending[:boundary])
                     del pending[:boundary]
-                    messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+                    line = raw_line.decode("utf-8", errors="replace")
+                    if output_filter is not None:
+                        persisted = output_filter(name, line)
+                        output.write(persisted.encode("utf-8", errors="replace"))
+                        output.flush()
+                    messages.put((name, line, None))
                 while len(pending) >= 65536:
                     raw_line = bytes(pending[:65536])
                     del pending[:65536]
-                    messages.put((name, raw_line.decode("utf-8", errors="replace"), None))
+                    line = raw_line.decode("utf-8", errors="replace")
+                    if output_filter is not None:
+                        persisted = output_filter(name, line)
+                        output.write(persisted.encode("utf-8", errors="replace"))
+                        output.flush()
+                    messages.put((name, line, None))
             if pending:
-                messages.put((name, bytes(pending).decode("utf-8", errors="replace"), None))
+                line = bytes(pending).decode("utf-8", errors="replace")
+                if output_filter is not None:
+                    persisted = output_filter(name, line)
+                    output.write(persisted.encode("utf-8", errors="replace"))
+                    output.flush()
+                messages.put((name, line, None))
         except BaseException as exc:
             messages.put((name, None, exc))
         finally:

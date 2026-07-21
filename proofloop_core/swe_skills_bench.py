@@ -101,7 +101,8 @@ def inspect_swe_suite(suite: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(item.get("request"), str)
         or not isinstance(item.get("checks"), list)
     ]
-    source = suite.get("source") if isinstance(suite.get("source"), dict) else {}
+    raw_source = suite.get("source")
+    source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
     commit = source.get("commit")
     if not isinstance(commit, str) or len(commit) != 40:
         invalid.append("SOURCE_COMMIT")

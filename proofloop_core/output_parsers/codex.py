@@ -20,7 +20,8 @@ class CodexOutputParser(StructuredOutputParser):
 
     def session_events_from_event(self, value: dict[str, Any]) -> list[NormalizedHostEvent]:
         event_type = value.get("type")
-        item = value.get("item") if isinstance(value.get("item"), dict) else {}
+        raw_item = value.get("item")
+        item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
         item_type = item.get("type")
         if event_type in {"thread.started", "session.started"}:
             session_id = value.get("thread_id") or value.get("threadId") or value.get("session_id") or value.get("sessionId")
@@ -35,9 +36,11 @@ class CodexOutputParser(StructuredOutputParser):
                 cache_read_is_subset=True,
             ) if isinstance(usage, dict) else None
             return [event] if event else []
-        payload = value.get("payload") if isinstance(value.get("payload"), dict) else {}
+        raw_payload = value.get("payload")
+        payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
         if event_type == "event_msg" and payload.get("type") == "token_count":
-            info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+            raw_info = payload.get("info")
+            info: dict[str, Any] = raw_info if isinstance(raw_info, dict) else {}
             usage = info.get("last_token_usage")
             event = usage_event(
                 usage,

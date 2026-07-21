@@ -39,7 +39,7 @@ expected_models = {
     "planner-deep.md": "opus",
     "implementer-fast.md": "haiku",
     "implementer-recovery.md": "sonnet",
-    "reviewer-deep.md": "fable",
+    "reviewer-deep.md": "opus",
 }
 for name, model in expected_models.items():
     path = ROOT / "agents" / name
@@ -59,7 +59,10 @@ for path in (ROOT / "plugin" / "plugin.json", ROOT / "plugin" / "marketplace.jso
 source_files = [p for p in ROOT.rglob("*") if p.is_file() and "dist" not in p.parts and "__pycache__" not in p.parts]
 runtime_roots = {"proofloop_core", "scripts", "skills", "proofloop_protocols", "proofloop_domain_packs", "agents", "hooks", "plugin"}
 runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runtime_roots]
-runtime_file_budget = 155
+# The observable-run contract adds one verifier module, one direct operator
+# command, relay polling, and the TUI dashboard engine. Keep the cap explicit so future shipping surface still needs a
+# conscious budget change rather than silently growing.
+runtime_file_budget = 164
 if len(runtime_files) > runtime_file_budget:
     errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
 
@@ -71,7 +74,7 @@ required_fragments = {
         "Do not synthesize",
         "--output-format human",
         "--verbosity info",
-        "--color auto",
+        "--color never",
         "truth-report.json",
     ],
     ROOT / "proofloop_protocols" / "proofloop-design" / "SKILL.md": ["Core principle", "Decision procedure", "Stop and escalate", "Completion checklist"],

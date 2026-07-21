@@ -115,8 +115,11 @@ async def _invoke(
     stderr_handle: Any,
 ) -> dict[str, Any]:
     try:
-        from acp import PROTOCOL_VERSION, spawn_agent_process, text_block
-        from acp.interfaces import Client
+        # ACP is an optional runtime extra. Keep its absence a runtime error
+        # with a clear installation instruction, while type-checking the core
+        # package without requiring every host SDK to be installed.
+        from acp import PROTOCOL_VERSION, spawn_agent_process, text_block  # type: ignore[import-not-found]
+        from acp.interfaces import Client  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError("ACP Python SDK is unavailable; install the 'acp' extra") from exc
 
@@ -191,10 +194,10 @@ async def _invoke(
             requested_mode = {
                 "claude-code": "bypassPermissions",
                 "codex": "agent-full-access",
-                "gemini": "yolo",
+                "agy": "yolo",
             }.get(resolved.runtime_id)
         elif resolved.access_mode == "read-only":
-            requested_mode = {"claude-code": "plan", "codex": "read-only", "gemini": "plan"}.get(
+            requested_mode = {"claude-code": "plan", "codex": "read-only", "agy": "plan"}.get(
                 resolved.runtime_id
             )
         if requested_mode and requested_mode in available_ids:

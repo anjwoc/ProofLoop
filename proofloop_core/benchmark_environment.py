@@ -67,7 +67,8 @@ def preflight_swe_environment(
     pull_images: bool = False,
 ) -> dict[str, Any]:
     upstream = Path(upstream_root).resolve()
-    source = suite.get("source") if isinstance(suite.get("source"), dict) else {}
+    raw_source = suite.get("source")
+    source: dict[str, Any] = raw_source if isinstance(raw_source, dict) else {}
     expected_commit = source.get("commit")
     docker = _run([docker_binary, "info", "--format", "{{.ServerVersion}}"], check=False)
     observed_commit = _run(["git", "rev-parse", "HEAD"], cwd=upstream, check=False).stdout.strip()
@@ -76,7 +77,10 @@ def preflight_swe_environment(
     expected_config_hash = source.get("configHash")
     tasks: list[dict[str, Any]] = []
     image_status: dict[str, str] = {}
-    for task in suite.get("tasks", []):
+    raw_tasks = suite.get("tasks")
+    for task in raw_tasks if isinstance(raw_tasks, list) else []:
+        if not isinstance(task, dict):
+            continue
         task_id = str(task.get("id", ""))
         test_path = _safe_upstream_path(upstream, task.get("upstreamTest"))
         skill_path = _safe_upstream_path(upstream, task.get("skillDocument"))
@@ -172,7 +176,10 @@ class SWETrialEnvironment:
         command_results: list[dict[str, Any]] = []
         combined_output: list[str] = []
         timed_out = False
-        for command in task.get("checks", []):
+        raw_checks = task.get("checks")
+        for command in raw_checks if isinstance(raw_checks, list) else []:
+            if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
+                raise ValueError("SWE task checks must be argv arrays")
             docker_command = [
                 self.docker_binary,
                 "run",
@@ -232,7 +239,8 @@ def _safe_upstream_path(root: Path, value: Any) -> Path:
 def _workspace_directory(task: dict[str, Any]) -> str:
     value = task.get("workspaceDirectory")
     if not isinstance(value, str) or not value:
-        repository = task.get("repository") if isinstance(task.get("repository"), dict) else {}
+        raw_repository = task.get("repository")
+        repository: dict[str, Any] = raw_repository if isinstance(raw_repository, dict) else {}
         url = repository.get("url")
         value = str(url).rstrip("/").rsplit("/", 1)[-1] if isinstance(url, str) else ""
         if value.endswith(".git"):

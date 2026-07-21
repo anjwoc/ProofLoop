@@ -22,6 +22,7 @@ class Evidence:
     artifact: str
     revision: int
     verdict: str = "PASS"
+    evidence_level: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,7 +82,13 @@ class ProofGraph:
         if evidence.verdict != "PASS":
             obligation.last_reason = "EVIDENCE_DID_NOT_PASS"
             return
-        if AUTHORITY[evidence.authority] < AUTHORITY[obligation.required_authority]:
+
+        eff_authority = evidence.authority
+        if obligation.required_authority == "EXTERNAL_OBSERVATION":
+            if evidence.evidence_level not in {"E-01", "E-02", "E-03", "E-04", "E-05", "E-06"}:
+                eff_authority = "STATIC_INSPECTION"
+
+        if AUTHORITY[eff_authority] < AUTHORITY[obligation.required_authority]:
             obligation.last_reason = "INSUFFICIENT_AUTHORITY"
             return
         obligation.status = "CLOSED"

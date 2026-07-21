@@ -13,7 +13,7 @@ from .runtime import CONTROLLER_ROUTES, RuntimeRegistry, runtime_spec
 
 def _host_capability(host: str) -> dict[str, Any]:
     spec = runtime_spec(host)
-    mode = "ROLE_ROUTING_ONLY" if host == "antigravity" else "NATIVE_MODEL_ROUTING"
+    mode = "NATIVE_MODEL_ROUTING"
     roles = {
         role: {
             "model": route.model,
@@ -45,7 +45,14 @@ def capability(host: str) -> dict[str, Any]:
 
 def probe(host: str) -> dict[str, Any]:
     config = capability(host)
-    executable = shutil.which(str(config["binary"]))
+    binary = str(config["binary"])
+    executable = shutil.which(binary)
+    if not executable:
+        for path in ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"]:
+            candidate = Path(path) / binary
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                executable = str(candidate)
+                break
     result: dict[str, Any] = {
         "host": host,
         "mode": config["mode"],
@@ -175,14 +182,15 @@ def parse_codex_transcript(path: str | Path | None) -> dict[str, Any]:
     return {"observedModel": model, "eventCount": count}
 
 
-def antigravity_workflow() -> str:
+def agy_workflow() -> str:
     return r"""---
-description: Run ProofLoop while continuously relaying observed planner, implementer, check, recovery, review, and truth progress in the Antigravity conversation.
+name: proofloop
+description: Run ProofLoop while continuously relaying observed planner, implementer, check, recovery, review, and truth progress in the AGY conversation.
 ---
 
 # ProofLoop
 
-Do not simulate the workflow in this Antigravity session.
+Do not simulate the workflow in this AGY session.
 
 1. Preserve the complete user request following `/proofloop` in `.proofloop/requests/` as a UTF-8 text file.
 2. Tell the user that the external ProofLoop orchestrator is launching and that observed progress will be relayed.
@@ -192,9 +200,9 @@ Do not simulate the workflow in this Antigravity session.
 RELAY_DIR="$(pwd)/.proofloop/relay/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$RELAY_DIR"
 printf '1\n' > "$RELAY_DIR/next-line"
-nohup "$HOME/.proofloop/bin/proofloop-core" run \
+PROOFLOOP_AGY_BYPASS_PERMISSIONS=1 nohup "$HOME/.proofloop/bin/proofloop-core" run \
   --mode adaptive \
-  --host antigravity \
+  --host agy \
   --repo . \
   --request-file <absolute-request-file> \
   --output-format human \
@@ -205,29 +213,24 @@ printf '%s\n' "$!" > "$RELAY_DIR/pid"
 printf 'RELAY_DIR=%s\nPID=%s\n' "$RELAY_DIR" "$(cat "$RELAY_DIR/pid")"
 ```
 
-4. Retain the absolute `RELAY_DIR`. Re-run the following polling block in separate terminal tool calls until it prints `PROOFLOOP_RELAY_FINISHED`. Do not keep one terminal call blocked for the whole run:
+4. Retain the absolute `RELAY_DIR`. Re-run the following command in separate terminal tool calls until it prints `PROOFLOOP_RELAY_FINISHED`. Do not keep one terminal call blocked for the whole run, and do not return control to the user while it is active:
 
 ```bash
-sleep 5
-NEXT_LINE=$(cat "$RELAY_DIR/next-line")
-LAST_LINE=$(wc -l < "$RELAY_DIR/output.log" | tr -d ' ')
-if [ "$LAST_LINE" -ge "$NEXT_LINE" ]; then
-  sed -n "${NEXT_LINE},${LAST_LINE}p" "$RELAY_DIR/output.log"
-fi
-printf '%s\n' "$((LAST_LINE + 1))" > "$RELAY_DIR/next-line"
-if kill -0 "$(cat "$RELAY_DIR/pid")" 2>/dev/null; then
-  printf 'PROOFLOOP_RELAY_ACTIVE\n'
-else
-  printf 'PROOFLOOP_RELAY_FINISHED\n'
-fi
+"$HOME/.proofloop/bin/proofloop-core" relay --relay-dir "$RELAY_DIR" --wait-seconds 3
 ```
 
-5. Relay every new `[ProofLoop]` line to the user between polling tool calls. Present the observed role, phase, elapsed time, PID, check, recovery, review, and host output lines. Do not invent progress or expose the submitted prompt.
+5. Relay every new `[ProofLoop]` line to the user between polling tool calls. The command prints every new observable line exactly once. Present the observed role, phase, elapsed time, PID, check, recovery, review, and host output lines. Do not invent progress or expose provider private reasoning or the submitted prompt.
 6. When the relay finishes, extract the run ID from the first `ProofLoop run` line in `output.log`, read `.proofloop/runs/<run-id>/truth-report.json`, and present its `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` status exactly. Requested model names are not proof of resolved models.
 """
 
 
-def role_only_trace_summary(host: str = "antigravity") -> dict[str, Any]:
+def role_only_trace_summary(host: str) -> dict[str, Any]:
+    """Compatibility projection for legacy host capabilities.
+
+    Current supported hosts use external model routing, but old run artifacts
+    can still be replayed through this branch.  Keeping the projection generic
+    avoids retaining a removed host name in the public contract.
+    """
     return {
         "schemaVersion": "2.0",
         "host": host,

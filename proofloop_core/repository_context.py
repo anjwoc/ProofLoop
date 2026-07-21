@@ -36,12 +36,25 @@ def get_files_by_extension(root: str | Path, extensions: Iterable[str]) -> list[
 def ensure_codegraph(repository: str | Path, output: str | Path, *, required: bool = True, mock: bool = False) -> dict[str, Any]:
     repo = Path(repository).resolve()
     target = Path(output)
+    result: dict[str, Any]
     if not _has_source(repo):
         result = {"status": "NOT_APPLICABLE", "provider": "codegraph", "repository": str(repo)}
         write_json(target, result)
         return result
     executable = shutil.which("codegraph")
     if mock:
+        if os.environ.get("PROOFLOOP_ALLOW_MOCK_CONTEXT") != "1":
+            # A mock index fabricates a READY status without indexing anything.
+            # Refuse unless explicitly opted in, so it can never leak into a
+            # real run or a proven claim.
+            result = {
+                "status": "BLOCKED",
+                "provider": "codegraph",
+                "reason": "MOCK_CONTEXT_NOT_ALLOWED",
+                "repository": str(repo),
+            }
+            write_json(target, result)
+            return result
         index = repo / ".codegraph" / "codegraph.db"
         index.parent.mkdir(parents=True, exist_ok=True)
         index.touch()

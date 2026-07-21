@@ -73,6 +73,7 @@ class TokScaleAdapter:
 
     def reconcile(self, run_dir: str | Path) -> dict[str, Any]:
         root = Path(run_dir)
+        result: dict[str, Any]
         invocations = load_invocations(root)
         session_map = {
             str(item["sessionId"]): item
@@ -199,7 +200,7 @@ def _run_since_date(run_dir: Path) -> str:
 def _tokscale_client(runtime: str) -> str:
     return {
         "claude-code": "claude",
-        "antigravity": "antigravity-cli",
+        "agy": "antigravity-cli",
     }.get(runtime, runtime)
 
 

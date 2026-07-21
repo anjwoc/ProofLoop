@@ -8,20 +8,104 @@ from pathlib import Path
 from typing import Any
 
 from .events import EventEmitter
-from .hosts import capability, role_only_trace_summary
+from .hosts import capability
 from .io import write_json
 from .output_parsers import parser_for
 from .process_runner import ProcessRunner
+from .runtime import ACCOUNT_DEFAULT_MODEL
 from .trace import summarize_trace
 from .usage import TokenLedger, load_invocations, record_normalized_usage
 
 _MAX_HOST_OUTPUT_EVENT_CHARS = 4000
+_PRIVATE_REASONING_KEYS = frozenset({"thinking", "signature"})
+# Goalng's production AGY adapter normalizes routing IDs to the labels that
+# AGY accepts in ``--model``.  Keep ProofLoop's durable traces in canonical
+# IDs while using the proven CLI representation at process boundaries.
+_AGY_MODEL_LABELS = {
+    "gemini-3.5-flash-medium": "Gemini 3.5 Flash (Medium)",
+    "gemini-3.5-flash-high": "Gemini 3.5 Flash (High)",
+    "gemini-3.5-flash-low": "Gemini 3.5 Flash (Low)",
+    "gemini-3.1-pro-low": "Gemini 3.1 Pro (Low)",
+    "gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
+}
+
+
+def _agy_initial_output_timeout_seconds() -> int:
+    """Bound AGY's silent-start failure mode without shortening valid runs.
+
+    AGY can remain connected while emitting neither a response nor an error.
+    Goalng handles the same provider behaviour separately.  A first-byte cap
+    prevents a detached ProofLoop role from spending the whole run budget in
+    that state; callers can raise it deliberately for unusually large work.
+    """
+    raw = os.environ.get("PROOFLOOP_AGY_INITIAL_OUTPUT_TIMEOUT_SECONDS", "90")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 90
+    return max(15, value)
 
 
 def _append(path: Path, item: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
+def _redact_private_reasoning_log(path: Path) -> None:
+    """Remove provider reasoning blocks before the raw host transcript persists.
+
+    The observable run contract exposes actions, artifacts, model evidence, and
+    concise status—not private reasoning.  Claude's stream-json protocol puts
+    reasoning in ``type: thinking`` blocks; retain a structural marker so the
+    transcript remains valid JSONL without retaining its content or signature.
+    """
+    if not path.is_file():
+        return
+    redacted_lines: list[str] = []
+    changed = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            redacted_lines.append(line)
+            continue
+        cleaned = _without_private_reasoning(value)
+        changed = changed or cleaned != value
+        redacted_lines.append(json.dumps(cleaned, ensure_ascii=False, separators=(",", ":")))
+    if changed:
+        path.write_text("\n".join(redacted_lines) + ("\n" if redacted_lines else ""), encoding="utf-8")
+
+
+def _without_private_reasoning(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_without_private_reasoning(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if value.get("type") == "thinking":
+        return {"type": "thinking", "redacted": True}
+    return {
+        key: _without_private_reasoning(item)
+        for key, item in value.items()
+        if key not in _PRIVATE_REASONING_KEYS
+    }
+
+
+def _sanitize_persisted_host_line(_stream_name: str, line: str) -> str:
+    """Redact private provider reasoning before a role transcript is written.
+
+    Parser callbacks still receive the original line so model, usage, and tool
+    events retain their native shape.  The durable log is the user-facing
+    artifact, however, and may never contain a thinking block even while a
+    role process is still alive.
+    """
+    ending = "\n" if line.endswith("\n") else ""
+    body = line[:-1] if ending else line
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError:
+        return line
+    return json.dumps(_without_private_reasoning(value), ensure_ascii=False, separators=(",", ":")) + ending
 
 
 def _default_prompt(role: str, task_path: str | None, run_dir: Path) -> str:
@@ -61,7 +145,7 @@ def invoke_role(
     if role not in {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}:
         raise ValueError(f"unsupported role: {role}")
     config = capability(host)
-    role_table = config["roles"] if host == "antigravity" else config.get("externalRoles", config["roles"])
+    role_table = config.get("externalRoles", config["roles"])
     role_config = role_table[role]
     model = model_override or role_config["model"]
     executable_name = binary or config["binary"]
@@ -76,25 +160,40 @@ def invoke_role(
         sandbox = "read-only" if access_mode == "read-only" else "workspace-write"
         command = [
             str(executable), *fixed_args, "exec", "--json", "--ephemeral", "--sandbox", sandbox,
-            "--model", model, message,
         ]
-    elif host == "antigravity":
-        command = [str(executable), *fixed_args]
-        if os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1":
-            command.append("--dangerously-skip-permissions")
-        command.extend(["-p", message])
+        if model != ACCOUNT_DEFAULT_MODEL:
+            command.extend(["--model", model])
+        command.append(message)
     elif host == "claude-code":
+        # Role children receive all necessary ProofLoop artifacts in their
+        # prompt. Inheriting a user's global MCP inventory can start dozens of
+        # unrelated servers for every role, which delays the run and inflates
+        # cache usage without improving the scoped task.
+        mcp_config = root / "claude-role-mcp.json"
+        write_json(mcp_config, {"mcpServers": {}})
         command = [
             str(executable), *fixed_args, "-p", message, "--model", model,
             "--output-format", "stream-json", "--verbose",
-            "--permission-mode", "plan" if access_mode == "read-only" else "bypassPermissions",
+            "--strict-mcp-config", "--mcp-config", str(mcp_config),
         ]
-    elif host == "gemini":
-        command = [
-            str(executable), *fixed_args, "-p", message, "--model", model,
-            "--output-format", "stream-json", "--approval-mode",
-            "plan" if access_mode == "read-only" else "yolo",
-        ]
+        if access_mode == "read-only":
+            # ``plan`` is interactive in Claude Code: a role can stop at
+            # ExitPlanMode waiting for a human confirmation.  A ProofLoop
+            # child is non-interactive, so deny write tools instead while
+            # retaining read/search/Bash capability. The parent additionally
+            # enforces the source snapshot after invocation.
+            command.extend(["--permission-mode", "dontAsk", "--disallowedTools", "Edit,Write,NotebookEdit"])
+        else:
+            command.extend(["--permission-mode", "bypassPermissions"])
+    elif host == "agy":
+        # AGY is not Gemini CLI.  Goalng's production adapter uses this
+        # exact prompt/model shape; AGY has no structured-output or
+        # approval-mode flag.  Its display model labels are required by the
+        # installed client even though ``agy models`` lists canonical IDs.
+        command = [str(executable), *fixed_args]
+        if os.environ.get("PROOFLOOP_AGY_BYPASS_PERMISSIONS") == "1":
+            command.append("--dangerously-skip-permissions")
+        command.extend(["--prompt", message, "--model", _AGY_MODEL_LABELS.get(model, model)])
     else:
         return {"verdict": "BLOCKED", "reason": "EXTERNAL_ROLE_RUNNER_NOT_SUPPORTED", "role": role}
     sequence = len(list((root / "invocations").glob("*"))) + 1 if (root / "invocations").exists() else 1
@@ -104,13 +203,15 @@ def invoke_role(
     started = time.time()
     parser = parser_for(host)
     observed: str | None = None
-    evidence_level = "UNAVAILABLE" if host == "antigravity" else "CLI_REQUESTED_ONLY"
+    evidence_level = "CLI_REQUESTED_ONLY"
     model_event_emitted = False
     parser_degraded = False
     session_id: str | None = None
+    failure_reason_code: str | None = None
+    failure_reason: str | None = None
 
     def on_line(stream_name: str, line: str) -> None:
-        nonlocal observed, evidence_level, model_event_emitted, parser_degraded, session_id
+        nonlocal observed, evidence_level, model_event_emitted, parser_degraded, session_id, failure_reason_code, failure_reason
         visible_text = line.rstrip("\r\n")
         try:
             normalized = parser.feed(stream_name, line)
@@ -174,6 +275,16 @@ def invoke_role(
                 evidence_level = str(data.get("evidenceLevel") or "HOST_OUTPUT")
             if item.event_type == "session.started" and isinstance(data.get("sessionId"), str):
                 session_id = data["sessionId"]
+            if item.event_type == "capability.degraded" and data.get("reasonCode") == "RATE_LIMIT":
+                # A provider quota is a recoverable external block, not an
+                # implementation failure and not evidence that the role's
+                # work was incorrect.
+                failure_reason_code = "HOST_RATE_LIMITED"
+                failure_reason = str(data.get("hostMessage") or item.message)
+            if failure_reason_code == "HOST_RATE_LIMITED" and item.event_type == "session.update":
+                candidate = str(data.get("text") or "")
+                if candidate and ("limit" in candidate.lower() or "429" in candidate):
+                    failure_reason = candidate
             if item.event_type == "usage.observed":
                 if not data.get("sessionId") and session_id:
                     data["sessionId"] = session_id
@@ -222,17 +333,32 @@ def invoke_role(
             },
         )
 
+    initial_output_timeout = _agy_initial_output_timeout_seconds() if host == "agy" else None
     process_result = ProcessRunner().run(
         command,
         cwd=repo,
         stdout_path=call_dir / "stdout.log",
         stderr_path=call_dir / "stderr.log",
+        # The parent owns the run-level Truth report. A child role must be
+        # allowed to stop once it returns its role result, rather than being
+        # re-prompted by an installed Stop hook for a report it cannot create.
+        env={**os.environ, "PROOFLOOP_ROLE_CHILD": "1"},
         timeout_seconds=timeout_seconds,
+        initial_output_timeout_seconds=initial_output_timeout,
         on_line=on_line,
+        output_filter=_sanitize_persisted_host_line,
         stdin_data=None,
         on_heartbeat=on_heartbeat if emitter is not None else None,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
     )
+    _redact_private_reasoning_log(call_dir / "stdout.log")
+    _redact_private_reasoning_log(call_dir / "stderr.log")
+    if process_result.timed_out and process_result.timeout_reason == "INITIAL_OUTPUT_TIMEOUT":
+        failure_reason_code = "HOST_INITIAL_OUTPUT_TIMEOUT"
+        failure_reason = (
+            f"AGY produced no stdout or stderr within {initial_output_timeout}s; "
+            "the invocation was terminated to preserve the run budget."
+        )
     if host == "codex":
         headless = root / "usage" / "tokscale-headless" / "codex" / f"{invocation_id}.jsonl"
         headless.parent.mkdir(parents=True, exist_ok=True)
@@ -266,6 +392,7 @@ def invoke_role(
         "command": command,
         "exitCode": process_result.exit_code,
         "timedOut": process_result.timed_out,
+        "timeoutReason": process_result.timeout_reason,
         "cancelled": process_result.cancelled,
         "transport": "legacy-cli",
         "durationSeconds": process_result.duration_seconds,
@@ -275,12 +402,9 @@ def invoke_role(
     }
     trace = root / "model-trace.jsonl"
     _append(trace, event)
-    if host == "antigravity":
-        summary = role_only_trace_summary(host)
-    else:
-        summary = summarize_trace(trace)
-        summary["host"] = host
-        summary["capabilityMode"] = "EXTERNAL_MODEL_ROUTING"
+    summary = summarize_trace(trace)
+    summary["host"] = host
+    summary["capabilityMode"] = "EXTERNAL_MODEL_ROUTING"
     write_json(root / "model-trace-summary.json", summary)
     result = {
         "verdict": "PASS" if process_result.exit_code == 0 else "FAIL",
@@ -295,7 +419,10 @@ def invoke_role(
         "traceRecorded": True,
         "modelEventEmitted": model_event_emitted,
         "timedOut": process_result.timed_out,
+        "timeoutReason": process_result.timeout_reason,
         "cancelled": process_result.cancelled,
+        "reasonCode": failure_reason_code,
+        "reason": failure_reason,
     }
     write_json(call_dir / "invocation.json", {**event, **result})
     usage_summary = TokenLedger(root).summarize(

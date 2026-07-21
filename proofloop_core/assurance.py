@@ -94,7 +94,7 @@ def audit_claims(run_dir: str | Path) -> dict[str, Any]:
     ledger_path = root / "claims.json"
     if not ledger_path.exists():
         return {
-            "verdict": "UNPROVEN",
+            "verdict": "PARTIAL",
             "blocking": [],
             "unproven": ["CLAIM_LEDGER_MISSING"],
             "claims": [],
@@ -131,7 +131,8 @@ def audit_claims(run_dir: str | Path) -> dict[str, Any]:
             blocking.append(f"CLAIM_{index}_INVALID")
             continue
         claim_id = claim.get("id") if isinstance(claim.get("id"), str) else f"claim-{index + 1}"
-        category = claim.get("category") if isinstance(claim.get("category"), str) else "UNSPECIFIED"
+        raw_category = claim.get("category")
+        category: str = raw_category if isinstance(raw_category, str) else "UNSPECIFIED"
         kind = claim.get("kind")
         statement = claim.get("statement")
         evidence = claim.get("evidence") or []
@@ -160,7 +161,7 @@ def audit_claims(run_dir: str | Path) -> dict[str, Any]:
             continue
         evidence_results = [_audit_evidence(root, item) for item in evidence]
         claim_result["evidence"] = evidence_results
-        statuses = {item["status"] for item in evidence_results}
+        statuses = {str(item["status"]) for item in evidence_results if isinstance(item.get("status"), str)}
         if "CONTRADICTED" in statuses:
             claim_result["status"] = "CONTRADICTED"
             blocking.append(f"{claim_id}:CONTRADICTED")
@@ -187,7 +188,7 @@ def audit_claims(run_dir: str | Path) -> dict[str, Any]:
     for missing in sorted(required_categories - supported_categories):
         unproven.append(f"REQUIRED_CLAIM_CATEGORY_MISSING:{missing}")
 
-    verdict = "FAILED" if blocking else "UNPROVEN" if unproven else "PROVEN"
+    verdict = "FAILED" if blocking else "PARTIAL" if unproven else "PROVEN"
     return {
         "verdict": verdict,
         "blocking": blocking,
@@ -219,7 +220,13 @@ def audit_simplicity(run_dir: str | Path) -> dict[str, Any]:
             "NEW_FILE_BUDGET_EXCEEDED",
             "DEPENDENCY_CHANGE_FORBIDDEN",
         }
-        observed = {item.get("code") for item in diff.get("violations", []) if isinstance(item, dict)}
+        raw_violations = diff.get("violations")
+        violations = raw_violations if isinstance(raw_violations, list) else []
+        observed = {
+            str(item["code"])
+            for item in violations
+            if isinstance(item, dict) and isinstance(item.get("code"), str)
+        }
         if observed & bloat_codes:
             blocking.extend(sorted(observed & bloat_codes))
 
@@ -237,7 +244,7 @@ def audit_simplicity(run_dir: str | Path) -> dict[str, Any]:
         elif simplicity_verdict != "MINIMAL":
             unproven.append("SIMPLICITY_VERDICT_MISSING")
 
-    verdict = "FAILED" if blocking else "UNPROVEN" if unproven else "PROVEN"
+    verdict = "FAILED" if blocking else "PARTIAL" if unproven else "PROVEN"
     return {"verdict": verdict, "blocking": blocking, "unproven": unproven, "evidence": evidence}
 
 
@@ -246,7 +253,7 @@ def build_assurance_report(run_dir: str | Path) -> dict[str, Any]:
     simplicity = audit_simplicity(run_dir)
     blocking = [f"CLAIMS:{item}" for item in claims["blocking"]] + [f"SIMPLICITY:{item}" for item in simplicity["blocking"]]
     unproven = [f"CLAIMS:{item}" for item in claims["unproven"]] + [f"SIMPLICITY:{item}" for item in simplicity["unproven"]]
-    verdict = "FAILED" if blocking else "UNPROVEN" if unproven else "PROVEN"
+    verdict = "FAILED" if blocking else "PARTIAL" if unproven else "PROVEN"
     return {
         "schemaVersion": "1.0",
         "verdict": verdict,

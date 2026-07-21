@@ -33,6 +33,8 @@ class HumanRenderer:
         self.stream.flush()
 
     def _required_verbosity(self, event: dict[str, Any]) -> int:
+        if event.get("type") == "role_prompt.rendered":
+            return _VERBOSITY["debug"]
         if event.get("type") == "check.output":
             return _VERBOSITY["debug"]
         if event.get("type") == "budget.updated":
@@ -53,8 +55,25 @@ class HumanRenderer:
 
     def _format(self, event: dict[str, Any]) -> str:
         event_type = str(event.get("type") or "")
-        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        raw_data = event.get("data")
+        # Event payloads originate at the JSON boundary. Narrow once here so
+        # every renderer branch can safely treat the payload as a mapping.
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
         prefix = self._prefix(event)
+
+        if event_type == "role_prompt.rendered":
+            role = data.get("role", "unknown-role")
+            model = data.get("model", "unknown-model")
+            reason = data.get("reason", "role dispatch")
+            prompt = str(data.get("promptText") or "").rstrip("\n")
+            lines = [
+                f"{prefix} Model selected",
+                f"             Role: {role}",
+                f"             Model: {model}",
+                f"             Reason: {reason}",
+                f"\n{prefix} Prompt compiled:\n{prompt}",
+            ]
+            return "\n".join(lines)
 
         if event_type == "role.started":
             role = data.get("role", "unknown-role")
@@ -101,8 +120,9 @@ class HumanRenderer:
 
         if event_type == "usage.observed":
             role = data.get("role", "agent")
-            tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
-            total = sum(value for value in tokens.values() if isinstance(value, int))
+            raw_tokens = data.get("tokens")
+            tokens: dict[str, Any] = raw_tokens if isinstance(raw_tokens, dict) else {}
+            total = sum(int(value) for value in tokens.values() if isinstance(value, int))
             model = data.get("observedModel") or data.get("requestedModel") or "unknown-model"
             return f"{prefix} usage · {role} · {model} · {total:,} tokens"
 

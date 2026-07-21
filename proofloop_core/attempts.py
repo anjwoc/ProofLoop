@@ -11,7 +11,7 @@ from .repair import decide_next
 from .task_brief import load_task_brief
 
 
-def record_attempt(task_path: str | Path, run_dir: str | Path, role: str, observed_model: str | None = None) -> dict[str, Any]:
+def record_attempt(task_path: str | Path, run_dir: str | Path, role: str, observed_model: str | None = None, classification: str | None = None) -> dict[str, Any]:
     task = load_task_brief(task_path)
     root = Path(run_dir)
     checks = read_json(root / "checks" / "checks.json")
@@ -28,7 +28,7 @@ def record_attempt(task_path: str | Path, run_dir: str | Path, role: str, observ
         "checkVerdict": checks.get("verdict"),
         "diffVerdict": diff.get("verdict"),
         "failureFingerprint": fingerprint_check_report(checks),
-        "classification": None,
+        "classification": classification,
         "checksRef": str(root / "checks" / "checks.json"),
         "diffGuardRef": str(root / "diff-guard.json"),
     }

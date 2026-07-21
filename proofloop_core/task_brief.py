@@ -42,6 +42,29 @@ class SimplicityPlan:
 
 
 @dataclass(frozen=True)
+class SurfaceScenario:
+    scenario_id: str
+    invocation: str
+    observable: str
+    pass_rule: str
+    artifact_type: str
+    cleanup: str | None
+    command: list[str]
+    cwd: str | None = None
+    timeout_seconds: int = 300
+
+
+@dataclass(frozen=True)
+class ProofPlan:
+    baseline_checks: tuple[CheckSpec, ...]
+    red_checks: tuple[CheckSpec, ...]
+    automated_checks: tuple[CheckSpec, ...]
+    surface_scenarios: tuple[SurfaceScenario, ...]
+    adversarial_checks: tuple[CheckSpec, ...]
+    cleanup_checks: tuple[CheckSpec, ...]
+
+
+@dataclass(frozen=True)
 class TaskBrief:
     task_id: str
     objective: str
@@ -52,6 +75,17 @@ class TaskBrief:
     simplicity: SimplicityPlan
     max_fast_attempts: int = 2
     max_recovery_attempts: int = 1
+
+    title: str = ""
+    criterion_ids: tuple[str, ...] = ()
+    deliverables: tuple[str, ...] = ()
+    dependencies: tuple[str, ...] = ()
+    interfaces: tuple[str, ...] = ()
+    context_refs: tuple[str, ...] = ()
+    tool_allowlist: tuple[str, ...] = ()
+    proof_plan: ProofPlan | None = None
+    stop_when: str = ""
+    escalate_on: tuple[str, ...] = ()
 
 
 def _require_string(value: Any, field: str) -> str:
@@ -76,28 +110,39 @@ def _positive_int(value: Any, field: str, *, allow_zero: bool = False) -> int:
     return value
 
 
-def load_task_brief(path: str | Path) -> TaskBrief:
-    raw = read_json(path)
-    checks_raw = raw.get("requiredChecks")
-    if not isinstance(checks_raw, list) or not checks_raw:
-        raise ValueError("requiredChecks must contain at least one command")
+def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
+    if raw_list is None:
+        return ()
+    if not isinstance(raw_list, list):
+        raise ValueError(f"{field} must be a list")
+
     checks: list[CheckSpec] = []
-    for index, item in enumerate(checks_raw):
+    for index, item in enumerate(raw_list):
         if not isinstance(item, dict):
-            raise ValueError(f"requiredChecks[{index}] must be an object")
+            raise ValueError(f"{field}[{index}] must be an object")
         command = item.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
-            raise ValueError(f"requiredChecks[{index}].command must be a non-empty string list")
+            raise ValueError(f"{field}[{index}].command must be a non-empty string list")
         timeout = item.get("timeoutSeconds", 300)
         if not isinstance(timeout, int) or timeout <= 0:
-            raise ValueError(f"requiredChecks[{index}].timeoutSeconds must be a positive integer")
+            raise ValueError(f"{field}[{index}].timeoutSeconds must be a positive integer")
         cwd = item.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
-            raise ValueError(f"requiredChecks[{index}].cwd must be a string")
+            raise ValueError(f"{field}[{index}].cwd must be a string")
         name = item.get("name")
         if name is not None and not isinstance(name, str):
-            raise ValueError(f"requiredChecks[{index}].name must be a string")
+            raise ValueError(f"{field}[{index}].name must be a string")
         checks.append(CheckSpec(command=list(command), cwd=cwd, timeout_seconds=timeout, name=name))
+    return tuple(checks)
+
+
+def load_task_brief(path: str | Path) -> TaskBrief:
+    raw = read_json(path)
+
+    checks_raw = raw.get("requiredChecks")
+    if checks_raw is not None and (not isinstance(checks_raw, list) or not checks_raw):
+        raise ValueError("requiredChecks must contain at least one command if present")
+    checks = _parse_check_list(checks_raw, "requiredChecks")
 
     budgets = raw.get("budgets") or {}
     if not isinstance(budgets, dict):
@@ -134,14 +179,72 @@ def load_task_brief(path: str | Path) -> TaskBrief:
         considered=_list_of_strings(simplicity_raw.get("considered"), "simplicity.considered"),
     )
 
+    proof_plan = None
+    if "proofPlan" in raw:
+        pp_raw = raw["proofPlan"]
+        if not isinstance(pp_raw, dict):
+            raise ValueError("proofPlan must be an object")
+
+        scenarios_raw = pp_raw.get("surfaceScenarios", [])
+        if not isinstance(scenarios_raw, list):
+            raise ValueError("proofPlan.surfaceScenarios must be a list")
+
+        scenarios: list[SurfaceScenario] = []
+        for i, s in enumerate(scenarios_raw):
+            if not isinstance(s, dict):
+                raise ValueError(f"proofPlan.surfaceScenarios[{i}] must be an object")
+            command = s.get("command")
+            if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
+                raise ValueError(f"proofPlan.surfaceScenarios[{i}].command must be a non-empty string list")
+            cleanup = s.get("cleanup")
+            if cleanup is not None and not isinstance(cleanup, str):
+                raise ValueError(f"proofPlan.surfaceScenarios[{i}].cleanup must be a string or null")
+            cwd = s.get("cwd")
+            if cwd is not None and not isinstance(cwd, str):
+                raise ValueError(f"proofPlan.surfaceScenarios[{i}].cwd must be a string or null")
+            timeout = s.get("timeoutSeconds", 300)
+            if not isinstance(timeout, int) or timeout <= 0:
+                raise ValueError(f"proofPlan.surfaceScenarios[{i}].timeoutSeconds must be a positive integer")
+            scenarios.append(SurfaceScenario(
+                scenario_id=_require_string(s.get("scenario_id"), f"surfaceScenarios[{i}].scenario_id"),
+                invocation=_require_string(s.get("invocation"), f"surfaceScenarios[{i}].invocation"),
+                observable=_require_string(s.get("observable"), f"surfaceScenarios[{i}].observable"),
+                pass_rule=_require_string(s.get("pass_rule"), f"surfaceScenarios[{i}].pass_rule"),
+                artifact_type=_require_string(s.get("artifact_type"), f"surfaceScenarios[{i}].artifact_type"),
+                cleanup=cleanup,
+                command=list(command),
+                cwd=cwd,
+                timeout_seconds=timeout,
+            ))
+
+        proof_plan = ProofPlan(
+            baseline_checks=_parse_check_list(pp_raw.get("baselineChecks"), "proofPlan.baselineChecks"),
+            red_checks=_parse_check_list(pp_raw.get("redChecks"), "proofPlan.redChecks"),
+            automated_checks=_parse_check_list(pp_raw.get("automatedChecks"), "proofPlan.automatedChecks"),
+            surface_scenarios=tuple(scenarios),
+            adversarial_checks=_parse_check_list(pp_raw.get("adversarialChecks"), "proofPlan.adversarialChecks"),
+            cleanup_checks=_parse_check_list(pp_raw.get("cleanupChecks"), "proofPlan.cleanupChecks"),
+        )
+
     return TaskBrief(
         task_id=_require_string(raw.get("id"), "id"),
         objective=_require_string(raw.get("objective"), "objective"),
         allowed_paths=_list_of_strings(raw.get("allowedPaths"), "allowedPaths"),
         protected_paths=_list_of_strings(raw.get("protectedPaths"), "protectedPaths"),
-        required_checks=tuple(checks),
+        required_checks=checks,
         change_budget=change_budget,
         simplicity=simplicity,
         max_fast_attempts=fast,
         max_recovery_attempts=recovery,
+
+        title=raw.get("title", ""),
+        criterion_ids=_list_of_strings(raw.get("criterion_ids"), "criterion_ids"),
+        deliverables=_list_of_strings(raw.get("deliverables"), "deliverables"),
+        dependencies=_list_of_strings(raw.get("dependencies"), "dependencies"),
+        interfaces=_list_of_strings(raw.get("interfaces"), "interfaces"),
+        context_refs=_list_of_strings(raw.get("context_refs"), "context_refs"),
+        tool_allowlist=_list_of_strings(raw.get("tool_allowlist"), "tool_allowlist"),
+        proof_plan=proof_plan,
+        stop_when=raw.get("stop_when", ""),
+        escalate_on=_list_of_strings(raw.get("escalate_on"), "escalate_on"),
     )

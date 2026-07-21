@@ -9,9 +9,16 @@ from pathlib import Path
 from typing import Any, Iterable, TextIO
 
 from .adapters import ExternalCLIAdapter, HostAdapter, RoleInvocation
-from .checks import run_checks
+from .checks import (
+    merge_check_reports,
+    merge_required_and_post_proof,
+    proof_stage_checks,
+    run_checks,
+    run_post_implementation_proof,
+    run_proof_stage,
+)
 from .diff_guard import inspect_diff
-from .events import EventEmitter
+from .events import EventBus, EventEmitter
 from .fingerprint import fingerprint_check_report
 from .git_snapshot import changed_source_files, snapshot_worktree
 from .io import read_json, write_json
@@ -28,13 +35,25 @@ from .hosts import role_only_trace_summary
 from .goal import GoalFSM, build_goal_contract
 from .memory import prepare_memory, write_memory
 from .runtime import ResolvedRuntime
-from .usage import build_usage_summary
+from .prompting.prompt_ir import PromptIR, PromptMetadata
+from .prompting.renderers import registry as renderer_registry
+from .usage import budgeted_token_total, build_usage_summary
 from .tokscale import TokScaleAdapter
 from .intent import IntentContract, compile_intent
+from .intent_gate import evaluate_intent
+from .grounding import collect_grounding
+from .live_evidence import seal_core_evidence, validate_core_evidence
+from .execution_brief import compose_execution_brief
 from .proof_graph import Evidence, ProofGraph, ProofObligation
+from .request_envelope import create as create_request_envelope
 from .skill_registry import ResolutionContext, SkillContract, SkillRegistry
 from .workload import probe_repository_signals
 from .domain_runtime import build_repository_fingerprint, select_reference_slices
+from .verification_plan import (
+    authoritative_passed_criteria,
+    compile_verification_plan,
+    with_mandatory_checks,
+)
 
 
 ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
@@ -62,6 +81,17 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _live_evidence_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Persist integrity status without duplicating check output into events."""
+    return {
+        "schemaVersion": "1.0",
+        "status": result.get("status"),
+        "reasons": result.get("reasons", []),
+        "candidateDigest": result.get("candidateDigest"),
+        "verificationPlanSha256": result.get("verificationPlanSha256"),
+    }
+
+
 def _dedupe_checks(tasks: Iterable[TaskBrief]) -> tuple[CheckSpec, ...]:
     seen: set[tuple[Any, ...]] = set()
     checks: list[CheckSpec] = []
@@ -75,20 +105,50 @@ def _dedupe_checks(tasks: Iterable[TaskBrief]) -> tuple[CheckSpec, ...]:
 
 
 def task_to_dict(task: TaskBrief) -> dict[str, Any]:
+    def check_to_dict(check: CheckSpec) -> dict[str, Any]:
+        return {
+            "name": check.name,
+            "command": list(check.command),
+            "cwd": check.cwd,
+            "timeoutSeconds": check.timeout_seconds,
+        }
+
+    proof_plan = None
+    if task.proof_plan is not None:
+        proof_plan = {
+            "baselineChecks": [check_to_dict(check) for check in task.proof_plan.baseline_checks],
+            "redChecks": [check_to_dict(check) for check in task.proof_plan.red_checks],
+            "automatedChecks": [check_to_dict(check) for check in task.proof_plan.automated_checks],
+            "surfaceScenarios": [
+                {
+                    "scenario_id": scenario.scenario_id,
+                    "invocation": scenario.invocation,
+                    "observable": scenario.observable,
+                    "pass_rule": scenario.pass_rule,
+                    "artifact_type": scenario.artifact_type,
+                    "cleanup": scenario.cleanup,
+                    "command": list(scenario.command),
+                    "cwd": scenario.cwd,
+                    "timeoutSeconds": scenario.timeout_seconds,
+                }
+                for scenario in task.proof_plan.surface_scenarios
+            ],
+            "adversarialChecks": [check_to_dict(check) for check in task.proof_plan.adversarial_checks],
+            "cleanupChecks": [check_to_dict(check) for check in task.proof_plan.cleanup_checks],
+        }
     return {
         "id": task.task_id,
+        "title": task.title,
         "objective": task.objective,
+        "criterion_ids": list(task.criterion_ids),
+        "deliverables": list(task.deliverables),
+        "dependencies": list(task.dependencies),
+        "interfaces": list(task.interfaces),
         "allowedPaths": list(task.allowed_paths),
         "protectedPaths": list(task.protected_paths),
-        "requiredChecks": [
-            {
-                "name": check.name,
-                "command": list(check.command),
-                "cwd": check.cwd,
-                "timeoutSeconds": check.timeout_seconds,
-            }
-            for check in task.required_checks
-        ],
+        "context_refs": list(task.context_refs),
+        "tool_allowlist": list(task.tool_allowlist),
+        "requiredChecks": [check_to_dict(check) for check in task.required_checks],
         "changeBudget": {
             "maxChangedFiles": task.change_budget.max_changed_files,
             "maxAddedLines": task.change_budget.max_added_lines,
@@ -104,6 +164,9 @@ def task_to_dict(task: TaskBrief) -> dict[str, Any]:
             "maxFastAttempts": task.max_fast_attempts,
             "maxRecoveryAttempts": task.max_recovery_attempts,
         },
+        **({"proofPlan": proof_plan} if proof_plan is not None else {}),
+        "stop_when": task.stop_when,
+        "escalate_on": list(task.escalate_on),
     }
 
 
@@ -139,6 +202,14 @@ def aggregate_task(tasks: list[TaskBrief]) -> TaskBrief:
         ),
         max_fast_attempts=max(task.max_fast_attempts for task in tasks),
         max_recovery_attempts=max(task.max_recovery_attempts for task in tasks),
+        criterion_ids=tuple(sorted({item for task in tasks for item in task.criterion_ids})),
+        deliverables=tuple(sorted({item for task in tasks for item in task.deliverables})),
+        dependencies=tuple(sorted({item for task in tasks for item in task.dependencies})),
+        interfaces=tuple(sorted({item for task in tasks for item in task.interfaces})),
+        context_refs=tuple(sorted({item for task in tasks for item in task.context_refs})),
+        tool_allowlist=tuple(sorted({item for task in tasks for item in task.tool_allowlist})),
+        stop_when="All aggregated task contracts are satisfied.",
+        escalate_on=tuple(sorted({item for task in tasks for item in task.escalate_on})),
     )
 
 
@@ -179,11 +250,15 @@ class ProofLoopOrchestrator:
         mode: str = "orchestrate",
         skills_enabled: bool = True,
         experimental_domain_packs: bool = False,
+        event_bus: EventBus | None = None,
     ):
         if mode not in {"orchestrate", "adaptive", "goal", "audit"}:
             raise ValueError(f"unsupported ProofLoop mode: {mode}")
         self.host = host
         self.repo = Path(repository).resolve()
+        # Preserve the exact request bytes for the immutable envelope; the
+        # stripped form remains the input to the legacy pipeline for now.
+        self.raw_request = request
         self.request = request.strip()
         self.mode = mode
         self.skills_enabled = skills_enabled
@@ -199,6 +274,7 @@ class ProofLoopOrchestrator:
         self.output_format = output_format
         self.verbosity = verbosity
         self.color = color
+        self.event_bus = event_bus
         self.run_dir: Path | None = None
         self.emitter: EventEmitter | None = None
         self.capability: dict[str, Any] = {}
@@ -210,7 +286,10 @@ class ProofLoopOrchestrator:
         self.active_model: str | None = None
         self.goal_cycles = 0
         self.intent: IntentContract | None = None
+        self.intent_gate_result: Any | None = None
+        self.execution_brief: dict[str, Any] | None = None
         self.proof_graph: ProofGraph | None = None
+        self.verification_plan: dict[str, Any] | None = None
         self.selected_skills: list[SkillContract] = []
         self.selected_skill_references: dict[str, list[dict[str, Any]]] = {}
         self.repository_fingerprint: dict[str, Any] | None = None
@@ -254,6 +333,56 @@ class ProofLoopOrchestrator:
         resolver = getattr(self.adapter, "resolve_role", None)
         return resolver(role) if callable(resolver) else None
 
+    def _render_prompt(self, ir: PromptIR) -> str:
+        """Render against the runtime selected for this role, not a generic host label."""
+        resolved = self._resolved_runtime_for_role(ir.role)
+        provider = resolved.runtime_id if resolved is not None else self.host
+        model = resolved.model if resolved is not None else "unknown"
+        renderer = renderer_registry.select(provider, model, ir.role, self.host)
+        return renderer.render(ir)
+
+    def _record_prompt_projection(
+        self,
+        *,
+        invocation_id: str,
+        role: str,
+        resolved_runtime: ResolvedRuntime | None,
+        prompt: str,
+    ) -> None:
+        assert self.run_dir is not None
+        provider = resolved_runtime.runtime_id if resolved_runtime is not None else self.host
+        model = resolved_runtime.model if resolved_runtime is not None else "unknown"
+        renderer = renderer_registry.select(provider, model, role, self.host)
+        write_json(
+            self.run_dir / "prompt-projections" / f"{invocation_id}.json",
+            {
+                "schemaVersion": "1.0",
+                "invocationId": invocation_id,
+                "role": role,
+                "controllerHost": self.host,
+                "runtime": provider,
+                "model": model,
+                "rendererVersion": renderer.version,
+                "promptSha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                "promptText": prompt,
+            },
+        )
+        (self.run_dir / "prompt-projections" / f"{invocation_id}.md").write_text(prompt, encoding="utf-8")
+        reason = getattr(resolved_runtime, "reasoning", None) if resolved_runtime is not None else None
+        self._emit(
+            "role_prompt.rendered",
+            phase="PLAN" if role == "planner_deep" else "PROOF",
+            message=f"Rendered prompt for {role}",
+            data={
+                "invocationId": invocation_id,
+                "role": role,
+                "model": model,
+                "runtime": provider,
+                "promptText": prompt,
+                "reason": reason or f"dispatched to {role}",
+            },
+        )
+
     def _goal_transition(self, target: str, reason: str, **data: Any) -> None:
         if self.goal_fsm is None or self.goal_fsm.state == target:
             return
@@ -278,6 +407,7 @@ class ProofLoopOrchestrator:
             self.output_format,
             self.verbosity,
             self.color,
+            bus=self.event_bus,
         )
         if self.goal_mode:
             self.goal_fsm = GoalFSM(self.run_dir, emit=self._emit)
@@ -290,7 +420,70 @@ class ProofLoopOrchestrator:
         try:
             self.transition("INIT")
             write_json(self.run_dir / "request.json", {"schemaVersion": "1.0", "request": self.request})
-            self.intent = compile_intent(self.request)
+            envelope = create_request_envelope(
+                request_id=started["runId"],
+                raw_text=self.raw_request,
+                repo_root=str(self.repo),
+                host_requested=self.host,
+                invocation_source=self.host,
+            )
+            write_json(self.run_dir / "request-envelope.json", envelope.to_dict())
+            self._emit(
+                "request.envelope_created",
+                phase="INIT",
+                message="Immutable request envelope created.",
+                data={
+                    "requestId": envelope.request_id,
+                    "rawHash": envelope.raw_hash,
+                    "artifact": str(self.run_dir / "request-envelope.json"),
+                },
+            )
+            self._emit("intent_gate.started", phase="INIT", message="IntentGate evaluation started.")
+            intent_gate_result = evaluate_intent(self.request)
+            self.intent_gate_result = intent_gate_result
+            write_json(self.run_dir / "intent-gate.json", intent_gate_result.to_dict())
+            if intent_gate_result.clarity.value == "owner_decision_required":
+                self._emit(
+                    "intent_gate.owner_decision_required",
+                    phase="INIT",
+                    message="IntentGate requires owner decision.",
+                    data={"ownerQuestion": intent_gate_result.owner_question},
+                )
+            elif intent_gate_result.clarity.value == "blocked":
+                self._emit(
+                    "intent_gate.blocked",
+                    phase="INIT",
+                    message="IntentGate blocked.",
+                    data={"blockedReason": intent_gate_result.blocked_reason},
+                )
+            self._emit(
+                "intent_gate.completed",
+                phase="INIT",
+                message="IntentGate evaluation completed.",
+                data={
+                    "intentKind": intent_gate_result.intent_kind.value,
+                    "clarity": intent_gate_result.clarity.value,
+                    "authority": intent_gate_result.authority.value,
+                    "artifact": str(self.run_dir / "intent-gate.json"),
+                },
+            )
+            if intent_gate_result.clarity.value == "owner_decision_required":
+                raise OrchestrationError(
+                    "INTENT_OWNER_DECISION_REQUIRED",
+                    intent_gate_result.owner_question or "the request requires an owner decision",
+                    verdict="BLOCKED",
+                )
+            if intent_gate_result.clarity.value == "blocked":
+                raise OrchestrationError(
+                    "INTENT_GATE_BLOCKED",
+                    intent_gate_result.blocked_reason or "the request was blocked by IntentGate",
+                    verdict="BLOCKED",
+                )
+
+            # The intent contract is downstream of the immutable envelope, so
+            # its originalRequest must retain the exact request bytes too.
+            # Individual derived fields are normalized by compile_intent.
+            self.intent = compile_intent(self.raw_request)
             write_json(self.run_dir / "intent-contract.json", self.intent.to_dict())
             self._emit(
                 "intent.compiled",
@@ -357,6 +550,16 @@ class ProofLoopOrchestrator:
                     reviewer_required=True,
                     explorer_required=self.mode == "goal" or self.strategy.explorer_required,
                 )
+            if (
+                intent_gate_result.authority.value == "read_only"
+                and self.strategy.strategy != "REPOSITORY_ANALYSIS"
+                and self.mode != "audit"
+            ):
+                raise OrchestrationError(
+                    "INTENT_AUTHORITY_MISMATCH",
+                    "a read-only request cannot enter a repository-mutation strategy",
+                    verdict="BLOCKED",
+                )
             write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
             self.repository_fingerprint = build_repository_fingerprint(
                 self.repo,
@@ -381,11 +584,41 @@ class ProofLoopOrchestrator:
                 )
 
             self.transition("CONTEXT")
+
+            # Phase 4 Grounding Snapshot (Shadow)
+            self._emit("grounding.started", phase="CONTEXT", message="Grounding snapshot collection started.")
+            grounding_snapshot = collect_grounding(
+                request_id=self.emitter.run_id,
+                repo_root=self.repo,
+                tier=self.strategy.tier,
+                request_text=self.request,
+            )
+            self.grounding_snapshot = grounding_snapshot
+            write_json(self.run_dir / "grounding-snapshot.json", grounding_snapshot.to_dict())
+            for signal in grounding_snapshot.injection_signals:
+                self._emit(
+                    "grounding.injection_detected",
+                    phase="CONTEXT",
+                    message=f"Untrusted instruction pattern detected in {signal.path}.",
+                    level="warning",
+                    data={
+                        "path": signal.path,
+                        "ruleId": signal.rule_id,
+                        "contentHash": signal.content_hash,
+                    },
+                )
+            self._emit(
+                "grounding.completed",
+                phase="CONTEXT",
+                message="Grounding snapshot collection completed.",
+                data={"tier": grounding_snapshot.tier, "artifact": str(self.run_dir / "grounding-snapshot.json")},
+            )
+
             context_path = self.run_dir / "repository-context.json"
             self._emit("context.started", phase="CONTEXT", message="Repository context preparation started.")
             if self.strategy.context_required:
                 context = ensure_codegraph(self.repo, context_path, required=True)
-                if context.get("verdict") in {"FAIL", "BLOCKED"}:
+                if context.get("status") in {"FAIL", "BLOCKED"}:
                     self._emit(
                         "context.failed",
                         phase="CONTEXT",
@@ -404,6 +637,114 @@ class ProofLoopOrchestrator:
                 data=context,
             )
 
+            # Phase 5 & 6: Grounded Compiler (Shadow & Active)
+            import os
+            active_tiers_env = os.environ.get("PROOFLOOP_COMPILER_ACTIVE_TIERS")
+            active_tiers = (
+                {t.strip() for t in active_tiers_env.split(",") if t.strip()}
+                if active_tiers_env is not None
+                else {"T2", "T3"}
+            )
+            compiler_active = self.strategy.tier in active_tiers
+            compiler_policy = {
+                "schemaVersion": "1.0",
+                "policyVersion": "1.0",
+                "activeTiers": sorted(active_tiers),
+                "active": compiler_active,
+                "activationSource": (
+                    "PROOFLOOP_COMPILER_ACTIVE_TIERS"
+                    if active_tiers_env is not None
+                    else "DEFAULT_T2_T3"
+                ),
+            }
+            write_json(self.run_dir / "compiler-policy.json", compiler_policy)
+
+            try:
+                request_artifact = read_json(self.run_dir / "request-envelope.json")
+                intent_contract = read_json(self.run_dir / "intent-contract.json")
+                compiled_brief = compose_execution_brief(
+                    request_artifact=request_artifact,
+                    intent_contract=intent_contract,
+                    strategy=self.strategy.to_dict(),
+                    repository_context=grounding_snapshot.to_dict(),
+                    repository_baseline=self.original_baseline,
+                )
+                if compiler_active:
+                    # Active compilation is a Core-owned, non-identity
+                    # reconciliation. It constrains only explicit target
+                    # candidates and changes no facts, criteria, unknowns, or
+                    # authorization language before role projection.
+                    from .reconciler import build_conservative_proposal, reconcile_proposal
+
+                    proposal = build_conservative_proposal(compiled_brief)
+                    reconciled = reconcile_proposal(compiled_brief, proposal)
+                    from proofloop_core.execution_brief import _brief_sha256, validate_execution_brief
+                    reconciled["provenance"]["briefSha256"] = _brief_sha256(reconciled)
+                    validate_execution_brief(reconciled)
+                    reconciliation = {
+                        "schemaVersion": "1.0",
+                        "status": "PASS",
+                        "mode": "CONSERVATIVE_RECONCILIATION",
+                        "shadowBriefSha256": compiled_brief["provenance"]["briefSha256"],
+                        "reconciledBriefSha256": reconciled["provenance"]["briefSha256"],
+                        "changedFields": ["kind", "scope.approvedPaths", "scope.status", "provenance.briefSha256"],
+                        "proposalAuthority": "PROOFLOOP_CORE",
+                    }
+                    write_json(self.run_dir / "reconciliation-report.json", reconciliation)
+                    self._emit(
+                        "compiler.reconciled",
+                        phase="CONTEXT",
+                        message="Execution brief reconciliation passed.",
+                        data={**reconciliation, "artifact": str(self.run_dir / "reconciliation-report.json")},
+                    )
+                    compiled_brief = dict(reconciled)
+                brief_path = self.run_dir / ("execution-brief.json" if compiler_active else "refined-request-shadow.json")
+                write_json(brief_path, compiled_brief)
+                self.execution_brief = compiled_brief
+                self.compiler_active = compiler_active
+            except Exception as e:
+                self.execution_brief = None
+                self.compiler_active = False
+                if compiler_active:
+                    self._emit(
+                        "compiler.failed",
+                        phase="CONTEXT",
+                        message=f"Compiler validation failed: {e}",
+                        level="error",
+                    )
+                    raise OrchestrationError("COMPILER_BLOCKED", f"compiler validation failure: {e}", verdict="BLOCKED") from e
+                else:
+                    self._emit(
+                        "compiler.shadow_failed",
+                        phase="CONTEXT",
+                        message=f"Shadow brief compilation failed: {e}",
+                        level="warning",
+                    )
+
+            # Freeze repository-declared verification authority before any
+            # direct bootstrap can invoke a mutating implementer.  A later
+            # task-specific plan may add model proposals, but cannot refresh
+            # evaluator entrypoint hashes from a post-mutation worktree.
+            self.verification_plan = compile_verification_plan(
+                criterion_ids=(item.criterion_id for item in self.intent.acceptance_criteria),
+                tasks=(),
+                command_catalog=grounding_snapshot.detected_commands,
+                repository=self.repo,
+                baseline_commit=self.original_baseline,
+            )
+            write_json(self.run_dir / "verification-plan-baseline.json", self.verification_plan)
+            self._emit(
+                "verification.plan_baselined",
+                phase="CONTEXT",
+                message="Core verification authority frozen before mutation.",
+                level="info" if self.verification_plan["status"] == "READY" else "warning",
+                data={
+                    "status": self.verification_plan["status"],
+                    "mandatoryChecks": len(self.verification_plan["mandatoryChecks"]),
+                    "artifact": str(self.run_dir / "verification-plan-baseline.json"),
+                },
+            )
+
             if self.strategy.planner_required:
                 if self.goal_mode:
                     self._goal_transition("EXPLORE", "repository context is ready")
@@ -420,6 +761,28 @@ class ProofLoopOrchestrator:
                 if self.goal_mode:
                     self._goal_transition("IMPLEMENT", "direct goal implementation started")
                 self.tasks = self._run_direct_bootstrap()
+
+            self.verification_plan = compile_verification_plan(
+                criterion_ids=(item.criterion_id for item in self.intent.acceptance_criteria),
+                tasks=self.tasks,
+                command_catalog=grounding_snapshot.detected_commands,
+                repository=self.repo,
+                baseline_commit=self.original_baseline,
+                baseline_plan=self.verification_plan,
+            )
+            write_json(self.run_dir / "verification-plan.json", self.verification_plan)
+            self._emit(
+                "verification.plan_compiled",
+                phase="PLAN",
+                message="Core-owned verification plan compiled.",
+                level="info" if self.verification_plan["status"] == "READY" else "warning",
+                data={
+                    "status": self.verification_plan["status"],
+                    "mandatoryChecks": len(self.verification_plan["mandatoryChecks"]),
+                    "candidateChecks": len(self.verification_plan["candidateChecks"]),
+                    "artifact": str(self.run_dir / "verification-plan.json"),
+                },
+            )
 
             self._maybe_reclassify_after_diff()
 
@@ -446,6 +809,20 @@ class ProofLoopOrchestrator:
                         },
                     )
                 self._goal_transition("IMPLEMENT", "goal contract is ready")
+
+            execution_brief = self.execution_brief
+            if execution_brief is not None and execution_brief.get("kind") == "EXECUTION_BRIEF":
+                from .blueprint import validate_blueprint, BlueprintValidationError
+                try:
+                    validate_blueprint(execution_brief, self.tasks, require_structured_proof=True)
+                except BlueprintValidationError as e:
+                    self._emit(
+                        "blueprint.invalid",
+                        phase="PLAN",
+                        message=f"Blueprint validation failed: {e}",
+                        level="error"
+                    )
+                    raise OrchestrationError("BLUEPRINT_VALIDATION_FAILED", str(e), verdict="BLOCKED")
 
             for task in self.tasks:
                 try:
@@ -488,11 +865,12 @@ class ProofLoopOrchestrator:
             "PLAN" if role == "planner_deep" else "REVIEW" if role == "reviewer_deep" else "EXECUTE"
         )
         resolved_runtime = self._resolved_runtime_for_role(role)
-        requested_model = resolved_runtime.model if resolved_runtime else self._requested_model_for_role(role)
+        requested_model = (resolved_runtime.model if resolved_runtime else self._requested_model_for_role(role)) or "unknown"
         invocation_root = self.run_dir / "invocations"
         invocation_sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
         invocation_runtime = resolved_runtime.runtime_id if resolved_runtime else self.host
         invocation_id = f"{invocation_sequence:02d}-{invocation_runtime}-{role}"
+        role_time_budget = self._role_time_budget_seconds(role)
         role_data = {
             "role": role,
             "attempt": attempt,
@@ -504,7 +882,45 @@ class ProofLoopOrchestrator:
             "reasoning": resolved_runtime.reasoning if resolved_runtime else None,
             "accessMode": resolved_runtime.access_mode if resolved_runtime else None,
             "invocationId": invocation_id,
+            "timeBudgetSeconds": role_time_budget,
         }
+
+        if hasattr(self.adapter, "detect_capabilities"):
+            from .host_adapter import match_capability
+            cap = self.adapter.detect_capabilities()
+            match = match_capability(cap, requested_model, [])
+            if match["disposition"] == "BLOCK":
+                raise OrchestrationError("ROUTING_BLOCKED", f"Host capability insufficient: {match['reasons']}", verdict="BLOCKED")
+            elif match["disposition"] == "DOWNGRADE":
+                self._emit(
+                    "routing.divergence",
+                    phase=invocation_phase,
+                    message="Host capability missing, downgrading strategy.",
+                    level="warning",
+                    task_id=task_id,
+                    data={"reasons": match["reasons"]},
+                )
+
+
+        execution_brief = self.execution_brief
+        if getattr(self, "compiler_active", False) and execution_brief:
+            from .role_view import project_role_view
+            try:
+                import json
+                view = project_role_view(
+                    execution_brief,
+                    role,
+                    invocation_id,
+                )
+                view_json = json.dumps(view, ensure_ascii=False, indent=2)
+                req_block = f"User request:\n{self.request}"
+                if req_block in prompt:
+                    prompt = prompt.replace(req_block, f"Execution Brief (Role View):\n{view_json}")
+                else:
+                    prompt = f"Execution Brief (Role View):\n{view_json}\n\n" + prompt
+            except Exception as e:
+                raise OrchestrationError("ROLE_VIEW_FAILED", f"failed to project role view: {e}", verdict="BLOCKED") from e
+
         if resolved_runtime is not None:
             self._emit(
                 "runtime.fallback" if resolved_runtime.fallback else "runtime.selected",
@@ -541,6 +957,12 @@ class ProofLoopOrchestrator:
         )
         baseline = snapshot_worktree(self.repo) if immutable_source else None
         prompt = self._prompt_with_selected_skills(role, prompt)
+        self._record_prompt_projection(
+            invocation_id=invocation_id,
+            role=role,
+            resolved_runtime=resolved_runtime,
+            prompt=prompt,
+        )
         invocation = RoleInvocation(
             role=role,
             prompt=prompt,
@@ -548,7 +970,7 @@ class ProofLoopOrchestrator:
             run_dir=self.run_dir,
             task_path=task_path,
             result_path=result_path,
-            timeout_seconds=min(self.timeout_seconds, self._role_time_budget_seconds()),
+            timeout_seconds=min(self.timeout_seconds, role_time_budget),
             emitter=self.emitter,
             phase=invocation_phase,
             task_id=task_id,
@@ -589,6 +1011,8 @@ class ProofLoopOrchestrator:
             "invocationId": result.get("invocationId") or invocation_id,
             "sessionId": result.get("sessionId"),
             "usage": result.get("usage"),
+            "reasonCode": result.get("reasonCode"),
+            "reason": result.get("reason"),
         }
         _append_jsonl(self.run_dir / "invocations.jsonl", event)
         build_usage_summary(self.run_dir)
@@ -670,13 +1094,20 @@ class ProofLoopOrchestrator:
         if result.get("verdict") not in {"PASS", "PROVEN"}:
             timed_out = bool(result.get("timedOut"))
             cancelled = bool(result.get("cancelled"))
-            reason_code = "HOST_TIMEOUT" if timed_out else "HOST_CANCELLED" if cancelled else "HOST_EXIT_NONZERO"
-            terminal_type = "role.cancelled" if cancelled else "role.failed"
+            reason_code = str(result.get("reasonCode") or ("HOST_TIMEOUT" if timed_out else "HOST_CANCELLED" if cancelled else "HOST_EXIT_NONZERO"))
+            external_block = reason_code in {"HOST_RATE_LIMITED", "HOST_INITIAL_OUTPUT_TIMEOUT"}
+            terminal_type = "role.blocked" if external_block else "role.cancelled" if cancelled else "role.failed"
+            if reason_code == "HOST_RATE_LIMITED":
+                terminal_message = f"{role} blocked by provider rate limit."
+            elif reason_code == "HOST_INITIAL_OUTPUT_TIMEOUT":
+                terminal_message = f"{role} blocked because the provider produced no initial output."
+            else:
+                terminal_message = f"{role} {'cancelled' if cancelled else 'failed'}."
             self._emit(
                 terminal_type,
                 phase=invocation_phase,
-                message=f"{role} {'cancelled' if cancelled else 'failed'}.",
-                level="error",
+                message=terminal_message,
+                level="warning" if external_block else "error",
                 task_id=task_id,
                 data={
                     **role_data,
@@ -690,8 +1121,15 @@ class ProofLoopOrchestrator:
                 },
             )
             raise OrchestrationError(
-                f"{role.upper()}_INVOCATION_FAILED",
-                f"{role} invocation failed: {result.get('reason') or result.get('exitCode')}",
+                reason_code if external_block else f"{role.upper()}_INVOCATION_FAILED",
+                (
+                    f"{role} blocked by provider rate limit: {result.get('reason') or 'quota exhausted'}"
+                    if reason_code == "HOST_RATE_LIMITED"
+                    else f"{role} blocked: {result.get('reason') or 'provider produced no initial output'}"
+                )
+                if external_block
+                else f"{role} invocation failed: {result.get('reason') or result.get('exitCode')}",
+                verdict="BLOCKED",
             )
         self._emit(
             "role.completed",
@@ -714,17 +1152,34 @@ class ProofLoopOrchestrator:
     def _run_explorer(self) -> None:
         assert self.run_dir is not None and self.strategy is not None
         result_path = self.run_dir / "exploration.json"
-        prompt = (
-            "Act as the read-only ProofLoop explorer.\n"
-            f"User request: {self.request}\n"
-            f"Strategy: {self.strategy.strategy}\n"
-            f"Repository: {self.repo}\n"
-            f"Repository context: {self.run_dir / 'repository-context.json'}\n"
-            "Map only the relevant entry points, callers, tests, constraints, and open risks. "
-            "Do not edit source and do not design speculative features.\n"
-            f"Write JSON to {result_path} exactly:\n"
-            '{"schemaVersion":"1.0","entryPoints":[],"impactedFiles":[],"tests":[],"constraints":[],"openRisks":[]}\n'
+
+        ir = PromptIR(
+            prompt_id="explorer-1",
+            request_id="todo",
+            contract_id="todo",
+            blueprint_id="todo",
+            role="explorer_fast",
+            goal=str(self.request),
+            stop_when="",
+            deliverables=(),
+            evidence_requirements=(),
+            allowed_scope=(),
+            protected_scope=(),
+            must_do=("Map only the relevant entry points, callers, tests, constraints, and open risks.",),
+            must_not=("Do not edit source and do not design speculative features.",),
+            context_refs=(
+                f"Strategy: {self.strategy.strategy}",
+                f"Repository: {self.repo}",
+                f"Repository context: {self.run_dir / 'repository-context.json'}"
+            ),
+            allowed_tools=(),
+            output_contract=f"Write JSON to {result_path} exactly:\n{{\"schemaVersion\":\"1.0\",\"entryPoints\":[],\"impactedFiles\":[],\"tests\":[],\"constraints\":[],\"openRisks\":[]}}\n",
+            escalate_when=(),
+            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
         )
+
+        prompt = self._render_prompt(ir)
+
         self._invoke(
             "explorer_fast",
             prompt,
@@ -761,42 +1216,41 @@ class ProofLoopOrchestrator:
         write_json(self.run_dir / "skill-registry.json", registry.to_dict())
         token_budgets = {"T0": 20_000, "T1": 60_000, "T2": 180_000, "T3": 360_000}
         budget = token_budgets[self.strategy.tier]
+        strategy = self.strategy
+        proof_graph = self.proof_graph
         self.token_budget = budget
         resolution_mode = "goal" if self.goal_mode or self.mode == "orchestrate" else self.mode
         fingerprint = self.repository_fingerprint or {
             "taskTypes": [], "signals": [], "languages": [], "frameworks": {}, "tools": {}
         }
-        common_context = {
-            "mode": resolution_mode,
-            "host": self.host,
-            "tier": self.strategy.tier,
-            "open_obligations": tuple(item.obligation_id for item in self.proof_graph.obligations),
-            "repository_signals": tuple(str(item) for item in fingerprint.get("signals", [])),
-            "languages": tuple(str(item) for item in fingerprint.get("languages", [])),
-            "frameworks": tuple(
-                (str(name), str(version))
-                for name, version in (fingerprint.get("frameworks") or {}).items()
-            ),
-            "tools": tuple(
-                (str(name), str(version))
-                for name, version in (fingerprint.get("tools") or {}).items()
-            ),
-            "allow_experimental_domains": self.experimental_domain_packs,
-        }
-        selected_protocols = protocol_registry.resolve(
-            ResolutionContext(remaining_tokens=budget, **common_context)
-        ) if self.skills_enabled else []
+        raw_frameworks = fingerprint.get("frameworks")
+        frameworks = raw_frameworks if isinstance(raw_frameworks, dict) else {}
+        raw_tools = fingerprint.get("tools")
+        tools = raw_tools if isinstance(raw_tools, dict) else {}
+
+        def resolution_context(remaining_tokens: int, task_type: str | None = None) -> ResolutionContext:
+            return ResolutionContext(
+                mode=resolution_mode,
+                host=self.host,
+                tier=strategy.tier,
+                open_obligations=tuple(item.obligation_id for item in proof_graph.obligations),
+                remaining_tokens=remaining_tokens,
+                task_type=task_type,
+                repository_signals=tuple(str(item) for item in fingerprint.get("signals", [])),
+                languages=tuple(str(item) for item in fingerprint.get("languages", [])),
+                frameworks=tuple((str(name), str(version)) for name, version in frameworks.items()),
+                tools=tuple((str(name), str(version)) for name, version in tools.items()),
+                allow_experimental_domains=self.experimental_domain_packs,
+            )
+
+        selected_protocols = protocol_registry.resolve(resolution_context(budget)) if self.skills_enabled else []
         selected_domains: list[SkillContract] = []
         selected_domain_names: set[str] = set()
         reserved = sum(item.max_tokens for item in selected_protocols)
         if self.skills_enabled:
             for task_type in list(fingerprint.get("taskTypes", []))[:3]:
                 candidates = domain_registry.resolve(
-                    ResolutionContext(
-                        remaining_tokens=max(0, budget - reserved),
-                        task_type=str(task_type),
-                        **common_context,
-                    )
+                    resolution_context(max(0, budget - reserved), str(task_type))
                 )
                 for candidate in candidates:
                     if candidate.name in selected_domain_names:
@@ -920,9 +1374,15 @@ class ProofLoopOrchestrator:
                 data=skipped,
             )
 
-    def _role_time_budget_seconds(self) -> int:
+    def _role_time_budget_seconds(self, role: str) -> int:
         tier = self.strategy.tier if self.strategy is not None else "T1"
-        return {"T0": 300, "T1": 600, "T2": 900, "T3": 1200}[tier]
+        budgets = {
+            "T0": {"explorer_fast": 60, "planner_deep": 120, "implementer_fast": 120, "implementer_recovery": 120, "reviewer_deep": 120},
+            "T1": {"explorer_fast": 90, "planner_deep": 180, "implementer_fast": 180, "implementer_recovery": 180, "reviewer_deep": 180},
+            "T2": {"explorer_fast": 120, "planner_deep": 240, "implementer_fast": 300, "implementer_recovery": 300, "reviewer_deep": 240},
+            "T3": {"explorer_fast": 180, "planner_deep": 360, "implementer_fast": 480, "implementer_recovery": 480, "reviewer_deep": 360},
+        }
+        return budgets[tier][role]
 
     def _prompt_with_selected_skills(self, role: str, prompt: str) -> str:
         assert self.run_dir is not None
@@ -1010,7 +1470,8 @@ class ProofLoopOrchestrator:
         self._resolve_skills()
 
     def _account_role_budget(self, role: str, result: dict[str, Any], phase: str, task_id: str | None) -> None:
-        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        raw_usage = result.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         raw_total = usage.get("rawTotal")
         if not isinstance(raw_total, int) or isinstance(raw_total, bool):
             raw_total = sum(
@@ -1018,8 +1479,13 @@ class ProofLoopOrchestrator:
                 for key in ("input", "output", "cacheRead", "cacheWrite", "reasoning")
                 if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
             )
-        self.consumed_tokens += raw_total
-        if raw_total:
+        budgeted_total = usage.get("budgetedTotal")
+        if not isinstance(budgeted_total, int) or isinstance(budgeted_total, bool):
+            budgeted_total = budgeted_token_total(usage)
+        # Legacy adapters that expose only rawTotal intentionally count in
+        # full; cache weighting is available only with provider evidence.
+        self.consumed_tokens += budgeted_total
+        if raw_total or budgeted_total:
             self._emit(
                 "budget.updated",
                 phase=phase,
@@ -1028,6 +1494,8 @@ class ProofLoopOrchestrator:
                 data={
                     "role": role,
                     "invocationTokens": raw_total,
+                    "invocationBudgetedTokens": budgeted_total,
+                    "accountingBasis": "CACHE_READ_WEIGHTED_10_PERCENT",
                     "consumedTokens": self.consumed_tokens,
                     "remainingTokens": max(0, (self.token_budget or 0) - self.consumed_tokens),
                     "maxTokens": self.token_budget,
@@ -1040,11 +1508,16 @@ class ProofLoopOrchestrator:
                 message=f"Hard token budget exhausted by {role}.",
                 level="error",
                 task_id=task_id,
-                data={"role": role, "consumedTokens": self.consumed_tokens, "maxTokens": self.token_budget},
+                data={
+                    "role": role,
+                    "consumedTokens": self.consumed_tokens,
+                    "maxTokens": self.token_budget,
+                    "accountingBasis": "CACHE_READ_WEIGHTED_10_PERCENT",
+                },
             )
             raise OrchestrationError(
                 "TOKEN_BUDGET_EXHAUSTED",
-                f"run consumed {self.consumed_tokens} tokens, exceeding the {self.token_budget} token hard limit",
+                f"run consumed {self.consumed_tokens} budgeted tokens, exceeding the {self.token_budget} token hard limit",
             )
 
     def _persist_proof_graph(self, reason: str) -> None:
@@ -1063,28 +1536,33 @@ class ProofLoopOrchestrator:
 
     def _record_verification_proof(self, checks: dict[str, Any], diff: dict[str, Any], review: dict[str, Any] | None = None) -> None:
         assert self.proof_graph is not None
-        sequence = len(self.proof_graph.evidence)
+        proof_graph = self.proof_graph
+        sequence = len(proof_graph.evidence)
 
-        def record(obligation_id: str, authority: str, artifact: str, verdict: str) -> None:
+        def record(obligation_id: str, authority: str, artifact: str, verdict: str, level: str | None = None) -> None:
             nonlocal sequence
-            obligation = next(item for item in self.proof_graph.obligations if item.obligation_id == obligation_id)
+            obligation = next(item for item in proof_graph.obligations if item.obligation_id == obligation_id)
             sequence += 1
-            self.proof_graph.record(Evidence(f"EV-{sequence:04d}", obligation_id, authority, artifact, obligation.revision, verdict))
+            proof_graph.record(Evidence(f"EV-{sequence:04d}", obligation_id, authority, artifact, obligation.revision, verdict, level))
 
         check_verdict = str(checks.get("verdict"))
         diff_verdict = str(diff.get("verdict"))
-        record("deterministic-checks", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
-        record("scope-integrity", "DIFF_GUARD", "diff-guard.json", diff_verdict)
-        for obligation in self.proof_graph.obligations:
-            if obligation.obligation_id.startswith("AC-"):
-                record(obligation.obligation_id, "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
+        check_level = checks.get("evidenceLevel")
+        diff_level = diff.get("evidenceLevel")
+        record("deterministic-checks", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict, check_level)
+        record("scope-integrity", "DIFF_GUARD", "diff-guard.json", diff_verdict, diff_level)
+        passed_criteria = authoritative_passed_criteria(self.verification_plan or {}, checks)
+        for obligation in proof_graph.obligations:
+            if obligation.obligation_id in passed_criteria:
+                record(obligation.obligation_id, "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict, check_level)
         if any(item.obligation_id == "recovery-progress" for item in self.proof_graph.obligations):
-            record("recovery-progress", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict)
+            record("recovery-progress", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict, check_level)
         authority = "MODEL_REVIEW" if review and review.get("reviewMode") != "DETERMINISTIC_FAST_LANE" else "DIFF_GUARD"
         verdict = str(review.get("verdict")) if review else diff_verdict
-        record("intent-alignment", authority, "review.json" if review else "diff-guard.json", "PASS" if verdict == "APPROVED" else verdict)
+        review_level = review.get("evidenceLevel") if review else diff_level
+        record("intent-alignment", authority, "review.json" if review else "diff-guard.json", "PASS" if verdict == "APPROVED" else verdict, review_level)
         simplicity = str(review.get("simplicityVerdict")) if review else ("MINIMAL" if diff_verdict == "PASS" else diff_verdict)
-        record("simplicity", authority, "review.json" if review else "diff-guard.json", "PASS" if simplicity == "MINIMAL" else simplicity)
+        record("simplicity", authority, "review.json" if review else "diff-guard.json", "PASS" if simplicity == "MINIMAL" else simplicity, review_level)
         self._persist_proof_graph("verification evidence evaluated against proof obligations")
 
     def _run_audit(self) -> dict[str, Any]:
@@ -1119,55 +1597,96 @@ class ProofLoopOrchestrator:
         return {"verdict": "PROVEN", "runDir": str(self.run_dir), "truthReport": report, "usage": usage}
 
     def _run_planner(self) -> list[TaskBrief]:
-        assert self.run_dir is not None and self.strategy is not None
+        assert self.run_dir is not None and self.strategy is not None and self.intent is not None
         self.transition("PLAN")
         result_path = self.run_dir / "plan.json"
-        prompt = f"""You are the ProofLoop deep planner.
+        accepted_criteria = ", ".join(item.criterion_id for item in self.intent.acceptance_criteria)
 
-User request:
-{self.request}
+        ir = PromptIR(
+            prompt_id="planner-1",
+            request_id="todo",
+            contract_id="todo",
+            blueprint_id="todo",
+            role="planner_deep",
+            goal=str(self.request),
+            stop_when="",
+            deliverables=(),
+            evidence_requirements=(),
+            allowed_scope=(),
+            protected_scope=(),
+            must_do=("Inspect real files and create the smallest sufficient implementation plan.",),
+            must_not=("Do not edit production or test source.",),
+            context_refs=(
+                f"Strategy: {self.strategy.strategy}",
+                f"Repository: {self.repo}",
+                f"Repository evidence: {self.run_dir / 'repository-context.json'}",
+                f"Exploration evidence: {self.run_dir / 'exploration.json' if (self.run_dir / 'exploration.json').exists() else 'not requested'}"
+            ),
+            allowed_tools=(),
+            output_contract=(
+                f"Write JSON to {result_path} with exactly this shape:\n"
+                "{\n"
+                '  "schemaVersion": "1.0",\n'
+                '  "verdict": "READY",\n'
+                '  "summary": "concise plan",\n'
+                '  "tasks": [\n'
+                '    {\n'
+                '      "id": "TASK-001",\n'
+                '      "objective": "...",\n'
+                f'      "criterion_ids": ["{self.intent.acceptance_criteria[0].criterion_id}"],\n'
+                '      "allowedPaths": ["path/**"],\n'
+                '      "protectedPaths": [],\n'
+                '      "requiredChecks": [{"name": "tests", "command": ["executable", "arg"], "timeoutSeconds": 300}],\n'
+                '      "proofPlan": {"baselineChecks": [], "redChecks": [], "automatedChecks": [{"name": "behavior", "command": ["executable", "arg"], "timeoutSeconds": 300}], "surfaceScenarios": [], "adversarialChecks": [], "cleanupChecks": []},\n'
+                '      "changeBudget": {"maxChangedFiles": 4, "maxAddedLines": 160, "maxNewFiles": 1, "allowDependencyChanges": false},\n'
+                '      "simplicity": {"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": []},\n'
+                '      "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1}\n'
+                '    }\n'
+                '  ]\n'
+                "}\n"
+                f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); every command (including every surface scenario command) must be executable in this repository; proofPlan automated/adversarial/cleanup/surface checks run after the change and must contain at least one executable check; baseline checks must pass before mutation and red checks must fail before mutation; stop at the first sufficient simplicity rung; no speculative work.\n"
+            ),
+            escalate_when=(),
+            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
+        )
 
-Strategy: {self.strategy.strategy}
-Repository: {self.repo}
-Repository evidence: {self.run_dir / 'repository-context.json'}
-Exploration evidence: {self.run_dir / 'exploration.json' if (self.run_dir / 'exploration.json').exists() else 'not requested'}
+        prompt = self._render_prompt(ir)
 
-Do not edit production or test source. Inspect real files and create the smallest sufficient implementation plan.
-Write JSON to {result_path} with exactly this shape:
-{{
-  "schemaVersion": "1.0",
-  "verdict": "READY",
-  "summary": "concise plan",
-  "tasks": [
-    {{
-      "id": "TASK-001",
-      "objective": "...",
-      "allowedPaths": ["path/**"],
-      "protectedPaths": [],
-      "requiredChecks": [{{"name": "tests", "command": ["executable", "arg"], "timeoutSeconds": 300}}],
-      "changeBudget": {{"maxChangedFiles": 4, "maxAddedLines": 160, "maxNewFiles": 1, "allowDependencyChanges": false}},
-      "simplicity": {{"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": []}},
-      "budgets": {{"maxFastAttempts": 2, "maxRecoveryAttempts": 1}}
-    }}
-  ]
-}}
-Rules: 1-4 bounded tasks; every command must be executable in this repository; stop at the first sufficient simplicity rung; no speculative work.
-"""
         self._invoke("planner_deep", prompt, result_path=result_path, immutable_source=True, phase="PLAN")
         return self._materialize_plan(result_path)
 
     def _run_direct_bootstrap(self) -> list[TaskBrief]:
         """Use one fast role to define and execute a truly bounded direct change."""
-        assert self.run_dir is not None
+        assert self.run_dir is not None and self.intent is not None
         self.transition("DIRECT_BOOTSTRAP")
         task_path = self.run_dir / "tasks" / "TASK-001.json"
-        prompt = f"""You are ProofLoop's fast implementer for a direct verified change.
 
-User request:
-{self.request}
+        ir = PromptIR(
+            prompt_id="bootstrap-1",
+            request_id="todo",
+            contract_id="todo",
+            blueprint_id="BOOTSTRAP",
+            role="implementer_fast",
+            goal=str(self.request),
+            stop_when="",
+            deliverables=(),
+            evidence_requirements=(),
+            allowed_scope=(),
+            protected_scope=(),
+            must_do=(
+                f"Before editing, write a bounded task brief to {task_path} using the standard ProofLoop TaskBrief JSON fields. "
+                f"The brief must include criterion_ids using only these declared IDs: {', '.join(item.criterion_id for item in self.intent.acceptance_criteria)}. "
+                "Then implement that task with the minimum change. Use actual repository test commands.",
+            ),
+            must_not=("Do not broaden scope or claim success.",),
+            context_refs=(),
+            allowed_tools=(),
+            output_contract="",
+            escalate_when=(),
+            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
+        )
 
-Before editing, write a bounded task brief to {task_path} using the standard ProofLoop TaskBrief JSON fields. Then implement that task with the minimum change. Use actual repository test commands. Do not broaden scope or claim success.
-"""
+        prompt = self._render_prompt(ir)
         baseline = snapshot_worktree(self.repo)
         self._invoke(
             "implementer_fast",
@@ -1185,6 +1704,23 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
                 raise ValueError("allowedPaths must not be empty")
         except Exception as exc:
             raise OrchestrationError("DIRECT_TASK_BRIEF_INVALID", str(exc), verdict="FAILED") from exc
+        if not task.criterion_ids and len(self.intent.acceptance_criteria) == 1:
+            # A legacy direct-bootstrap host may omit criterion_ids.  Mapping
+            # exactly one task to exactly one immutable acceptance criterion
+            # is a deterministic Core inference; plural criteria never get
+            # this convenience fallback.
+            criterion_id = self.intent.acceptance_criteria[0].criterion_id
+            task = replace(task, criterion_ids=(criterion_id,))
+            raw_task = read_json(task_path)
+            raw_task["criterion_ids"] = [criterion_id]
+            write_json(task_path, raw_task)
+            self._emit(
+                "criterion_mapping.inferred",
+                phase="PLAN",
+                message=f"Direct bootstrap deterministically linked {task.task_id} to {criterion_id}.",
+                task_id=task.task_id,
+                data={"taskId": task.task_id, "criterionIds": [criterion_id], "reason": "SINGLE_TASK_SINGLE_CRITERION"},
+            )
         # Store baseline so the already-performed direct implementation becomes attempt 1.
         write_json(self.run_dir / "direct-bootstrap.json", {"taskId": task.task_id, "baselineCommit": baseline})
         self._emit(
@@ -1197,7 +1733,7 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
         return [task]
 
     def _materialize_plan(self, result_path: Path) -> list[TaskBrief]:
-        assert self.run_dir is not None
+        assert self.run_dir is not None and self.intent is not None
         if not result_path.exists():
             raise OrchestrationError("PLAN_ARTIFACT_MISSING", "planner did not produce plan.json")
         try:
@@ -1236,6 +1772,25 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
                 )
             except Exception as exc:
                 raise OrchestrationError("PLAN_TASK_SCHEMA_INVALID", f"{task_id}: {exc}", verdict="FAILED") from exc
+        if (
+            len(tasks) == 1
+            and not tasks[0].criterion_ids
+            and len(self.intent.acceptance_criteria) == 1
+        ):
+            criterion_id = self.intent.acceptance_criteria[0].criterion_id
+            task = replace(tasks[0], criterion_ids=(criterion_id,))
+            tasks[0] = task
+            path = tasks_dir / f"{task.task_id}.json"
+            raw_task = read_json(path)
+            raw_task["criterion_ids"] = [criterion_id]
+            write_json(path, raw_task)
+            self._emit(
+                "criterion_mapping.inferred",
+                phase="PLAN",
+                message=f"Single-task plan deterministically linked {task.task_id} to {criterion_id}.",
+                task_id=task.task_id,
+                data={"taskId": task.task_id, "criterionIds": [criterion_id], "reason": "SINGLE_TASK_SINGLE_CRITERION"},
+            )
         (self.run_dir / "plan.md").write_text(str(plan.get("summary") or "ProofLoop plan") + "\n", encoding="utf-8")
         return tasks
 
@@ -1243,11 +1798,33 @@ Before editing, write a bounded task brief to {task_path} using the standard Pro
         assert self.run_dir is not None
         self.transition("PLAN_REVIEW")
         result_path = self.run_dir / "plan-review.json"
-        prompt = f"""Review the high-risk ProofLoop plan at {self.run_dir / 'plan.json'} against the user request and repository evidence.
-Do not edit source. Write JSON to {result_path}:
-{{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{{"severity":"critical|important|minor","message":"..."}}]}}
-Approve only if acceptance criteria, checks, scope, and escalation conditions are sufficient and minimal.
-"""
+
+        ir = PromptIR(
+            prompt_id="plan-review-1",
+            request_id="todo",
+            contract_id="todo",
+
+            role="reviewer_deep", blueprint_id="PLAN_REVIEW",
+            goal="",
+            stop_when="",
+            deliverables=(),
+            evidence_requirements=(),
+            allowed_scope=(),
+            protected_scope=(),
+            must_do=(),
+            must_not=("Do not edit source.",),
+            context_refs=(),
+            allowed_tools=(),
+            output_contract=(
+                f"Write JSON to {result_path}:\n"
+                '{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{"severity":"critical|important|minor","message":"..."}]}\n'
+                "Approve only if acceptance criteria, checks, scope, and escalation conditions are sufficient and minimal.\n"
+            ),
+            escalate_when=(),
+            metadata=PromptMetadata(compiler_version=str(self.run_dir / 'plan.json'), generation_time="todo")
+        )
+
+        prompt = self._render_prompt(ir)
         self._emit("review.started", phase="PLAN", message="High-risk plan review started.")
         self._invoke(
             "reviewer_deep",
@@ -1267,7 +1844,7 @@ Approve only if acceptance criteria, checks, scope, and escalation conditions ar
         )
 
     def _execute_task(self, task: TaskBrief) -> None:
-        assert self.run_dir is not None
+        assert self.run_dir is not None and self.strategy is not None and self.proof_graph is not None
         self._emit(
             "task.started",
             phase="EXECUTE",
@@ -1290,6 +1867,18 @@ Approve only if acceptance criteria, checks, scope, and escalation conditions ar
         write_json(task_dir / "task-state.json", {"taskId": task.task_id, "baselineCommit": baseline})
         attempts: list[dict[str, Any]] = []
         replan_count = 0
+
+        # A baseline or red test only proves something when it ran before the
+        # first source mutation for this task. Direct bootstrap intentionally
+        # mutates before it writes a task brief, so it cannot make that claim.
+        if preinvoked and any(proof_stage_checks(task, stage) for stage in ("baseline", "red")):
+            raise OrchestrationError(
+                "PREIMPLEMENTATION_PROOF_UNAVAILABLE",
+                f"{task.task_id} declares baseline/red proof after direct bootstrap mutation",
+                verdict="BLOCKED",
+            )
+        if not preinvoked:
+            self._run_preimplementation_proof(task, task_dir)
 
         while True:
             if self.goal_mode:
@@ -1316,16 +1905,33 @@ Approve only if acceptance criteria, checks, scope, and escalation conditions ar
                         f"\nRead workflow memory at {memory.workflow_path} and task memory at {memory.task_path}. "
                         "Treat memory as context, not proof."
                     )
-                prompt = f"""Execute exactly one ProofLoop task from {task_path}.
-Role: {role}
-Repository: {self.repo}
-Evidence run: {self.run_dir}
-{evidence_note}
-{memory_note}
-Use TDD for behavior changes. Make the smallest change inside allowed paths. Do not weaken tests or expand the contract.
-Write optional JSON to {result_path}: {{"status":"DONE|BLOCKED","classification":"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE","summary":"..."}}.
-Do not decide whether tests passed; ProofLoop will run them.
-"""
+                ir = PromptIR(
+                    prompt_id=f"execute-{sequence}",
+                    request_id="todo",
+                    contract_id="todo",
+                    blueprint_id="todo",
+                    role="implementer_fast",
+                    goal="",
+                    stop_when="",
+                    deliverables=(),
+                    evidence_requirements=(),
+                    allowed_scope=(),
+                    protected_scope=(),
+                    must_do=("Use TDD for behavior changes. Make the smallest change inside allowed paths.",),
+                    must_not=("Do not weaken tests or expand the contract.",),
+                    context_refs=(
+                        f"Repository: {self.repo}\nEvidence run: {self.run_dir}\n{evidence_note}\n{memory_note}".strip(),
+                    ),
+                    allowed_tools=(),
+                    output_contract=(
+                        f"Write optional JSON to {result_path}: {{\"status\":\"DONE|BLOCKED\",\"classification\":\"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE\",\"summary\":\"...\"}}.\n"
+                        "Do not decide whether tests passed; ProofLoop will run them.\n"
+                    ),
+                    escalate_when=(),
+                    metadata=PromptMetadata(compiler_version=str(task_path), generation_time=role)
+                )
+
+                prompt = self._render_prompt(ir)
                 self._invoke(
                     role,
                     prompt,
@@ -1341,7 +1947,16 @@ Do not decide whether tests passed; ProofLoop will run them.
             if self.goal_mode:
                 self._goal_transition("VERIFY", "deterministic verification started", taskId=task.task_id)
             self.transition("VERIFY", taskId=task.task_id, attempt=sequence)
-            checks = run_checks(task, self.repo, checks_dir, emitter=self.emitter)
+            required_checks = run_checks(task, self.repo, checks_dir, emitter=self.emitter)
+            post_proof = run_post_implementation_proof(
+                task,
+                self.repo,
+                task_dir / f"attempt-{sequence:02d}-proof",
+                emitter=self.emitter,
+            )
+            checks = merge_required_and_post_proof(task.task_id, required_checks, post_proof)
+            combined_checks_path = task_dir / f"attempt-{sequence:02d}-verification.json"
+            write_json(combined_checks_path, checks)
             diff = inspect_diff(task, self.repo, baseline)
             diff_path = task_dir / f"attempt-{sequence:02d}-diff-guard.json"
             write_json(diff_path, diff)
@@ -1368,7 +1983,9 @@ Do not decide whether tests passed; ProofLoop will run them.
                 "diffVerdict": diff.get("verdict"),
                 "failureFingerprint": _combined_fingerprint(checks, diff),
                 "classification": role_result.get("classification"),
-                "checksRef": str(checks_dir / "checks.json"),
+                "checksRef": str(combined_checks_path),
+                "requiredChecksRef": str(checks_dir / "checks.json"),
+                "postProofRef": str(task_dir / f"attempt-{sequence:02d}-proof" / "post-proof.json"),
                 "diffGuardRef": str(diff_path),
                 "roleResultRef": str(result_path) if result_path.exists() else None,
             }
@@ -1492,16 +2109,27 @@ Do not decide whether tests passed; ProofLoop will run them.
                 role = "implementer_recovery"
                 continue
             if action == "RETURN_TO_PLANNER":
-                replan_limit = self.max_replans if self.goal_mode else 1
+                if self.max_replans != 1:
+                    replan_limit = self.max_replans
+                else:
+                    replan_limit = 3 if self.strategy.tier == "T3" else 2
+
                 if replan_count >= replan_limit:
                     raise OrchestrationError("REPLAN_BUDGET_EXHAUSTED", f"{task.task_id} still requires redesign")
+
+                classification = attempt.get("classification")
+                if classification == "CONTRACT_CHANGE":
+                    for obligation in self.proof_graph.obligations:
+                        obligation.revision += 1
+                        obligation.status = "OPEN"
+
                 self._emit(
                     "replan.scheduled",
                     phase="REPAIR",
                     message="Task replan scheduled.",
                     level="warning",
                     task_id=task.task_id,
-                    data={"reasonCode": attempt.get("classification"), "reason": decision.get("reason")},
+                    data={"reasonCode": classification, "reason": decision.get("reason")},
                 )
                 if self.goal_mode:
                     self._goal_transition("TRIAGE", "implementation evidence requires redesign", taskId=task.task_id)
@@ -1513,6 +2141,36 @@ Do not decide whether tests passed; ProofLoop will run them.
             if self.goal_mode:
                 self._goal_transition("EXHAUSTED", "task repair budget exhausted", taskId=task.task_id)
             raise OrchestrationError("TASK_REPAIR_BUDGET_EXHAUSTED", f"{task.task_id}: {decision.get('reason')}")
+
+    def _run_preimplementation_proof(self, task: TaskBrief, task_dir: Path) -> None:
+        """Capture declared baseline/red evidence before the first mutation."""
+        assert self.run_dir is not None
+        for stage in ("baseline", "red"):
+            report = run_proof_stage(
+                task,
+                stage,
+                self.repo,
+                task_dir / "pre-implementation-proof" / stage,
+                emitter=self.emitter,
+                phase="VERIFY",
+            )
+            self._emit(
+                "proof_stage.completed" if report["expectationMet"] else "proof_stage.failed",
+                phase="VERIFY",
+                message=f"Pre-implementation {stage} proof {str(report['verdict']).lower()}.",
+                level="info" if report["expectationMet"] else "error",
+                task_id=task.task_id,
+                data={
+                    "stage": stage,
+                    "verdict": report["verdict"],
+                    "expectedOutcome": report["expectedOutcome"],
+                    "expectationMet": report["expectationMet"],
+                    "artifact": str(task_dir / "pre-implementation-proof" / stage / "proof-stage.json"),
+                },
+            )
+            if not report["expectationMet"]:
+                code = "PROOF_BASELINE_FAILED" if stage == "baseline" else "PROOF_RED_CHECK_NOT_RED"
+                raise OrchestrationError(code, f"{task.task_id} {stage} proof did not meet its expected outcome", verdict="FAILED")
 
     def _activate_recovery_protocol(self) -> None:
         assert self.strategy is not None and self.proof_graph is not None and self.run_dir is not None
@@ -1555,9 +2213,31 @@ Do not decide whether tests passed; ProofLoop will run them.
         assert self.run_dir is not None
         self.transition("REPLAN", taskId=task.task_id)
         result_path = task_path.with_name(task_path.stem + "-replanned.json")
-        prompt = f"""Replan the blocked ProofLoop task at {task_path} using exact evidence {attempt['checksRef']} and {attempt['diffGuardRef']}.
-Do not edit source. Preserve the user contract unless evidence proves it impossible. Write one valid TaskBrief JSON to {result_path} with the same task id. Do not increase change budgets without explicit evidence and rationale.
-"""
+        ir = PromptIR(
+            prompt_id="replan-1",
+            request_id="todo",
+            contract_id="todo",
+            blueprint_id="todo",
+            role="implementer_recovery",
+            goal="",
+            stop_when="",
+            deliverables=(),
+            evidence_requirements=(),
+            allowed_scope=(),
+            protected_scope=(),
+            must_do=("Do not edit source. Preserve the user contract unless evidence proves it impossible.",),
+            must_not=("Do not increase change budgets without explicit evidence and rationale.",),
+            context_refs=(
+                str(attempt['checksRef']),
+                str(attempt['diffGuardRef'])
+            ),
+            allowed_tools=(),
+            output_contract=f"Write one valid TaskBrief JSON to {result_path} with the same task id.",
+            escalate_when=(),
+            metadata=PromptMetadata(compiler_version=str(task_path), generation_time="todo")
+        )
+
+        prompt = self._render_prompt(ir)
         self._invoke(
             "planner_deep",
             prompt,
@@ -1575,8 +2255,9 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
         return revised
 
     def _final_verification_and_review(self) -> None:
-        assert self.run_dir is not None and self.original_baseline is not None
+        assert self.run_dir is not None and self.original_baseline is not None and self.strategy is not None
         aggregate = aggregate_task(self.tasks)
+        aggregate = with_mandatory_checks(aggregate, self.verification_plan or {})
         aggregate_path = self.run_dir / "tasks" / "ALL-TASKS.json"
         write_json(aggregate_path, task_to_dict(aggregate))
         pending_repair = False
@@ -1585,7 +2266,19 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
             self.transition("FINAL_VERIFY", reviewCycle=review_cycle)
             if self.goal_mode:
                 self._goal_transition("VERIFY", "final deterministic verification started", reviewCycle=review_cycle)
-            checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
+            required_checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
+            post_proof_reports = [
+                run_post_implementation_proof(
+                    task,
+                    self.repo,
+                    self.run_dir / "final-proof" / f"review-{review_cycle:02d}" / task.task_id,
+                    emitter=self.emitter,
+                )
+                for task in self.tasks
+            ]
+            post_proof = merge_check_reports("ALL-TASKS", post_proof_reports)
+            checks = merge_required_and_post_proof("ALL-TASKS", required_checks, post_proof)
+            write_json(self.run_dir / "checks" / "checks.json", checks)
             diff = inspect_diff(aggregate, self.repo, self.original_baseline)
             write_json(self.run_dir / "diff-guard.json", diff)
             self._emit(
@@ -1599,6 +2292,31 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
                     "violations": diff.get("violations", []),
                     "artifact": str(self.run_dir / "diff-guard.json"),
                 },
+            )
+            try:
+                live_evidence = seal_core_evidence(
+                    self.run_dir,
+                    checks=checks,
+                    diff=diff,
+                    verification_plan=self.verification_plan or {},
+                    baseline_commit=self.original_baseline,
+                )
+            except Exception as exc:
+                raise OrchestrationError(
+                    "CORE_EVIDENCE_CAPTURE_FAILED",
+                    f"Core evidence capture failed: {exc}",
+                    verdict="FAILED",
+                ) from exc
+            write_json(
+                self.run_dir / "live-evidence-validation.json",
+                _live_evidence_summary(live_evidence),
+            )
+            self._emit(
+                "live_evidence.sealed" if live_evidence.get("status") == "VALID" else "live_evidence.rejected",
+                phase="VERIFY",
+                message="Core-owned verification evidence was sealed." if live_evidence.get("status") == "VALID" else "Core-owned verification evidence was rejected.",
+                level="info" if live_evidence.get("status") == "VALID" else "error",
+                data=_live_evidence_summary(live_evidence),
             )
             if pending_repair:
                 attempt = {
@@ -1659,24 +2377,40 @@ Do not edit source. Preserve the user contract unless evidence proves it impossi
                 data={"reviewCycle": review_cycle},
             )
             cycle_path = self.run_dir / f"review-{review_cycle:02d}.json"
-            prompt = f"""Act as the isolated ProofLoop final reviewer.
-User request: {self.request}
-Plan: {self.run_dir / 'plan.json'}
-Task briefs: {self.run_dir / 'tasks'}
-Checks: {self.run_dir / 'checks' / 'checks.json'}
-Diff guard: {self.run_dir / 'diff-guard.json'}
-Goal contract: {self.run_dir / 'goal-contract.json' if self.goal_mode else 'legacy orchestrate mode'}
-Review the real source diff from baseline {self.original_baseline}. Do not edit source.
-Write JSON to {cycle_path} exactly:
-{{
-  "verdict": "APPROVED|FIX_REQUIRED|DESIGN_CONFLICT|CANNOT_VERIFY",
-  "simplicityVerdict": "MINIMAL|OVERBUILT|CANNOT_VERIFY",
-  "criteria": [{{"id":"SC-...","status":"SATISFIED|UNSATISFIED|UNKNOWN","evidence":[]}}],
-  "findings": [],
-  "deletionCandidates": []
-}}
-Do not trust implementer summaries. APPROVED requires correct behavior, test integrity, scope compliance, and no unnecessary abstractions.
-"""
+            ir = PromptIR(
+                prompt_id=f"review-{review_cycle}",
+                request_id="todo",
+                contract_id="todo",
+
+                role="reviewer_deep", blueprint_id="FINAL_REVIEW",
+                goal=str(self.request),
+                stop_when="",
+                deliverables=(),
+                evidence_requirements=(),
+                allowed_scope=(),
+                protected_scope=(),
+                must_do=(f"Review the real source diff from baseline {self.original_baseline}. Do not edit source.",),
+                must_not=("Do not trust implementer summaries. APPROVED requires correct behavior, test integrity, scope compliance, and no unnecessary abstractions.",),
+                context_refs=(
+                    f"Plan: {self.run_dir / 'plan.json'}\nTask briefs: {self.run_dir / 'tasks'}",
+                    f"Checks: {self.run_dir / 'checks' / 'checks.json'}\nDiff guard: {self.run_dir / 'diff-guard.json'}\nGoal contract: {self.run_dir / 'goal-contract.json' if self.goal_mode else 'legacy orchestrate mode'}"
+                ),
+                allowed_tools=(),
+                output_contract=(
+                    f"Write JSON to {cycle_path} exactly:\n"
+                    "{\n"
+                    '  "verdict": "APPROVED|FIX_REQUIRED|DESIGN_CONFLICT|CANNOT_VERIFY",\n'
+                    '  "simplicityVerdict": "MINIMAL|OVERBUILT|CANNOT_VERIFY",\n'
+                    '  "criteria": [{"id":"SC-...","status":"SATISFIED|UNSATISFIED|UNKNOWN","evidence":[]}],\n'
+                    '  "findings": [],\n'
+                    '  "deletionCandidates": []\n'
+                    "}\n"
+                ),
+                escalate_when=(),
+                metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
+            )
+
+            prompt = self._render_prompt(ir)
             self._invoke(
                 "reviewer_deep",
                 prompt,
@@ -1689,7 +2423,8 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                 raise OrchestrationError("REVIEW_ARTIFACT_MISSING", "reviewer did not produce a review artifact")
             if self.goal_mode and review.get("verdict") == "APPROVED" and not self._goal_review_satisfied(review):
                 review["verdict"] = "FIX_REQUIRED"
-                findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+                raw_findings = review.get("findings")
+                findings: list[Any] = raw_findings if isinstance(raw_findings, list) else []
                 findings.append({"severity": "important", "message": "goal criteria are missing or unsatisfied"})
                 review["findings"] = findings
             write_json(self.run_dir / "review.json", review)
@@ -1726,10 +2461,11 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                 if self.goal_mode:
                     self._goal_transition("TRIAGE", "deep review requires repair", reviewCycle=review_cycle)
                 self.transition("REVIEW_REPAIR", findings=review.get("findings", []))
-                findings = review.get("findings") if isinstance(review.get("findings"), list) else []
+                raw_repair_findings = review.get("findings")
+                review_findings: list[Any] = raw_repair_findings if isinstance(raw_repair_findings, list) else []
                 finding = None
-                if findings and isinstance(findings[0], dict):
-                    finding = findings[0].get("message")
+                if review_findings and isinstance(review_findings[0], dict):
+                    finding = review_findings[0].get("message")
                 self._emit(
                     "review.fix_required",
                     phase="REVIEW",
@@ -1766,10 +2502,28 @@ Do not trust implementer summaries. APPROVED requires correct behavior, test int
                     },
                 )
                 repair_result = self.run_dir / "review-repair-result.json"
-                repair_prompt = f"""Repair the final ProofLoop review findings in {cycle_path}.
-Use the aggregate task contract at {aggregate_path}. Preserve scope and change budgets. If the review says OVERBUILT, remove unnecessary abstractions without weakening correctness, security, or tests. Do not decide pass/fail; ProofLoop will rerun all checks.
-Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classification":"REVIEW_FINDINGS","summary":"..."}}.
-"""
+                ir = PromptIR(
+                    prompt_id=f"repair-{review_cycle}",
+                    request_id="todo",
+                    contract_id="todo",
+
+                    role="implementer_recovery", blueprint_id="FINAL_REPAIR",
+                    goal="",
+                    stop_when="",
+                    deliverables=(),
+                    evidence_requirements=(),
+                    allowed_scope=(),
+                    protected_scope=(),
+                    must_do=(f"Use the aggregate task contract at {aggregate_path}.", "Preserve scope and change budgets.", "If the review says OVERBUILT, remove unnecessary abstractions without weakening correctness, security, or tests."),
+                    must_not=("Do not decide pass/fail; ProofLoop will rerun all checks.",),
+                    context_refs=(),
+                    allowed_tools=(),
+                    output_contract=f"Write optional JSON to {repair_result}: {{\"status\":\"DONE|BLOCKED\",\"classification\":\"REVIEW_FINDINGS\",\"summary\":\"...\"}}.",
+                    escalate_when=(),
+                    metadata=PromptMetadata(compiler_version=str(cycle_path), generation_time="todo")
+                )
+
+                repair_prompt = self._render_prompt(ir)
                 self._invoke(
                     "implementer_recovery",
                     repair_prompt,
@@ -1795,6 +2549,20 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
                     )
                     write_json(self.run_dir / "goal-contract.json", contract.to_dict())
                     self._goal_transition("IMPLEMENT", "replanned goal contract is ready")
+                    execution_brief = self.execution_brief
+                    if execution_brief is not None and execution_brief.get("kind") == "EXECUTION_BRIEF":
+                        from .blueprint import validate_blueprint, BlueprintValidationError
+                        try:
+                            validate_blueprint(execution_brief, self.tasks, require_structured_proof=True)
+                        except BlueprintValidationError as e:
+                            self._emit(
+                                "blueprint.invalid",
+                                phase="PLAN",
+                                message=f"Blueprint validation failed: {e}",
+                                level="error"
+                            )
+                            raise OrchestrationError("BLUEPRINT_VALIDATION_FAILED", str(e), verdict="BLOCKED")
+
                     for task in self.tasks:
                         self._execute_task(task)
                     aggregate = aggregate_task(self.tasks)
@@ -1850,25 +2618,29 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         write_json(self.run_dir / "model-trace-summary.json", result)
         return result
 
-    def _write_claims(self, trace: dict[str, Any]) -> None:
+    def _write_claims(self, trace: dict[str, Any], *, core_evidence_valid: bool) -> None:
         assert self.run_dir is not None
         review = _read_optional_json(self.run_dir / "review.json") or {}
         fast_lane = review.get("reviewMode") == "DETERMINISTIC_FAST_LANE"
+        checks_claim: dict[str, Any] = {
+            "id": "checks-pass",
+            "category": "CHECK_RESULT",
+            "kind": "FACT" if core_evidence_valid else "UNKNOWN",
+            "statement": "All required commands passed." if core_evidence_valid else "Required command evidence failed Core integrity validation.",
+            "evidence": ([{"artifact": "core-evidence/checks.json", "jsonPointer": "/verdict", "equals": "PASS"}]
+                         if core_evidence_valid else []),
+        }
+        scope_claim: dict[str, Any] = {
+            "id": "scope-pass",
+            "category": "CHANGE_SCOPE",
+            "kind": "FACT" if core_evidence_valid else "UNKNOWN",
+            "statement": "The final diff passed scope and integrity checks." if core_evidence_valid else "Final diff evidence failed Core integrity validation.",
+            "evidence": ([{"artifact": "core-evidence/diff-guard.json", "jsonPointer": "/verdict", "equals": "PASS"}]
+                         if core_evidence_valid else []),
+        }
         claims: list[dict[str, Any]] = [
-            {
-                "id": "checks-pass",
-                "category": "CHECK_RESULT",
-                "kind": "FACT",
-                "statement": "All required commands passed.",
-                "evidence": [{"artifact": "checks/checks.json", "jsonPointer": "/verdict", "equals": "PASS"}],
-            },
-            {
-                "id": "scope-pass",
-                "category": "CHANGE_SCOPE",
-                "kind": "FACT",
-                "statement": "The final diff passed scope and integrity checks.",
-                "evidence": [{"artifact": "diff-guard.json", "jsonPointer": "/verdict", "equals": "PASS"}],
-            },
+            checks_claim,
+            scope_claim,
             {
                 "id": "review-approved",
                 "category": "REVIEW_RESULT",
@@ -1916,8 +2688,10 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         write_json(self.run_dir / "claims.json", {"schemaVersion": "1.0", "claims": claims})
 
     def _emit_audited_claims(self, assurance: dict[str, Any]) -> None:
-        audit = assurance.get("claimAudit") if isinstance(assurance.get("claimAudit"), dict) else {}
-        claims = audit.get("claims") if isinstance(audit.get("claims"), list) else []
+        raw_audit = assurance.get("claimAudit")
+        audit: dict[str, Any] = raw_audit if isinstance(raw_audit, dict) else {}
+        raw_claims = audit.get("claims")
+        claims: list[Any] = raw_claims if isinstance(raw_claims, list) else []
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
@@ -1941,13 +2715,29 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         assert self.run_dir is not None
         self.transition("TRUTH_GATE")
         trace = self._build_trace_summary()
-        self._write_claims(trace)
+        live_evidence = validate_core_evidence(self.run_dir)
+        write_json(self.run_dir / "live-evidence-validation.json", _live_evidence_summary(live_evidence))
+        self._emit(
+            "live_evidence.validated" if live_evidence.get("status") == "VALID" else "live_evidence.rejected",
+            phase="TRUTH",
+            message="Core evidence freshness and integrity validated." if live_evidence.get("status") == "VALID" else "Core evidence freshness or integrity failed.",
+            level="info" if live_evidence.get("status") == "VALID" else "error",
+            data=_live_evidence_summary(live_evidence),
+        )
+        self._write_claims(trace, core_evidence_valid=live_evidence.get("status") == "VALID")
         assurance = build_assurance_report(self.run_dir)
         write_json(self.run_dir / "assurance-report.json", assurance)
         self._emit_audited_claims(assurance)
-        truth = build_truth_report(self.run_dir)
+        truth = build_truth_report(self.run_dir, require_core_evidence=self.verification_plan is not None)
         write_json(self.run_dir / "truth-report.json", truth)
         self.transition(truth["verdict"])
+        self._emit(
+            "verdict.issued",
+            phase="TRUTH",
+            message=f"Truth verdict issued: {truth['verdict']}.",
+            level="info" if truth.get("verdict") == "PROVEN" else "warning",
+            data={"verdict": truth.get("verdict"), "truthReport": truth},
+        )
         self._emit(
             "truth.completed",
             phase="TRUTH",
@@ -1980,6 +2770,13 @@ Write optional JSON to {repair_result}: {{"status":"DONE|BLOCKED","classificatio
         self.transition(verdict, code=code, message=message)
         finalize_run(self.repo, report)
         usage = self._finalize_usage()
+        self._emit(
+            "verdict.issued",
+            phase="TRUTH",
+            message=f"Truth verdict issued: {verdict}.",
+            level="error" if verdict == "FAILED" else "warning",
+            data={"verdict": verdict, "code": code, "message": message, "truthReport": report},
+        )
         event_type = "run.failed" if verdict == "FAILED" else "run.blocked"
         self._emit(
             event_type,
@@ -2107,6 +2904,7 @@ def run_proofloop(
     max_replans: int = 2,
     skills_enabled: bool = True,
     experimental_domain_packs: bool = False,
+    event_bus: EventBus | None = None,
 ) -> dict[str, Any]:
     if mode == "benchmark":
         raise ValueError("benchmark mode is driven by the benchmark command and a suite")
@@ -2128,4 +2926,5 @@ def run_proofloop(
         mode=mode,
         skills_enabled=skills_enabled,
         experimental_domain_packs=experimental_domain_packs,
+        event_bus=event_bus,
     ).run()

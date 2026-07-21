@@ -5,11 +5,155 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
-from .events import validate_event
+from .events import EventBus, ProofLoopEvent, validate_event
 from .renderers import build_renderer
 
 
 _LEVELS = {"debug": 0, "info": 1, "warning": 2, "error": 3}
+
+
+class WatchPanels:
+    """Read-only panel projection fed exclusively by typed EventBus events.
+
+    The projection deliberately owns no artifact paths and never reads a run
+    directory. ``watch_events`` remains the replay adapter for persisted v1
+    events; a live run subscribes this object directly to its EventBus.
+    """
+
+    def __init__(self) -> None:
+        self._status = "PENDING"
+        self._tier: str | None = None
+        self._strategy: str | None = None
+        self._roles: dict[str, dict[str, Any]] = {}
+        self._proof: dict[str, Any] = {"closureRatio": None, "open": []}
+        self._budget: dict[str, Any] = {
+            "consumedTokens": 0,
+            "remainingTokens": None,
+            "maxTokens": None,
+            "tokenCoverageRatio": None,
+        }
+
+    def consume(self, event: ProofLoopEvent) -> None:
+        data = event.payload
+        if event.event_type == "run.started":
+            self._status = "RUNNING"
+        elif event.event_type == "run.completed":
+            self._status = str(data.get("verdict") or "COMPLETED")
+        elif event.event_type == "run.failed":
+            self._status = "FAILED"
+        elif event.event_type == "run.blocked":
+            self._status = "BLOCKED"
+        elif event.event_type == "strategy.selected":
+            tier = data.get("tier")
+            strategy = data.get("strategy")
+            self._tier = str(tier) if isinstance(tier, str) else self._tier
+            self._strategy = str(strategy) if isinstance(strategy, str) else self._strategy
+        elif event.event_type == "role.started":
+            self._update_role(event, "RUNNING")
+        elif event.event_type == "role.completed":
+            self._update_role(event, "COMPLETED")
+        elif event.event_type in {"role.failed", "role.cancelled"}:
+            self._update_role(event, "FAILED")
+        elif event.event_type in {"role.model_observed", "model.changed"}:
+            self._update_role(event, None)
+        elif event.event_type == "proof.updated":
+            ratio = data.get("closureRatio")
+            if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
+                self._proof["closureRatio"] = ratio
+            open_obligations = data.get("open")
+            if isinstance(open_obligations, list) and all(isinstance(item, str) for item in open_obligations):
+                self._proof["open"] = list(open_obligations)
+        elif event.event_type == "budget.updated":
+            self._update_budget(data)
+        elif event.event_type == "usage.finalized":
+            self._update_final_usage(data)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "status": self._status,
+            "tier": self._tier,
+            "strategy": self._strategy,
+            "roles": {role: dict(self._roles[role]) for role in sorted(self._roles)},
+            "proof": {"closureRatio": self._proof["closureRatio"], "open": list(self._proof["open"])},
+            "budget": dict(self._budget),
+        }
+
+    def _update_role(self, event: ProofLoopEvent, status: str | None) -> None:
+        data = event.payload
+        role_value = data.get("role") or event.role
+        if not isinstance(role_value, str) or not role_value:
+            return
+        current = dict(self._roles.get(role_value) or {})
+        if status is not None:
+            current["status"] = status
+        attempt = data.get("attempt")
+        if isinstance(attempt, int) and not isinstance(attempt, bool):
+            current["attempt"] = attempt
+        model = data.get("observedModel") or data.get("activeModel") or data.get("requestedModel") or event.model
+        if isinstance(model, str) and model:
+            current["model"] = model
+        task_id = event.task_id
+        if isinstance(task_id, str) and task_id:
+            current["taskId"] = task_id
+        self._roles[role_value] = current
+
+    def _update_budget(self, data: dict[str, Any]) -> None:
+        for field in ("consumedTokens", "remainingTokens", "maxTokens"):
+            value = data.get(field)
+            if isinstance(value, int) and not isinstance(value, bool):
+                self._budget[field] = value
+
+    def _update_final_usage(self, data: dict[str, Any]) -> None:
+        summary = data.get("summary")
+        if not isinstance(summary, dict):
+            return
+        totals = summary.get("totals")
+        if isinstance(totals, dict):
+            raw_total = totals.get("rawTotal")
+            if isinstance(raw_total, int) and not isinstance(raw_total, bool):
+                self._budget["consumedTokens"] = raw_total
+        coverage = summary.get("coverage")
+        if isinstance(coverage, dict):
+            ratio = coverage.get("tokenCoverageRatio")
+            if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
+                self._budget["tokenCoverageRatio"] = ratio
+
+
+def render_watch_panels(panels: WatchPanels) -> str:
+    """Render the current role, proof, and budget projections deterministically."""
+
+    snapshot = panels.snapshot()
+    proof = snapshot["proof"]
+    budget = snapshot["budget"]
+    lines = [
+        "[ProofLoop Watch]",
+        f"status: {snapshot['status']}",
+        f"tier: {snapshot['tier'] or 'unknown'} · strategy: {snapshot['strategy'] or 'unknown'}",
+        "roles:",
+    ]
+    roles = snapshot["roles"]
+    if roles:
+        for role, state in roles.items():
+            model = state.get("model") or "unknown-model"
+            task = state.get("taskId") or "no-task"
+            attempt = state.get("attempt")
+            suffix = f" · attempt {attempt}" if attempt is not None else ""
+            lines.append(f"  {role}: {state.get('status', 'UNKNOWN')} · {model} · {task}{suffix}")
+    else:
+        lines.append("  none")
+    ratio = proof["closureRatio"]
+    ratio_text = f"{ratio:.0%}" if isinstance(ratio, (int, float)) else "unknown"
+    open_text = ", ".join(proof["open"]) if proof["open"] else "none"
+    lines.extend(
+        [
+            f"proof: {ratio_text} closed · open: {open_text}",
+            "budget: "
+            f"{budget['consumedTokens']} tokens · remaining {budget['remainingTokens'] if budget['remainingTokens'] is not None else 'unknown'}"
+            f" / max {budget['maxTokens'] if budget['maxTokens'] is not None else 'unknown'}"
+            f" · coverage {budget['tokenCoverageRatio'] if budget['tokenCoverageRatio'] is not None else 'unknown'}",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def resolve_run_dir(
@@ -47,9 +191,10 @@ def watch_events(
     minimum_level: str | None = None,
     follow: bool = True,
     poll_interval: float = 0.1,
+    event_bus: EventBus | None = None,
 ) -> int:
-    if output_format not in {"human", "jsonl"}:
-        raise ValueError("watch output format must be human or jsonl")
+    if output_format not in {"human", "jsonl", "tui"}:
+        raise ValueError("watch output format must be human, jsonl, or tui")
     if minimum_level is not None and minimum_level not in _LEVELS:
         raise ValueError(f"unsupported minimum level: {minimum_level}")
     if poll_interval <= 0:
@@ -73,6 +218,8 @@ def watch_events(
                     if not line:
                         continue
                     event = _parse_event(line, line_number)
+                    if event_bus is not None:
+                        event_bus.publish(ProofLoopEvent.from_v1_dict(event))
                     if not _matches(event, task_id=task_id, minimum_level=minimum_level):
                         continue
                     renderer.render(event)

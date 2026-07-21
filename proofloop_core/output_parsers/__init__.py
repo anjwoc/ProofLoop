@@ -14,7 +14,7 @@ def parser_for(host: str) -> HostOutputParser:
         return AntigravityOutputParser()
     if host == "claude-code":
         return ClaudeOutputParser()
-    if host == "gemini":
+    if host == "agy":
         return GeminiOutputParser()
     raise ValueError(f"unsupported host parser: {host}")
 

@@ -4,13 +4,14 @@ import os
 import re
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .events import EventEmitter
 from .io import sha256_file, write_json
 from .process_runner import ProcessRunner
-from .task_brief import TaskBrief
+from .task_brief import CheckSpec, SurfaceScenario, TaskBrief
 
 
 def _safe_name(index: int, name: str | None) -> str:
@@ -58,7 +59,7 @@ def run_checks(
 
         def on_line(stream_name: str, line: str) -> None:
             for output_line in line.splitlines():
-                stripped = output_line.strip()
+                stripped = str(output_line).strip()
                 if not stripped:
                     continue
                 output_tail.append(stripped)
@@ -93,7 +94,8 @@ def run_checks(
                 handle.write(f"\nProofLoop timeout after {check.timeout_seconds}s\n")
                 handle.flush()
         finished = time.time()
-        result = {
+        status = "PASS" if process_result.exit_code == 0 else "FAIL"
+        result: dict[str, Any] = {
             "name": check.name or name,
             "command": check.command,
             "cwd": str(cwd),
@@ -106,7 +108,7 @@ def run_checks(
             "stderrRef": str(stderr_path),
             "stdoutSha256": sha256_file(stdout_path),
             "stderrSha256": sha256_file(stderr_path),
-            "status": "PASS" if process_result.exit_code == 0 else "FAIL",
+            "status": status,
         }
         results.append(result)
         if emitter is not None:
@@ -121,7 +123,7 @@ def run_checks(
             emitter.emit(
                 event_type,
                 phase=phase,
-                message=f"Check {check.name or name} {result['status'].lower()}.",
+                message=f"Check {check.name or name} {status.lower()}.",
                 level="info" if process_result.exit_code == 0 else "error",
                 task_id=task.task_id,
                 data={
@@ -150,3 +152,123 @@ def run_checks(
     }
     write_json(output / "checks.json", report)
     return report
+
+
+# Structured proof plans deliberately reuse the parent-owned direct-argv check
+# runner above. They are not model assertions and cannot be marked pass by an
+# agent response.
+POST_IMPLEMENTATION_PROOF_STAGES = ("automated", "surface", "adversarial", "cleanup")
+
+
+def proof_stage_checks(task: TaskBrief, stage: str) -> tuple[CheckSpec, ...]:
+    plan = task.proof_plan
+    if plan is None:
+        return ()
+    checks_by_stage = {
+        "baseline": plan.baseline_checks,
+        "red": plan.red_checks,
+        "automated": plan.automated_checks,
+        "adversarial": plan.adversarial_checks,
+        "cleanup": plan.cleanup_checks,
+        "surface": tuple(_surface_check(scenario) for scenario in plan.surface_scenarios),
+    }
+    if stage not in checks_by_stage:
+        raise ValueError(f"unknown proof stage: {stage}")
+    return checks_by_stage[stage]
+
+
+def run_proof_stage(
+    task: TaskBrief,
+    stage: str,
+    repository: str | Path,
+    output_dir: str | Path,
+    *,
+    emitter: EventEmitter | None = None,
+    phase: str = "VERIFY",
+) -> dict[str, Any]:
+    """Run one proof stage and report whether its expected outcome occurred."""
+    checks = proof_stage_checks(task, stage)
+    destination = Path(output_dir)
+    if not checks:
+        report: dict[str, Any] = {
+            "schemaVersion": "1.0", "taskId": task.task_id, "proofStage": stage,
+            "expectedOutcome": "FAIL" if stage == "red" else "PASS", "verdict": "SKIPPED",
+            "checks": [], "expectationMet": True,
+        }
+        destination.mkdir(parents=True, exist_ok=True)
+        write_json(destination / "proof-stage.json", report)
+        return report
+
+    report = run_checks(replace(task, required_checks=checks), repository, destination, emitter=emitter, phase=phase)
+    statuses = [str(item.get("status")) for item in report.get("checks", []) if isinstance(item, dict)]
+    expected = "FAIL" if stage == "red" else "PASS"
+    wrapped = {
+        **report,
+        "proofStage": stage,
+        "expectedOutcome": expected,
+        "expectationMet": bool(statuses) and all(status == expected for status in statuses),
+    }
+    write_json(destination / "proof-stage.json", wrapped)
+    return wrapped
+
+
+def run_post_implementation_proof(
+    task: TaskBrief,
+    repository: str | Path,
+    output_dir: str | Path,
+    *,
+    emitter: EventEmitter | None = None,
+    phase: str = "VERIFY",
+) -> dict[str, Any]:
+    root = Path(output_dir)
+    reports = [
+        run_proof_stage(task, stage, repository, root / stage, emitter=emitter, phase=phase)
+        for stage in POST_IMPLEMENTATION_PROOF_STAGES
+    ]
+    merged = merge_check_reports(task.task_id, reports)
+    merged["proofStages"] = [
+        {
+            "stage": report["proofStage"], "verdict": report["verdict"],
+            "expectationMet": report["expectationMet"],
+            "reportRef": str(root / report["proofStage"] / "proof-stage.json"),
+        }
+        for report in reports
+    ]
+    write_json(root / "post-proof.json", merged)
+    return merged
+
+
+def merge_check_reports(task_id: str, reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    report_list = list(reports)
+    checks: list[dict[str, Any]] = []
+    for report in report_list:
+        raw_checks = report.get("checks")
+        if isinstance(raw_checks, list):
+            checks.extend(check for check in raw_checks if isinstance(check, dict))
+    expectation_met = all(report.get("expectationMet", True) for report in report_list)
+    return {
+        "schemaVersion": "1.0", "taskId": task_id,
+        "verdict": "PASS" if expectation_met and all(check.get("status") == "PASS" for check in checks) else "FAIL",
+        "checks": checks,
+    }
+
+
+def merge_required_and_post_proof(
+    task_id: str, required_checks: dict[str, Any], post_proof: dict[str, Any]
+) -> dict[str, Any]:
+    checks = [
+        *[item for item in required_checks.get("checks", []) if isinstance(item, dict)],
+        *[item for item in post_proof.get("checks", []) if isinstance(item, dict)],
+    ]
+    return {
+        "schemaVersion": "1.0", "taskId": task_id,
+        "verdict": "PASS" if required_checks.get("verdict") == "PASS" and post_proof.get("verdict") == "PASS" else "FAIL",
+        "checks": checks,
+    }
+
+
+def _surface_check(scenario: SurfaceScenario) -> CheckSpec:
+    return CheckSpec(
+        command=list(scenario.command), cwd=scenario.cwd,
+        timeout_seconds=scenario.timeout_seconds, name=f"surface-{scenario.scenario_id}",
+    )

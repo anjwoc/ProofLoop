@@ -71,10 +71,18 @@ def session_event(kind: str, value: dict[str, Any], *, text: str | None = None) 
 
 
 def session_started_event(session_id: str, value: dict[str, Any]) -> NormalizedHostEvent:
+    # Provider init records can contain an entire local tool/plugin inventory.
+    # The user needs a session identity, resolved model, and permission mode;
+    # retaining the rest widens the observable surface without helping proof.
+    update = {
+        key: value[key]
+        for key in ("type", "subtype", "cwd", "session_id", "sessionId", "thread_id", "threadId", "model", "permissionMode")
+        if key in value
+    }
     return NormalizedHostEvent(
         "session.started",
         "Host session started.",
-        {"sessionId": session_id, "update": value},
+        {"sessionId": session_id, "update": update},
     )
 
 
