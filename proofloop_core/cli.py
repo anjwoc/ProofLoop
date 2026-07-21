@@ -142,12 +142,18 @@ def main(argv: list[str] | None = None) -> int:
     p_relay.add_argument("--tab", default="summary")
 
     p_usage = sub.add_parser("usage")
-    usage_source = p_usage.add_mutually_exclusive_group(required=True)
+    usage_source = p_usage.add_mutually_exclusive_group(required=False)
     usage_source.add_argument("--run")
     usage_source.add_argument("--run-dir")
     p_usage.add_argument("--repo", default=".")
     p_usage.add_argument("--reconcile", action="store_true")
     p_usage.add_argument("--tokscale-binary")
+    p_usage.add_argument("--web", action="store_true")
+
+    p_viewer = sub.add_parser("usage-viewer")
+    p_viewer.add_argument("--repo", default=".")
+    p_viewer.add_argument("--port", type=int, default=8400)
+    p_viewer.add_argument("--no-browser", action="store_true")
 
     p_benchmark = sub.add_parser("benchmark")
     p_benchmark.add_argument("--suite")
@@ -364,7 +370,18 @@ def main(argv: list[str] | None = None) -> int:
         write_json(output, result)
         _print({"status": result["status"], "report": str(output), "qualificationHash": result["qualificationHash"]})
         return 0 if result["status"] == "READY_FOR_BEHAVIOR_EVAL" else 2
+    if args.command == "usage-viewer" or (args.command == "usage" and getattr(args, "web", False)):
+        from .usage_viewer import start_usage_viewer
+
+        return start_usage_viewer(
+            repo_root=args.repo,
+            port=getattr(args, "port", 8400),
+            open_browser=not getattr(args, "no_browser", False),
+            block=True,
+        )
     if args.command == "usage":
+        if not args.run and not args.run_dir:
+            parser.error("usage command requires --run, --run-dir, or --web")
         selected = resolve_run_dir(repo=args.repo, run=args.run, run_dir=args.run_dir)
         reconciliation = None
         if args.reconcile:

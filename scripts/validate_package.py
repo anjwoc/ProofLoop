@@ -62,7 +62,7 @@ runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runt
 # The observable-run contract adds one verifier module, one direct operator
 # command, relay polling, and the TUI dashboard engine. Keep the cap explicit so future shipping surface still needs a
 # conscious budget change rather than silently growing.
-runtime_file_budget = 164
+runtime_file_budget = 165
 if len(runtime_files) > runtime_file_budget:
     errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
 
