@@ -45,43 +45,6 @@ class GoalContract:
         return value
 
 
-class GoalFSM:
-    def __init__(
-        self,
-        run_dir: str | Path,
-        *,
-        emit: Callable[..., Any] | None = None,
-        initial: str = "INIT",
-    ) -> None:
-        if initial not in GOAL_TRANSITIONS:
-            raise ValueError(f"unknown goal state: {initial}")
-        self.run_dir = Path(run_dir)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.state = initial
-        self.emit = emit
-        self._write_state({"state": initial, "previous": None, "reason": "goal initialized"})
-
-    def transition(self, target: str, *, reason: str, **data: Any) -> dict[str, Any]:
-        if target not in GOAL_TRANSITIONS.get(self.state, set()):
-            raise ValueError(f"illegal goal transition: {self.state} -> {target}")
-        previous = self.state
-        self.state = target
-        item = {"previous": previous, "state": target, "reason": reason, **data}
-        append_jsonl(self.run_dir / "goal-transitions.jsonl", item)
-        self._write_state(item)
-        if self.emit is not None:
-            self.emit(
-                "goal.state_changed",
-                phase=target,
-                message=f"Goal state changed: {previous} -> {target}.",
-                data=item,
-            )
-        return item
-
-    def _write_state(self, item: dict[str, Any]) -> None:
-        write_json(self.run_dir / "goal-state.json", item)
-
-
 def build_goal_contract(request: str, tasks: list[Any], *, max_cycles: int = 8, max_replans: int = 2) -> GoalContract:
     criteria: list[GoalCriterion] = [
         GoalCriterion("SC-REQUEST", request.strip(), "DEEP_REVIEW"),

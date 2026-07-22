@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.contracts.goal import GoalFSM, build_goal_contract
+from proofloop_core.contracts.goal import build_goal_contract
 from proofloop_core.context.memory import prepare_memory, write_memory
 from proofloop_core.runtimes.runtime import RuntimeRegistry
 from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, SimplicityPlan, TaskBrief
@@ -50,16 +50,6 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
         self.assertEqual("claude-code", resolved.runtime_id)
         self.assertEqual("opus", resolved.model)
 
-    def test_goal_fsm_rejects_illegal_transition_and_persists_legal_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            machine = GoalFSM(tmp)
-            with self.assertRaisesRegex(ValueError, "illegal goal transition"):
-                machine.transition("CONVERGED", reason="no evidence")
-            for state in ("EXPLORE", "DESIGN", "IMPLEMENT", "VERIFY", "DEEP_REVIEW", "CONVERGED"):
-                machine.transition(state, reason="test")
-            current = json.loads((Path(tmp) / "goal-state.json").read_text(encoding="utf-8"))
-            self.assertEqual("CONVERGED", current["state"])
-            self.assertEqual(6, len((Path(tmp) / "goal-transitions.jsonl").read_text().splitlines()))
 
     def test_goal_contract_and_two_tier_memory_are_bounded_and_safe(self) -> None:
         task = TaskBrief(

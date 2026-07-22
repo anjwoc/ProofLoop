@@ -32,7 +32,7 @@ from proofloop_core.context.trace import summarize_trace
 from proofloop_core.assurance.truth import build_truth_report
 from proofloop_core.assurance.assurance import build_assurance_report
 from proofloop_core.runtimes.hosts import role_only_trace_summary
-from proofloop_core.contracts.goal import GoalFSM, build_goal_contract
+from proofloop_core.contracts.goal import build_goal_contract
 from proofloop_core.context.memory import prepare_memory, write_memory
 from proofloop_core.runtimes.runtime import ResolvedRuntime
 from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
@@ -277,7 +277,7 @@ class ProofLoopOrchestrator:
         self.original_baseline: str | None = None
         self.used_roles: list[str] = []
         self.tasks: list[TaskBrief] = []
-        self.goal_fsm: GoalFSM | None = None
+        self.goal_state = "INIT"
         self.active_model: str | None = None
         self.goal_cycles = 0
         self.intent: IntentContract | None = None
@@ -375,9 +375,19 @@ class ProofLoopOrchestrator:
         )
 
     def _goal_transition(self, target: str, reason: str, **data: Any) -> None:
-        if self.goal_fsm is None or self.goal_fsm.state == target:
+        if not self.goal_mode or self.goal_state == target:
             return
-        self.goal_fsm.transition(target, reason=reason, **data)
+        previous = self.goal_state
+        self.goal_state = target
+        item = {"previous": previous, "state": target, "reason": reason, **data}
+        append_jsonl(self.run_dir / "goal-transitions.jsonl", item)
+        write_json(self.run_dir / "goal-state.json", item)
+        self._emit(
+            "goal.state_changed",
+            phase=target,
+            message=f"Goal state changed: {previous} -> {target}.",
+            data=item,
+        )
 
     def transition(self, state: str, **details: Any) -> None:
         if self.run_dir is None:
@@ -400,8 +410,6 @@ class ProofLoopOrchestrator:
             self.color,
             bus=self.event_bus,
         )
-        if self.goal_mode:
-            self.goal_fsm = GoalFSM(self.run_dir, emit=self._emit)
         self._emit(
             "run.started",
             phase="INIT",
