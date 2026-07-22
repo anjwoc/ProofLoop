@@ -6,9 +6,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from proofloop_core.grounding import CommandCatalog
-from proofloop_core.task_brief import ChangeBudget, CheckSpec, SimplicityPlan, TaskBrief
-from proofloop_core.verification_plan import (
+from proofloop_core.context.grounding import CommandCatalog
+from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, SimplicityPlan, TaskBrief
+from proofloop_core.contracts.verification_plan import (
     authoritative_passed_criteria,
     compile_verification_plan,
     normalize_command,

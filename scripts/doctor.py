@@ -8,8 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from proofloop_core.hosts import probe, runtime_home  # noqa: E402
-from proofloop_core.tokscale import TokScaleAdapter  # noqa: E402
+from proofloop_core.runtimes.hosts import probe, runtime_home  # noqa: E402
+from proofloop_core.analysis.tokscale import TokScaleAdapter  # noqa: E402
+from proofloop_core.context.io import read_json
 
 
 def exists(path: Path) -> dict[str, object]:
@@ -21,7 +22,7 @@ def claude_entry_skill(home: Path) -> Path:
     registry = home / ".claude" / "plugins" / "installed_plugins.json"
     if registry.exists():
         try:
-            installs = json.loads(registry.read_text(encoding="utf-8"))["plugins"]["proofloop@proofloop-local"]
+            installs = read_json(registry)["plugins"]["proofloop@proofloop-local"]
             for install in reversed(installs):
                 candidate = Path(install["installPath"]) / "skills" / "proofloop" / "SKILL.md"
                 if candidate.exists():

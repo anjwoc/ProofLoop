@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.diff_guard import inspect_diff
-from proofloop_core.task_brief import load_task_brief
+from proofloop_core.assurance.diff_guard import inspect_diff
+from proofloop_core.contracts.task_brief import load_task_brief
 
 
 def git(root: Path, *args: str) -> None:

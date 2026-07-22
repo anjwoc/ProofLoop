@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from proofloop_core.events import (
+from proofloop_core.context.events import (
     V2_EVENT_TYPES,
     EventBus,
     EventEmitter,

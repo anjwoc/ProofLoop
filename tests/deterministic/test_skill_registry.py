@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.skill_registry import ResolutionContext, SkillRegistry
+from proofloop_core.engine.skill_registry import ResolutionContext, SkillRegistry
 
 
 def write_skill(

@@ -8,8 +8,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.cli import main
-from proofloop_core.swe_skills_bench import build_swe_suite, inspect_swe_suite
+from proofloop_core.ui.cli import main
+from proofloop_core.analysis.swe_skills_bench import build_swe_suite, inspect_swe_suite
 
 
 class SweSkillsBenchTest(unittest.TestCase):

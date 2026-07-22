@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import unittest
 
-from proofloop_core.intent import compile_intent
+from proofloop_core.engine.intent import compile_intent
 
 
 class IntentContractTest(unittest.TestCase):

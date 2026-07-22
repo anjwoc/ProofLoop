@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.goal import GoalFSM, build_goal_contract
-from proofloop_core.memory import prepare_memory, write_memory
-from proofloop_core.runtime import RuntimeRegistry
-from proofloop_core.task_brief import ChangeBudget, CheckSpec, SimplicityPlan, TaskBrief
+from proofloop_core.contracts.goal import GoalFSM, build_goal_contract
+from proofloop_core.context.memory import prepare_memory, write_memory
+from proofloop_core.runtimes.runtime import RuntimeRegistry
+from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, SimplicityPlan, TaskBrief
 
 
 class RuntimeGoalMemoryTest(unittest.TestCase):
@@ -29,7 +29,7 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
         self.assertEqual("claude-code", explorer.runtime_id)
         self.assertEqual("haiku", explorer.model)
         self.assertEqual("agy", recovery.runtime_id)
-        self.assertEqual("Gemini 3.1 Pro (High)", recovery.model)
+        self.assertEqual("gemini-3.1-pro-high", recovery.model)
         self.assertEqual("legacy-cli", recovery.transport)
 
     def test_codex_account_default_override_is_explicit_in_the_resolved_trace(self) -> None:

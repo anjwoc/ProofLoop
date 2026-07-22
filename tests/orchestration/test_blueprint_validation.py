@@ -1,7 +1,7 @@
 import unittest
 
-from proofloop_core.blueprint import validate_blueprint, BlueprintValidationError
-from proofloop_core.task_brief import TaskBrief, ChangeBudget, SimplicityPlan
+from proofloop_core.contracts.blueprint import validate_blueprint, BlueprintValidationError
+from proofloop_core.contracts.task_brief import TaskBrief, ChangeBudget, SimplicityPlan
 
 class BlueprintValidationTest(unittest.TestCase):
     def test_blueprint_validation_blocks_execution(self):

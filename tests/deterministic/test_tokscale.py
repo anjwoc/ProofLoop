@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.tokscale import TokScaleAdapter
-from proofloop_core.usage import TokenLedger, UsageObservation
+from proofloop_core.analysis.tokscale import TokScaleAdapter
+from proofloop_core.analysis.usage import TokenLedger, UsageObservation
 
 
 class TokScaleTest(unittest.TestCase):

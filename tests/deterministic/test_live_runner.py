@@ -69,7 +69,7 @@ class LiveRunnerContractTest(unittest.TestCase):
             fake.write_text("#!/bin/sh\necho '{\"type\":\"result\"}'\nexit 0\n", encoding="utf-8")
             fake.chmod(0o755)
             completed = subprocess.run(
-                ["python3", "scripts/run_claude_live.py", "--claude-bin", str(fake), "--max-budget-usd", "0.01"],
+                ["python3", "scripts/run_host_live.py", "--host", "claude-code", "--binary", str(fake), "--no-save-report"],
                 cwd=ROOT, capture_output=True, text=True, check=False,
             )
             self.assertNotEqual(0, completed.returncode)

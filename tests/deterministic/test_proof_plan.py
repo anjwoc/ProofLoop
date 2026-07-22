@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.checks import run_post_implementation_proof, run_proof_stage
-from proofloop_core.task_brief import ChangeBudget, CheckSpec, ProofPlan, SimplicityPlan, SurfaceScenario, TaskBrief
+from proofloop_core.assurance.checks import run_post_implementation_proof, run_proof_stage
+from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, ProofPlan, SimplicityPlan, SurfaceScenario, TaskBrief
 
 
 def _task(*, red_command: list[str], automated_command: list[str]) -> TaskBrief:

@@ -6,7 +6,7 @@ import tempfile
 import json
 from pathlib import Path
 from tests.orchestration.test_orchestrator import make_repo, ScriptedAdapter, load_events
-from proofloop_core.orchestrator import orchestrate
+from proofloop_core.engine.orchestrator import orchestrate
 
 def run():
     with tempfile.TemporaryDirectory() as tmp:

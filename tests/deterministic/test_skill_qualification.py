@@ -7,12 +7,12 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from proofloop_core.skill_qualification import (
+from proofloop_core.engine.skill_qualification import (
     build_behavior_trial_schedule,
     qualify_domain_packs,
     validate_behavior_fixture,
 )
-from proofloop_core.cli import main
+from proofloop_core.ui.cli import main
 
 
 ROOT = Path(__file__).resolve().parents[2]

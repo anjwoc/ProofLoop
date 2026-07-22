@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from proofloop_core.redact import redact_secrets
+from proofloop_core.context.redact import redact_secrets
 
 
 class RedactTest(unittest.TestCase):

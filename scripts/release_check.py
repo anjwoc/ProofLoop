@@ -5,10 +5,12 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from proofloop_core.context.io import read_json
 
 
 def run(command: list[str]) -> dict[str, object]:
@@ -21,8 +23,8 @@ def live_status(name: str, *, expected_host: str, expected_scenario: str) -> dic
     if not path.exists():
         return {"name": name, "status": "MISSING", "path": str(path)}
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        report = read_json(path)
+    except ValueError:
         return {"name": name, "status": "INVALID_ARTIFACT", "path": str(path), "reason": "INVALID_JSON"}
     required = {
         "source": "AUTHENTICATED_HOST_RUN",
@@ -36,8 +38,8 @@ def live_status(name: str, *, expected_host: str, expected_scenario: str) -> dic
         mismatches.append("orchestratorTruthReport")
     else:
         try:
-            original_report = json.loads(original.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            original_report = read_json(original)
+        except ValueError:
             mismatches.append("orchestratorTruthReport")
         else:
             if original_report.get("verdict") != "PROVEN":
@@ -47,8 +49,8 @@ def live_status(name: str, *, expected_host: str, expected_scenario: str) -> dic
     expected_output = path.parent / "expected-output-report.json"
     if expected_output.is_file():
         try:
-            experience = json.loads(expected_output.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            experience = read_json(expected_output)
+        except ValueError:
             mismatches.append("expectedOutputReport")
         else:
             if experience.get("status") != "PASS" or experience.get("requireTerminal") is not True:

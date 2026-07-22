@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from proofloop_core.expected_output import write_expected_output_report
+from proofloop_core.contracts.expected_output import write_expected_output_report
 
 
 def main() -> int:

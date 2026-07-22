@@ -60,12 +60,21 @@ $HOME/.proofloop/bin/proofloop-core relay --relay-dir "$RELAY_DIR" --wait-second
    line exactly once. Do not expose provider private reasoning or raw provider
    transcripts, and do not invent progress. If the user requests the TUI screen or debug view (`TUI`), pass `--tui` to relay (`$HOME/.proofloop/bin/proofloop-core relay --relay-dir "$RELAY_DIR" --tui`) or inspect a completed/running session directly via `$HOME/.proofloop/bin/proofloop-core tui --run latest`.
 
-7. When the relay finishes, read the run ID from the `ProofLoop run` line in
-   `output.log`, then read
-   `$repo_root/.proofloop/runs/<run-id>/truth-report.json` and
-   `expected-output-report.json`. Present both statuses exactly, including a
-   non-PASS expected-output report. Never upgrade an incomplete evidence
-   contract to a successful user result.
+7. When the relay finishes, extract the run ID from the first `ProofLoop run` line in
+   `output.log`. Then run the full run report command and print its output verbatim to the user:
+
+```bash
+$HOME/.proofloop/bin/proofloop-core report --run-dir "$repo_root/.proofloop/runs/<run-id>"
+```
+
+   The report includes: verdict, task type (strategy), host, duration, per-model token usage,
+   model routing by role (requested vs. observed), invocation timeline with cost per step,
+   and total token/cost summary.
+
+   After printing the report, also read `expected-output-report.json` from the run dir if it
+   exists and present its status. Never upgrade an incomplete evidence contract to a successful
+   user result.
+
 
 For a benchmark invocation, preserve the user's suite, hosts, model, repetition, and policy options and run `proofloop-core benchmark` directly. Never substitute an ordinary coding run for a requested comparison.
 

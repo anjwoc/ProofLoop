@@ -1,1 +1,10 @@
-{"schemaVersion":"1.0","slices":[{"id":"frontend-common","path":"references/common.md","always":true,"estimatedTokens":500},{"id":"react-18","path":"references/react-18.md","adapter":"react-18","estimatedTokens":260},{"id":"next-14","path":"references/next-14.md","adapter":"next-14","estimatedTokens":280},{"id":"vue-3","path":"references/vue-3.md","adapter":"vue-3","estimatedTokens":240}]}
+{
+  "schemaVersion": "1.0",
+  "slices": [
+    {"id": "frontend-common", "path": "references/common.md", "always": true, "estimatedTokens": 500},
+    {"id": "frontend-testing", "path": "references/testing.md", "always": true, "estimatedTokens": 700},
+    {"id": "react", "path": "references/react.md", "adapter": "react", "estimatedTokens": 800},
+    {"id": "next", "path": "references/next.md", "adapter": "next", "estimatedTokens": 800},
+    {"id": "vue", "path": "references/vue.md", "adapter": "vue", "estimatedTokens": 700}
+  ]
+}

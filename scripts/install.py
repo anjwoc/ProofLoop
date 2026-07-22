@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKSCALE_VERSION = "4.5.3"
 
 sys.path.insert(0, str(ROOT))
-from proofloop_core.skill_registry import SkillRegistry
+from proofloop_core.engine.skill_registry import SkillRegistry
 
 
 def builtin_skill_registry(root: Path) -> SkillRegistry:
@@ -221,7 +221,7 @@ def install_codex(output: Path, scope: str, target: Path, dry_run: bool) -> dict
     }
 
 
-def install_agy(output: Path, scope: str, target: Path, dry_run: bool) -> dict[str, object]:
+def install_agy(output: Path, scope: str, target: Path, dry_run: bool, host_label: str = "antigravity") -> dict[str, object]:
     home = Path.home()
     destinations: list[tuple[Path, Path]] = []
     if scope == "user":
@@ -262,7 +262,7 @@ def install_agy(output: Path, scope: str, target: Path, dry_run: bool) -> dict[s
         remove_path(workflow_target)
         shutil.copy2(output / "workflows" / "proofloop.md", workflow_target)
     return {
-        "host": "agy",
+        "host": host_label,
         "mode": "EXTERNAL_MODEL_ROUTING",
         "skills": installed_skills,
         "workflow": str(workflow_target),
@@ -303,7 +303,7 @@ def install_claude(output: Path, scope: str, dry_run: bool) -> dict[str, object]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and install ProofLoop Core adapters")
-    parser.add_argument("--host", choices=["claude-code", "codex", "agy", "all"], default="all")
+    parser.add_argument("--host", choices=["claude-code", "codex", "agy", "antigravity", "all"], default="all")
     parser.add_argument("--scope", choices=["user", "project", "local"], default="user")
     parser.add_argument("--target", default=".")
     parser.add_argument("--dry-run", action="store_true")
@@ -318,18 +318,19 @@ def main() -> int:
         if args.without_tokscale or args.build_only
         else install_tokscale(home, args.dry_run)
     )
-    hosts: Iterable[str] = ("claude-code", "codex", "agy") if args.host == "all" else (args.host,)
+    hosts: Iterable[str] = ("claude-code", "codex", "antigravity") if args.host == "all" else (args.host,)
     results: list[dict[str, object]] = []
     for host in hosts:
-        name = "claude" if host == "claude-code" else host
-        output = ROOT / "dist" / name
-        run([sys.executable, str(ROOT / "scripts" / "build_host_adapter.py"), "--host", host, "--output", str(output)])
+        adapter_host = "agy" if host in ("agy", "antigravity") else host
+        dist_name = "claude" if host == "claude-code" else adapter_host
+        output = ROOT / "dist" / dist_name
+        run([sys.executable, str(ROOT / "scripts" / "build_host_adapter.py"), "--host", adapter_host, "--output", str(output)])
         if args.build_only:
             results.append({"host": host, "built": str(output)})
         elif host == "codex":
             results.append(install_codex(output, args.scope, target, args.dry_run))
-        elif host == "agy":
-            results.append(install_agy(output, args.scope, target, args.dry_run))
+        elif host in ("agy", "antigravity"):
+            results.append(install_agy(output, args.scope, target, args.dry_run, host_label=host))
         else:
             results.append(install_claude(output, args.scope, args.dry_run))
     payload = {"runtime": runtime, "tokscale": tokscale, "adapters": results}

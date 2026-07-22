@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.git_snapshot import snapshot_worktree
+from proofloop_core.context.git_snapshot import snapshot_worktree
 
 
 def git(root: Path, *args: str) -> str:

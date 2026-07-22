@@ -4,7 +4,7 @@ import dataclasses
 import hashlib
 import unittest
 
-from proofloop_core.request_envelope import create
+from proofloop_core.contracts.request_envelope import create
 
 
 class RequestEnvelopeTest(unittest.TestCase):

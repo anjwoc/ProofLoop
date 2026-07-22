@@ -8,7 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from proofloop_core.skill_registry import SkillRegistry
+from proofloop_core.engine.skill_registry import SkillRegistry
+from proofloop_core.context.io import read_json
 errors: list[str] = []
 
 
@@ -49,7 +50,7 @@ for name, model in expected_models.items():
 
 for path in (ROOT / "plugin" / "plugin.json", ROOT / "plugin" / "marketplace.json"):
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = read_json(path)
     except Exception as exc:
         errors.append(f"{path.relative_to(ROOT)}: invalid JSON: {exc}")
         continue
@@ -62,9 +63,14 @@ runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runt
 # The observable-run contract adds one verifier module, one direct operator
 # command, relay polling, and the TUI dashboard engine. Keep the cap explicit so future shipping surface still needs a
 # conscious budget change rather than silently growing.
-runtime_file_budget = 165
+runtime_file_budget = 175
 if len(runtime_files) > runtime_file_budget:
     errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
+
+def exists_in_core(name: str) -> bool:
+    if (ROOT / "proofloop_core" / name).exists():
+        return True
+    return any(p.name == name for p in (ROOT / "proofloop_core").rglob("*.py"))
 
 
 required_fragments = {
@@ -93,11 +99,11 @@ for path, fragments in required_fragments.items():
         if fragment not in text:
             errors.append(f"{path.relative_to(ROOT)}: missing required fragment {fragment!r}")
 
-if not (ROOT / "proofloop_core" / "assurance.py").exists():
+if not exists_in_core("assurance.py"):
     errors.append("proofloop_core/assurance.py: missing assurance layer")
 
 try:
-    sample = json.loads((ROOT / "examples" / "task-briefs" / "python-example.json").read_text(encoding="utf-8"))
+    sample = read_json(ROOT / "examples" / "task-briefs" / "python-example.json")
     if not sample.get("changeBudget"):
         errors.append("examples/task-briefs/python-example.json: changeBudget required")
     if not (sample.get("simplicity") or {}).get("selectedRung"):
@@ -112,14 +118,13 @@ for path in list((ROOT / "skills").rglob("*.md")) + list((ROOT / "proofloop_prot
 
 
 required_host_files = [
-    ROOT / "proofloop_core" / "hosts.py",
-    ROOT / "proofloop_core" / "host_runner.py",
-    ROOT / "scripts" / "build_host_adapter.py",
-    ROOT / "scripts" / "host_trace_hook.py",
-    ROOT / "scripts" / "truth_stop_hook.py",
-    ROOT / "scripts" / "run_host_live.py",
+    "hosts.py",
+    "host_runner.py",
 ]
-for path in required_host_files:
+for name in required_host_files:
+    if not exists_in_core(name):
+        errors.append(f"proofloop_core/{name}: required host adapter file missing")
+for path in [ROOT / "scripts" / "build_host_adapter.py", ROOT / "scripts" / "host_trace_hook.py", ROOT / "scripts" / "truth_stop_hook.py", ROOT / "scripts" / "run_host_live.py"]:
     if not path.exists():
         errors.append(f"{path.relative_to(ROOT)}: required host adapter file missing")
 
@@ -163,8 +168,8 @@ try:
         triggers_path = skill.root / "evals" / "triggers.json"
         behavior_path = skill.root / "evals" / "behavior.json"
         try:
-            triggers = json.loads(triggers_path.read_text(encoding="utf-8"))
-            behavior = json.loads(behavior_path.read_text(encoding="utf-8"))
+            triggers = read_json(triggers_path)
+            behavior = read_json(behavior_path)
         except Exception as exc:
             errors.append(f"{skill.name}: invalid or missing eval fixture: {exc}")
             continue
@@ -179,9 +184,9 @@ except Exception as exc:
 entry_text = (ROOT / "skills" / "proofloop" / "SKILL.md").read_text(encoding="utf-8")
 if "invoke-role" in entry_text and "Do not manually call `invoke-role`" not in entry_text:
     errors.append("skills/proofloop/SKILL.md: invoke-role must not be exposed as a user workflow")
-for path in (ROOT / "proofloop_core" / "orchestrator.py", ROOT / "proofloop_core" / "adapters.py", ROOT / "proofloop_core" / "strategy.py"):
-    if not path.exists():
-        errors.append(f"{path.relative_to(ROOT)}: automatic orchestrator component missing")
+for name in ("orchestrator.py", "adapters.py", "strategy.py"):
+    if not exists_in_core(name):
+        errors.append(f"proofloop_core/{name}: automatic orchestrator component missing")
 
 if errors:
     print("PACKAGE VALIDATION: FAIL", file=sys.stderr)

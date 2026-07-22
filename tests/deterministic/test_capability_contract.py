@@ -6,7 +6,7 @@ import json
 import unittest
 from typing import Any
 
-from proofloop_core.capability_contract import (
+from proofloop_core.contracts.capability_contract import (
     CERTIFICATION_NOT_EVALUATED,
     EXPLICIT_FALLBACK_SELECTED,
     FALLBACK_NOT_ELIGIBLE,

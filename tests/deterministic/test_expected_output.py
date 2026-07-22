@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from proofloop_core.expected_output import verify_expected_output, write_expected_output_report
-from proofloop_core.request_envelope import hash_raw_text
+from proofloop_core.contracts.expected_output import verify_expected_output, write_expected_output_report
+from proofloop_core.contracts.request_envelope import hash_raw_text
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -71,7 +71,8 @@ def test_repository_root_mismatch_fails_instead_of_accepting_a_nested_request_di
 def test_terminal_audit_needs_a_visible_truth_verdict(tmp_path: Path) -> None:
     run = _make_observable_run(tmp_path)
     events = (run / "events.jsonl").read_text(encoding="utf-8")
-    (run / "events.jsonl").write_text(events + json.dumps(_event("verdict.issued")) + "\n", encoding="utf-8")
+    terminal_events = [_event("verdict.issued"), _event("truth.completed"), _event("run.completed")]
+    (run / "events.jsonl").write_text(events + "".join(json.dumps(e) + "\n" for e in terminal_events), encoding="utf-8")
     _write_json(run / "truth-report.json", {"verdict": "PROVEN"})
 
     report = write_expected_output_report(run, expected_repository=tmp_path / "repo", require_terminal=True)

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.usage import TokenLedger, UsageObservation, budgeted_token_total, normalize_tokens
+from proofloop_core.analysis.usage import TokenLedger, UsageObservation, budgeted_token_total, normalize_tokens
 
 
 class UsageTest(unittest.TestCase):

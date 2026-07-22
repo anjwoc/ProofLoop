@@ -1,6 +1,6 @@
 {
   "schemaVersion": "3.0",
-  "deterministicDevelopmentChecks": "PASS",
+  "deterministicDevelopmentChecks": "FAIL",
   "automaticOrchestratorKernel": "SIMULATED_MECHANICS_PROVEN",
   "oneCommandHostFixtures": {
     "codexNormal": "SIMULATED_HOST_E2E_PROVEN",
@@ -55,9 +55,9 @@
         "/Users/jaecjeong/.dbgpt/DB-GPT/.venv/bin/python3",
         "scripts/validate_package.py"
       ],
-      "exitCode": 0,
-      "stdout": "PACKAGE VALIDATION: PASS (165 runtime files, 6547 total files)\n",
-      "stderr": ""
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "PACKAGE VALIDATION: FAIL\n- runtime source file budget exceeded: 176 > 175\n- skills/proofloop/SKILL.md: missing required fragment 'truth-report.json'\n"
     },
     {
       "command": [

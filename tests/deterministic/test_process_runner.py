@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from proofloop_core.process_runner import ProcessRunner
+from proofloop_core.runtimes.process_runner import ProcessRunner
 
 
 class ProcessRunnerTest(unittest.TestCase):

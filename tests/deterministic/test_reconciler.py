@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from proofloop_core.reconciler import ReconcilerError, build_conservative_proposal, reconcile_proposal
+from proofloop_core.engine.reconciler import ReconcilerError, build_conservative_proposal, reconcile_proposal
 
 
 class ReconcilerTest(unittest.TestCase):

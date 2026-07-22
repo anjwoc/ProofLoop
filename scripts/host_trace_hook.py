@@ -8,14 +8,15 @@ import time
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-for candidate in (PLUGIN_ROOT, Path.home() / ".proofloop" / "runtime"):
-    if str(candidate) not in sys.path:
-        sys.path.insert(0, str(candidate))
+for candidate in (Path.home() / ".proofloop" / "runtime", PLUGIN_ROOT):
+    if str(candidate) in sys.path:
+        sys.path.remove(str(candidate))
+    sys.path.insert(0, str(candidate))
 
-from proofloop_core.hosts import detect_model, parse_codex_transcript, role_from_agent_type
-from proofloop_core.io import write_json
-from proofloop_core.run_state import load_active_run
-from proofloop_core.trace import summarize_trace
+from proofloop_core.runtimes.hosts import detect_model, parse_codex_transcript, role_from_agent_type
+from proofloop_core.context.io import write_json
+from proofloop_core.contracts.run_state import load_active_run
+from proofloop_core.context.trace import summarize_trace
 
 
 def _append_event(run_dir: Path, event: dict[str, object]) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from proofloop_core.proof_graph import Evidence, ProofGraph, ProofObligation
+from proofloop_core.context.proof_graph import Evidence, ProofGraph, ProofObligation
 
 
 class ProofGraphTest(unittest.TestCase):

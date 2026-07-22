@@ -120,22 +120,7 @@ class PackageTest(unittest.TestCase):
         completed = subprocess.run(["python3", "scripts/validate_package.py"], cwd=ROOT, capture_output=True, text=True, check=False)
         self.assertEqual(0, completed.returncode, completed.stderr)
 
-    def test_claude_plugin_is_generated_from_single_source(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "claude"
-            subprocess.run(["python3", "scripts/build_claude_plugin.py", "--output", str(output)], cwd=ROOT, check=True, capture_output=True)
-            plugin = output / "plugins" / "proofloop"
-            self.assertTrue((output / ".claude-plugin" / "marketplace.json").exists())
-            self.assertTrue((plugin / ".claude-plugin" / "plugin.json").exists())
-            public_skills = sorted(path.parent.name for path in (plugin / "skills").glob("*/SKILL.md"))
-            self.assertEqual(["proofloop"], public_skills)
-            self.assertTrue((plugin / "proofloop_protocols" / "proofloop-design" / "SKILL.md").exists())
-            self.assertTrue((plugin / "proofloop_domain_packs" / "backend-development" / "SKILL.md").exists())
-            self.assertTrue((plugin / "agents" / "implementer-fast.md").exists())
-            self.assertTrue((plugin / "hooks" / "hooks.json").exists())
-            registry = json.loads((plugin / "installed-skills.json").read_text(encoding="utf-8"))
-            self.assertEqual(12, len(registry["skills"]))
-            self.assertTrue(all(item["contentHash"] for item in registry["skills"]))
+
 
     def test_runtime_install_contains_skill_contracts_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

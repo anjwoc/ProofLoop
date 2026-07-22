@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ProofLoop Run Reports</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --orange: #ffa657;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.5; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--text); }
+  header .badge { background: #21262d; border: 1px solid var(--border); border-radius: 20px; padding: 2px 10px; font-size: 12px; color: var(--muted); }
+  #summary-bar { display: flex; gap: 16px; padding: 12px 24px; background: #0d1117; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .stat { display: flex; flex-direction: column; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 20px; font-weight: 700; color: var(--text); }
+  .stat .value.green { color: var(--green); }
+  .stat .value.red { color: var(--red); }
+  .stat .value.yellow { color: var(--yellow); }
+  #main { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 100px); }
+  #run-list { overflow-y: auto; border-right: 1px solid var(--border); }
+  .run-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.1s; }
+  .run-item:hover { background: #1c2128; }
+  .run-item.active { background: #21262d; border-left: 3px solid var(--accent); }
+  .run-item .run-id { font-size: 11px; color: var(--muted); font-family: monospace; }
+  .run-item .run-request { font-size: 13px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .run-item .run-meta { display: flex; gap: 6px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+  #run-detail { overflow-y: auto; padding: 24px; }
+  .verdict-banner { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid; }
+  .verdict-banner.PASS { background: rgba(63,185,80,0.08); border-color: rgba(63,185,80,0.3); }
+  .verdict-banner.BLOCKED { background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.3); }
+  .verdict-banner.UNPROVEN { background: rgba(210,153,34,0.08); border-color: rgba(210,153,34,0.3); }
+  .verdict-banner.PROVEN { background: rgba(63,185,80,0.08); border-color: rgba(63,185,80,0.3); }
+  .verdict-banner.FAILED { background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.3); }
+  .verdict-label { font-size: 22px; font-weight: 800; }
+  .verdict-label.PASS, .verdict-label.PROVEN { color: var(--green); }
+  .verdict-label.BLOCKED, .verdict-label.FAILED { color: var(--red); }
+  .verdict-label.UNPROVEN { color: var(--yellow); }
+  .verdict-msg { font-size: 13px; color: var(--muted); }
+  .section { margin-bottom: 24px; }
+  .section h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .info-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .info-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .info-card .k { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .info-card .v { font-size: 14px; font-weight: 600; word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 12px; border-bottom: 2px solid var(--border); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .pill.PASS { background: rgba(63,185,80,0.15); color: var(--green); }
+  .pill.FAIL, .pill.BLOCKED, .pill.FAILED { background: rgba(248,81,73,0.15); color: var(--red); }
+  .pill.MULTI_MODEL_ROUTING { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .pill.SINGLE_MODEL { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .pill.NO_INVOCATION { background: rgba(139,148,158,0.15); color: var(--muted); }
+  .pill.planned { background: rgba(255,166,87,0.15); color: var(--orange); }
+  .pill.direct { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .model-chip { display: inline-block; background: #21262d; border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px; font-family: monospace; margin: 2px; }
+  .token-bar { height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; display: flex; margin-top: 4px; }
+  .token-bar span { height: 100%; }
+  .t-input { background: #58a6ff; }
+  .t-output { background: #3fb950; }
+  .t-cache-r { background: #d29922; }
+  .t-cache-w { background: #bc8cff; }
+  .t-reasoning { background: #ffa657; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; font-size: 11px; color: var(--muted); }
+  .legend span { display: flex; align-items: center; gap: 4px; }
+  .legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+  .legend .l-i::before { background: #58a6ff; }
+  .legend .l-o::before { background: #3fb950; }
+  .legend .l-cr::before { background: #d29922; }
+  .legend .l-cw::before { background: #bc8cff; }
+  .legend .l-r::before { background: #ffa657; }
+  .timeline { display: flex; flex-direction: column; gap: 8px; }
+  .tl-item { display: flex; gap: 12px; align-items: flex-start; }
+  .tl-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+  .tl-dot.PASS { background: var(--green); }
+  .tl-dot.FAIL, .tl-dot.BLOCKED, .tl-dot.ERROR { background: var(--red); }
+  .tl-dot.default { background: var(--muted); }
+  .tl-body { flex: 1; }
+  .tl-header { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tl-role { font-weight: 600; font-size: 13px; }
+  .tl-sub { font-size: 11px; color: var(--muted); }
+  .blocker-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .blocker { background: rgba(248,81,73,0.12); border: 1px solid rgba(248,81,73,0.25); color: var(--red); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-family: monospace; }
+  #empty { text-align: center; padding: 80px 20px; color: var(--muted); }
+  #empty h2 { font-size: 18px; margin-bottom: 8px; }
+  .loading { text-align: center; padding: 40px; color: var(--muted); }
+  .num { font-family: monospace; }
+  .cost { color: var(--yellow); font-weight: 600; font-family: monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔁 ProofLoop Run Reports</h1>
+  <span class="badge" id="run-count">Loading…</span>
+</header>
+<div id="summary-bar">
+  <div class="stat"><span class="label">Total Runs</span><span class="value" id="s-runs">–</span></div>
+  <div class="stat"><span class="label">Total Cost</span><span class="value yellow" id="s-cost">–</span></div>
+  <div class="stat"><span class="label">Total Tokens</span><span class="value" id="s-tokens">–</span></div>
+  <div class="stat"><span class="label">Multi-Model</span><span class="value" id="s-multi">–</span></div>
+  <div class="stat"><span class="label">Pass Rate</span><span class="value" id="s-pass">–</span></div>
+</div>
+<div id="main">
+  <div id="run-list"><div class="loading">Loading runs…</div></div>
+  <div id="run-detail"><div id="empty"><h2>Select a run</h2><p>Pick a run on the left to see the full report.</p></div></div>
+</div>
+
+<script>
+let allData = null;
+
+function fmt(n) {
+  if (n === null || n === undefined) return '–';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function fmtCost(v) {
+  if (!v && v !== 0) return '–';
+  return '$' + (+v).toFixed(4);
+}
+function fmtTs(ts) {
+  if (!ts) return '–';
+  // ts is like "20260715T170317" or epoch
+  if (/^\d{8}T\d{6}/.test(ts)) {
+    const d = ts.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2}).*/, '$1-$2-$3 $4:$5:$6');
+    return d;
+  }
+  try { return new Date(+ts * 1000).toLocaleString(); } catch { return ts; }
+}
+function verdictColor(v) {
+  const m = {PASS:'green', PROVEN:'green', BLOCKED:'red', FAILED:'red', UNPROVEN:'yellow'};
+  return m[v] || '';
+}
+
+function renderRunList(runs) {
+  const el = document.getElementById('run-list');
+  if (!runs.length) { el.innerHTML = '<div class="loading">No runs found.</div>'; return; }
+  el.innerHTML = runs.map((r, i) => {
+    const v = r.truthReport?.verdict || '–';
+    const vc = verdictColor(v);
+    return `<div class="run-item" data-idx="${i}" onclick="selectRun(${i})">
+      <div class="run-id">${r.runId}</div>
+      <div class="run-request">${esc(r.request || '(no request)')} </div>
+      <div class="run-meta">
+        <span class="pill ${v}">${v}</span>
+        <span class="pill ${r.routingType}">${r.routingType}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderSummary(summary, runs) {
+  document.getElementById('run-count').textContent = runs.length + ' runs';
+  document.getElementById('s-runs').textContent = runs.length;
+  document.getElementById('s-cost').textContent = fmtCost(summary.totalCostUsd);
+  document.getElementById('s-tokens').textContent = fmt(summary.totalTokens?.rawTotal);
+  const multi = runs.filter(r => r.routingType === 'MULTI_MODEL_ROUTING').length;
+  document.getElementById('s-multi').textContent = multi;
+  const passes = runs.filter(r => ['PASS','PROVEN'].includes(r.truthReport?.verdict)).length;
+  document.getElementById('s-pass').textContent = runs.length ? Math.round(passes / runs.length * 100) + '%' : '–';
+}
+
+function selectRun(idx) {
+  document.querySelectorAll('.run-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+  const run = allData.runs[idx];
+  renderDetail(run);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function tokenBar(tokens, total) {
+  if (!total) return '';
+  const pct = k => Math.round((tokens[k] || 0) / total * 100);
+  return `<div class="token-bar">
+    <span class="t-input" style="width:${pct('input')}%" title="Input: ${fmt(tokens.input)}"></span>
+    <span class="t-output" style="width:${pct('output')}%" title="Output: ${fmt(tokens.output)}"></span>
+    <span class="t-cache-r" style="width:${pct('cacheRead')}%" title="Cache Read: ${fmt(tokens.cacheRead)}"></span>
+    <span class="t-cache-w" style="width:${pct('cacheWrite')}%" title="Cache Write: ${fmt(tokens.cacheWrite)}"></span>
+    <span class="t-reasoning" style="width:${pct('reasoning')}%" title="Reasoning: ${fmt(tokens.reasoning)}"></span>
+  </div>`;
+}
+
+function renderDetail(run) {
+  const d = document.getElementById('run-detail');
+  const v = run.truthReport?.verdict || '–';
+  const blockers = run.truthReport?.blockers || [];
+  const unproven = run.truthReport?.unproven || [];
+  const strategy = run.strategy || {};
+  const trace = run.modelTrace || {};
+  const meta = run.runMeta || {};
+  const usage = run.usage || {};
+  const byModel = usage.byModel || [];
+  const byRole = usage.byRole || [];
+  const byInv = usage.byInvocation || [];
+  const invLog = run.invocationsLog || [];
+  const totals = usage.totals || {};
+  const totalRaw = totals.rawTotal || 1;
+
+  // Duration
+  let duration = '–';
+  if (meta.createdAtEpoch && meta.finalizedAtEpoch) {
+    const secs = Math.round(meta.finalizedAtEpoch - meta.createdAtEpoch);
+    duration = secs >= 60 ? Math.floor(secs/60) + 'm ' + (secs%60) + 's' : secs + 's';
+  }
+
+  // Request model evidence
+  const reqByRole = trace.requestedModelsByRole || {};
+  const obsByRole = trace.observedModelsByRole || {};
+  const missing = trace.missingRoles || [];
+
+  let html = `
+  <div class="verdict-banner ${v}">
+    <div>
+      <div class="verdict-label ${v}">${v}</div>
+      <div class="verdict-msg">${esc(run.truthReport?.message || '')}</div>
+    </div>
+  </div>
+
+  <!-- Request -->
+  <div class="section">
+    <h2>Request</h2>
+    <div class="info-card" style="max-width:100%"><div class="v" style="white-space:pre-wrap;font-weight:400;">${esc(run.request || '(none)')}</div></div>
+  </div>
+
+  <!-- Run Info -->
+  <div class="section">
+    <h2>Run Details</h2>
+    <div class="info-grid">
+      <div class="info-card"><div class="k">Run ID</div><div class="v num" style="font-size:11px">${esc(run.runId)}</div></div>
+      <div class="info-card"><div class="k">Status</div><div class="v">${esc(meta.status || meta.finalVerdict || '–')}</div></div>
+      <div class="info-card"><div class="k">Duration</div><div class="v">${duration}</div></div>
+      <div class="info-card"><div class="k">Strategy</div><div class="v">${esc(strategy.strategy || '–')}</div></div>
+      <div class="info-card"><div class="k">Risk</div><div class="v">${esc(strategy.risk || '–')}</div></div>
+      <div class="info-card"><div class="k">Host</div><div class="v">${esc(trace.host || '–')}</div></div>
+      <div class="info-card"><div class="k">Routing Mode</div><div class="v"><span class="pill ${run.routingType}">${run.routingType}</span></div></div>
+      <div class="info-card"><div class="k">Total Cost</div><div class="v cost">${fmtCost(totals.costUsd)}</div></div>
+    </div>
+  </div>
+
+  ${blockers.length || unproven.length ? `
+  <!-- Blockers / Unproven -->
+  <div class="section">
+    <h2>Issues</h2>
+    ${blockers.length ? `<div style="margin-bottom:8px"><div style="font-size:12px;color:var(--muted);margin-bottom:6px">BLOCKERS</div><div class="blocker-list">${blockers.map(b=>`<span class="blocker">${esc(b)}</span>`).join('')}</div></div>` : ''}
+    ${unproven.length ? `<div><div style="font-size:12px;color:var(--muted);margin-bottom:6px">UNPROVEN</div><div class="blocker-list">${unproven.map(b=>`<span class="blocker" style="background:rgba(210,153,34,0.12);border-color:rgba(210,153,34,0.25);color:var(--yellow)">${esc(b)}</span>`).join('')}</div></div>` : ''}
+  </div>` : ''}
+
+  <!-- Models Used -->
+  <div class="section">
+    <h2>Models Used</h2>
+    <div style="margin-bottom:8px">${run.modelsUsed.map(m=>`<span class="model-chip">${esc(m)}</span>`).join('') || '<span style="color:var(--muted)">none</span>'}</div>
+    ${byModel.length ? `
+    <div class="legend">
+      <span class="l-i">Input</span>
+      <span class="l-o">Output</span>
+      <span class="l-cr">Cache Read</span>
+      <span class="l-cw">Cache Write</span>
+      <span class="l-r">Reasoning</span>
+    </div>
+    <div class="table-wrap">
+    <table>
+      <tr><th>Model</th><th>Invocations</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th>Total Tokens</th><th>Cost</th><th>Token Distribution</th></tr>
+      ${byModel.map(m => {
+        const tk = m.tokens || {};
+        return `<tr>
+          <td><span class="model-chip">${esc(m.model)}</span></td>
+          <td class="num">${m.invocations}</td>
+          <td class="num">${fmt(tk.input)}</td>
+          <td class="num">${fmt(tk.output)}</td>
+          <td class="num">${fmt(tk.cacheRead)}</td>
+          <td class="num">${fmt(tk.cacheWrite)}</td>
+          <td class="num">${fmt(m.rawTotal)}</td>
+          <td class="cost">${fmtCost(m.costUsd)}</td>
+          <td style="min-width:120px">${tokenBar(tk, m.rawTotal)}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>` : ''}
+  </div>
+
+  <!-- Routing by Role -->
+  ${Object.keys(reqByRole).length || missing.length ? `
+  <div class="section">
+    <h2>Role → Model Routing</h2>
+    <div class="table-wrap"><table>
+      <tr><th>Role</th><th>Requested</th><th>Observed (actual)</th><th>Status</th></tr>
+      ${[...new Set([...Object.keys(reqByRole), ...Object.keys(obsByRole), ...missing])].map(role => {
+        const req = (reqByRole[role] || []).join(', ') || '–';
+        const obs = (obsByRole[role] || []).join(', ') || '–';
+        const isMissing = missing.includes(role);
+        return `<tr>
+          <td><code>${esc(role)}</code></td>
+          <td class="num">${esc(req)}</td>
+          <td><span class="model-chip">${esc(obs)}</span></td>
+          <td><span class="pill ${isMissing ? 'BLOCKED' : 'PASS'}">${isMissing ? 'MISSING' : 'OK'}</span></td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+  </div>` : ''}
+
+  <!-- Token Usage by Role -->
+  ${byRole.length ? `
+  <div class="section">
+    <h2>Token Usage by Role</h2>
+    <div class="table-wrap"><table>
+      <tr><th>Role</th><th>Invocations</th><th>Total Tokens</th><th>Cost</th><th>Distribution</th></tr>
+      ${byRole.map(r => {
+        const tk = r.tokens || {};
+        return `<tr>
+          <td><code>${esc(r.role)}</code></td>
+          <td class="num">${r.invocations}</td>
+          <td class="num">${fmt(r.rawTotal)}</td>
+          <td class="cost">${fmtCost(r.costUsd)}</td>
+          <td style="min-width:120px">${tokenBar(tk, r.rawTotal)}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>
+  </div>` : ''}
+
+  <!-- Invocation Timeline -->
+  ${invLog.length ? `
+  <div class="section">
+    <h2>Invocation Timeline</h2>
+    <div class="timeline">
+      ${invLog.map(inv => {
+        const verdict = inv.verdict || 'default';
+        const usageLine = byInv.find(b => b.invocationId === inv.invocationId);
+        return `<div class="tl-item">
+          <div class="tl-dot ${verdict}"></div>
+          <div class="tl-body">
+            <div class="tl-header">
+              <span class="tl-role">${esc(inv.role || '–')}</span>
+              <span class="pill ${verdict}">${verdict}</span>
+              <span class="tl-sub">${esc(inv.requestedModel || '')} → <span class="model-chip">${esc(inv.observedModel || '?')}</span></span>
+              ${usageLine ? `<span class="tl-sub">${fmt(usageLine.rawTotal)} tok · ${fmtCost(usageLine.costUsd)}</span>` : ''}
+            </div>
+            <div class="tl-sub" style="margin-top:2px">${esc(inv.invocationId || '')} · ${esc(inv.phase || '')}${inv.attempt !== null && inv.attempt !== undefined ? ' · attempt ' + inv.attempt : ''}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>` : ''}
+
+  <!-- Totals -->
+  <div class="section">
+    <h2>Total Token Usage</h2>
+    <div class="info-grid">
+      <div class="info-card"><div class="k">Input</div><div class="v num">${fmt(totals.input)}</div></div>
+      <div class="info-card"><div class="k">Output</div><div class="v num">${fmt(totals.output)}</div></div>
+      <div class="info-card"><div class="k">Cache Read</div><div class="v num">${fmt(totals.cacheRead)}</div></div>
+      <div class="info-card"><div class="k">Cache Write</div><div class="v num">${fmt(totals.cacheWrite)}</div></div>
+      <div class="info-card"><div class="k">Reasoning</div><div class="v num">${fmt(totals.reasoning)}</div></div>
+      <div class="info-card"><div class="k">Raw Total</div><div class="v num">${fmt(totals.rawTotal)}</div></div>
+      <div class="info-card"><div class="k">Total Cost</div><div class="v cost">${fmtCost(totals.costUsd)}</div></div>
+    </div>
+  </div>
+  `;
+  d.innerHTML = html;
+}
+
+async function load() {
+  try {
+    const resp = await fetch('/api/data');
+    allData = await resp.json();
+    renderSummary(allData.summary, allData.runs);
+    renderRunList(allData.runs);
+    if (allData.runs.length) selectRun(0);
+  } catch(e) {
+    document.getElementById('run-list').innerHTML = `<div class="loading" style="color:var(--red)">Failed to load: ${e.message}</div>`;
+  }
+}
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

@@ -11,8 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from proofloop_core.hosts import agy_workflow, capability, write_codex_agents
-from proofloop_core.skill_registry import SkillRegistry
+from proofloop_core.runtimes.hosts import agy_workflow, capability, write_codex_agents
+from proofloop_core.engine.skill_registry import SkillRegistry
+from proofloop_core.context.io import read_json
 
 
 def remove_tree(path: Path, *, attempts: int = 5) -> None:
@@ -50,6 +51,11 @@ def specialize_entry_skill(skill_root: Path, host: str) -> None:
             "nohup $HOME/.proofloop/bin/proofloop-core run \\",
             "PROOFLOOP_AGY_BYPASS_PERMISSIONS=1 nohup $HOME/.proofloop/bin/proofloop-core run \\",
         )
+    elif host == "antigravity":
+        text = text.replace(
+            "nohup $HOME/.proofloop/bin/proofloop-core run \\",
+            "PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS=1 nohup $HOME/.proofloop/bin/proofloop-core run \\",
+        )
     path.write_text(text, encoding="utf-8")
 
 
@@ -70,8 +76,8 @@ def build_claude(root: Path, output: Path) -> None:
     plugin_root = output / "plugins" / "proofloop"
     (output / ".claude-plugin").mkdir(parents=True, exist_ok=True)
     (plugin_root / ".claude-plugin").mkdir(parents=True, exist_ok=True)
-    marketplace = json.loads((root / "plugin" / "marketplace.json").read_text(encoding="utf-8"))
-    plugin = json.loads((root / "plugin" / "plugin.json").read_text(encoding="utf-8"))
+    marketplace = read_json(root / "plugin" / "marketplace.json")
+    plugin = read_json(root / "plugin" / "plugin.json")
     (output / ".claude-plugin" / "marketplace.json").write_text(json.dumps(marketplace, indent=2) + "\n", encoding="utf-8")
     (plugin_root / ".claude-plugin" / "plugin.json").write_text(json.dumps(plugin, indent=2) + "\n", encoding="utf-8")
     for name in ("skills", "proofloop_protocols", "proofloop_domain_packs", "agents", "scripts", "proofloop_core", "references", "hooks"):
@@ -158,22 +164,23 @@ def build_codex(root: Path, output: Path) -> None:
     write_codex_agents(output / "agents")
 
 
-def build_agy(root: Path, output: Path) -> None:
+def build_agy(root: Path, output: Path, host: str = "agy") -> None:
     copy_tree(root / "skills", output / "skills")
     copy_tree(root / "proofloop_protocols", output / "proofloop_protocols")
     copy_tree(root / "proofloop_domain_packs", output / "proofloop_domain_packs")
-    specialize_entry_skill(output / "skills", "agy")
+    specialize_entry_skill(output / "skills", host)
     write_skill_manifest(output / "proofloop_protocols", output / "proofloop_domain_packs", output / "installed-skills.json")
     (output / "workflows").mkdir(parents=True, exist_ok=True)
     (output / "workflows" / "proofloop.md").write_text(agy_workflow(), encoding="utf-8")
+    is_antigravity = host == "antigravity"
     (output / "capability.json").write_text(
         json.dumps(
             {
-                "host": "agy",
-                "mode": "EXTERNAL_MODEL_ROUTING",
-                "crossModelRouting": True,
+                "host": host,
+                "mode": "ROLE_ROUTING_ONLY" if is_antigravity else "EXTERNAL_MODEL_ROUTING",
+                "crossModelRouting": not is_antigravity,
                 "deterministicSidecar": "$HOME/.proofloop/bin/proofloop-core",
-                "roles": capability("agy")["roles"],
+                "roles": capability(host)["roles"],
             },
             indent=2,
         )
@@ -184,7 +191,7 @@ def build_agy(root: Path, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build a ProofLoop host adapter")
-    parser.add_argument("--host", choices=["claude-code", "codex", "agy"], required=True)
+    parser.add_argument("--host", choices=["claude-code", "codex", "agy", "antigravity"], required=True)
     parser.add_argument("--root", default=str(ROOT))
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -199,7 +206,7 @@ def main() -> int:
     elif args.host == "codex":
         build_codex(root, output)
     else:
-        build_agy(root, output)
+        build_agy(root, output, host=args.host)
     print(output)
     return 0
 

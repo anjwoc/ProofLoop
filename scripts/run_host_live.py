@@ -15,7 +15,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from proofloop_core.expected_output import write_expected_output_report
+from proofloop_core.contracts.expected_output import write_expected_output_report
+from proofloop_core.context.io import read_json
 
 
 AGY_MODEL_LABELS = {
@@ -180,7 +181,11 @@ def _host_start_failure(host: str, transcript_dir: Path, exit_code: int) -> dict
         if path.is_file()
     )
     lowered = text.lower()
-    if "not supported" in lowered or "requires a newer version" in lowered or "model_not_found" in lowered:
+    verdict = "BLOCKED"
+    if exit_code == 0:
+        verdict = "FAILED"
+        reason = "NO_PROOFLOOP_RUN"
+    elif "not supported" in lowered or "requires a newer version" in lowered or "model_not_found" in lowered:
         reason = "HOST_MODEL_UNAVAILABLE"
     elif "rate limit" in lowered or "hit your limit" in lowered or "status\":429" in lowered:
         reason = "HOST_RATE_LIMITED"
@@ -190,7 +195,7 @@ def _host_start_failure(host: str, transcript_dir: Path, exit_code: int) -> dict
         reason = "HOST_START_FAILED"
     message = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), None)
     return {
-        "verdict": "BLOCKED",
+        "verdict": verdict,
         "reason": reason,
         "hostMessage": message,
         "hostExitCode": exit_code,
@@ -209,10 +214,10 @@ def result_from_workspace(host: str, scenario: str, workspace: Path, exit_code: 
     truth = run_dir / "truth-report.json"
     if not truth.exists():
         return {"verdict": "FAILED", "reason": "TRUTH_REPORT_MISSING", "hostExitCode": exit_code, "runDir": str(run_dir), "workspace": str(workspace), "scenario": scenario}
-    report = json.loads(truth.read_text(encoding="utf-8"))
+    report = read_json(truth)
     if not isinstance(report, dict):
         return {"verdict": "FAILED", "reason": "TRUTH_REPORT_INVALID", "hostExitCode": exit_code, "runDir": str(run_dir), "workspace": str(workspace), "scenario": scenario}
-    run_metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    run_metadata = read_json(run_dir / "run.json")
     actual_host = run_metadata.get("host") if isinstance(run_metadata, dict) else None
     if actual_host != host:
         return {
@@ -309,7 +314,7 @@ def save_acceptance_report(host: str, scenario: str, result: dict[str, object]) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run an authenticated ProofLoop acceptance test on Claude Code, Codex, or AGY")
-    parser.add_argument("--host", choices=["claude-code", "codex", "agy"], required=True)
+    parser.add_argument("--host", choices=["claude-code", "codex", "agy", "antigravity"], required=True)
     parser.add_argument("--scenario", choices=["normal", "recovery"], default="normal")
     parser.add_argument("--binary")
     parser.add_argument("--keep-workspace", action="store_true")
@@ -323,6 +328,8 @@ def main() -> int:
     parser.add_argument("--claude-model", default="opus")
     args = parser.parse_args()
 
+    if args.host == "antigravity":
+        args.host = "agy"
     default_binary = {"claude-code": "claude", "codex": "codex", "agy": "agy"}[args.host]
     binary_value = args.binary or default_binary
     executable = shutil.which(binary_value) if os.path.sep not in binary_value else binary_value

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.domain_runtime import (
+from proofloop_core.engine.domain_runtime import (
     build_repository_fingerprint,
     run_pack_helper,
     select_reference_slices,

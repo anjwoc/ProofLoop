@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.acp_runner import invoke_acp_role, normalize_acp_update
-from proofloop_core.runtime import ResolvedRuntime
+from proofloop_core.runtimes.acp_runner import invoke_acp_role, normalize_acp_update
+from proofloop_core.runtimes.runtime import ResolvedRuntime
 
 
 @unittest.skipUnless(importlib.util.find_spec("acp"), "optional ACP SDK is not installed")

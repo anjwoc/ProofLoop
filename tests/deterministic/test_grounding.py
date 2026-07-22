@@ -1,9 +1,9 @@
 from pathlib import Path
-from proofloop_core.grounding import (
+from proofloop_core.context.grounding import (
     collect_grounding,
     is_grounding_stale,
 )
-from proofloop_core.git_snapshot import _git
+from proofloop_core.context.git_snapshot import _git
 
 def test_grounding_snapshot_creation(tmp_path: Path):
     # Initialize a mock repo

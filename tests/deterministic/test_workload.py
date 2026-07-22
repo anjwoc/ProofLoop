@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.workload import probe_repository_signals
+from proofloop_core.analysis.workload import probe_repository_signals
 
 
 class WorkloadProbeTest(unittest.TestCase):

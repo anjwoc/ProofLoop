@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from proofloop_core.blueprint import BlueprintValidationError, validate_blueprint
-from proofloop_core.task_brief import ChangeBudget, CheckSpec, ProofPlan, SimplicityPlan, TaskBrief
+from proofloop_core.contracts.blueprint import BlueprintValidationError, validate_blueprint
+from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, ProofPlan, SimplicityPlan, TaskBrief
 
 
 def _task(proof_plan: ProofPlan | None) -> TaskBrief:

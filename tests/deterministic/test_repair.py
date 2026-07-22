@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from proofloop_core.repair import decide_next
+from proofloop_core.engine.repair import decide_next
 
 
 class RepairDecisionTest(unittest.TestCase):

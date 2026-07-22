@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.events import EventBus
-from proofloop_core.cli import main
-from proofloop_core.watch import WatchPanels, render_watch_panels, resolve_run_dir, watch_events
+from proofloop_core.context.events import EventBus
+from proofloop_core.ui.cli import main
+from proofloop_core.ui.watch import WatchPanels, render_watch_panels, resolve_run_dir, watch_events
 
 
 def make_event(

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from proofloop_core.checks import run_checks
-from proofloop_core.task_brief import load_task_brief
+from proofloop_core.assurance.checks import run_checks
+from proofloop_core.contracts.task_brief import load_task_brief
 
 
 class RecordingEmitter:

@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from proofloop_core.adapters import RoleInvocation
-from proofloop_core.orchestrator import converge_goal, orchestrate, run_proofloop
+from proofloop_core.runtimes.adapters import RoleInvocation
+from proofloop_core.engine.orchestrator import converge_goal, orchestrate, run_proofloop
 
 
 def git(root: Path, *args: str) -> None:

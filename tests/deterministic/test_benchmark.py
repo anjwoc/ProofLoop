@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.benchmark import (
+from proofloop_core.analysis.benchmark import (
     arm_policy,
     build_builtin_domain_context,
     build_skill_scorecards,
@@ -591,7 +591,7 @@ if __name__ == "__main__":
     unittest.main()
 
     def test_evaluate_promotion_requires_minimum_trials(self) -> None:
-        from proofloop_core.benchmark import evaluate_promotion
+        from proofloop_core.analysis.benchmark import evaluate_promotion
         baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
         candidate = {"trials": 29, "taskPassRate": 0.6, "tokensPerProven": 1000}
         result = evaluate_promotion(baseline, candidate)
@@ -599,7 +599,7 @@ if __name__ == "__main__":
         self.assertIn("insufficient trials", result["reason"])
 
     def test_evaluate_promotion_requires_no_false_proven_increase(self) -> None:
-        from proofloop_core.benchmark import evaluate_promotion
+        from proofloop_core.analysis.benchmark import evaluate_promotion
         baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000, "falseProvenRate": 0.05}
         candidate = {"trials": 30, "taskPassRate": 0.6, "tokensPerProven": 1000, "falseProvenRate": 0.1}
         result = evaluate_promotion(baseline, candidate)
@@ -607,7 +607,7 @@ if __name__ == "__main__":
         self.assertIn("false PROVEN rate increased", result["reason"])
 
     def test_evaluate_promotion_pass_rate_improvement(self) -> None:
-        from proofloop_core.benchmark import evaluate_promotion
+        from proofloop_core.analysis.benchmark import evaluate_promotion
         baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
         candidate = {"trials": 30, "taskPassRate": 0.55, "tokensPerProven": 1000}
         result = evaluate_promotion(baseline, candidate)
@@ -615,7 +615,7 @@ if __name__ == "__main__":
         self.assertIn("pass rate improved", result["reason"])
 
     def test_evaluate_promotion_token_reduction(self) -> None:
-        from proofloop_core.benchmark import evaluate_promotion
+        from proofloop_core.analysis.benchmark import evaluate_promotion
         baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
         candidate = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 800}
         result = evaluate_promotion(baseline, candidate)
@@ -623,7 +623,7 @@ if __name__ == "__main__":
         self.assertIn("tokens decreased", result["reason"])
 
     def test_evaluate_promotion_fails_if_tokens_decrease_but_pass_drops(self) -> None:
-        from proofloop_core.benchmark import evaluate_promotion
+        from proofloop_core.analysis.benchmark import evaluate_promotion
         baseline = {"trials": 30, "taskPassRate": 0.5, "tokensPerProven": 1000}
         candidate = {"trials": 30, "taskPassRate": 0.49, "tokensPerProven": 800}
         result = evaluate_promotion(baseline, candidate)

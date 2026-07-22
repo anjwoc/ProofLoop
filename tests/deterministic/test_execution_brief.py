@@ -5,7 +5,7 @@ import hashlib
 import unittest
 from typing import Any
 
-from proofloop_core.execution_brief import (
+from proofloop_core.contracts.execution_brief import (
     ExecutionBriefValidationError,
     ProvenanceType,
     compose_execution_brief,
@@ -178,7 +178,7 @@ class ExecutionBriefTest(unittest.TestCase):
 
     @staticmethod
     def _rehash(brief: dict[str, Any]) -> str:
-        from proofloop_core.execution_brief import _brief_sha256
+        from proofloop_core.contracts.execution_brief import _brief_sha256
         return _brief_sha256(brief)
 
     def test_grounded_items_require_source_references(self) -> None:

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.repository_context import ensure_codegraph, get_files_by_extension
+from proofloop_core.context.repository_context import ensure_codegraph, get_files_by_extension
 
 MOCK_OPT_IN = "PROOFLOOP_ALLOW_MOCK_CONTEXT"
 

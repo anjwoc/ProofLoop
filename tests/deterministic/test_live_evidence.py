@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from proofloop_core.live_evidence import (
+from proofloop_core.assurance.live_evidence import (
     CORE_EVIDENCE_EVALUATOR_CHANGED,
     CORE_EVIDENCE_MANDATORY_CHECK_MISSING,
     CORE_EVIDENCE_SOURCE_MISMATCH,
@@ -26,9 +26,9 @@ from proofloop_core.live_evidence import (
     validate_core_evidence,
     validate_bundle,
 )
-from proofloop_core.grounding import CommandCatalog
-from proofloop_core.io import write_json
-from proofloop_core.verification_plan import compile_verification_plan
+from proofloop_core.context.grounding import CommandCatalog
+from proofloop_core.context.io import write_json
+from proofloop_core.contracts.verification_plan import compile_verification_plan
 
 
 def _write_file(root: Path, rel: str, content: bytes) -> dict[str, Any]:

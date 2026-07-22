@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.cli import main
-from proofloop_core.events import ProofLoopEvent
-from proofloop_core.tui import ProofLoopTUI, TuiRenderer, render_relay_tui
+from proofloop_core.ui.cli import main
+from proofloop_core.context.events import ProofLoopEvent
+from proofloop_core.ui.tui import ProofLoopTUI, TuiRenderer, render_relay_tui
 
 
 def make_event(

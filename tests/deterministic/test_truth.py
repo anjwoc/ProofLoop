@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.io import write_json
-from proofloop_core.trace import summarize_trace
-from proofloop_core.truth import build_truth_report
+from proofloop_core.context.io import write_json
+from proofloop_core.context.trace import summarize_trace
+from proofloop_core.assurance.truth import build_truth_report
 
 
 def write_core_evidence(root: Path) -> None:

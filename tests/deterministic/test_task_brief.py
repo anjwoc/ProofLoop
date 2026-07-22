@@ -3,7 +3,7 @@ import unittest
 import json
 from pathlib import Path
 
-from proofloop_core.task_brief import load_task_brief
+from proofloop_core.contracts.task_brief import load_task_brief
 
 class TaskBriefTest(unittest.TestCase):
     def setUp(self):

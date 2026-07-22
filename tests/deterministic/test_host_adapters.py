@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.adapters import ExternalCLIAdapter, RoleInvocation
-from proofloop_core.events import EventEmitter
-from proofloop_core.host_runner import invoke_role
-from proofloop_core.hosts import capability, role_only_trace_summary
-from proofloop_core.runtime import ACCOUNT_DEFAULT_MODEL
-from proofloop_core.run_state import start_run
+from proofloop_core.runtimes.adapters import ExternalCLIAdapter, RoleInvocation
+from proofloop_core.context.events import EventEmitter
+from proofloop_core.runtimes.host_runner import invoke_role
+from proofloop_core.runtimes.hosts import capability, role_only_trace_summary
+from proofloop_core.runtimes.runtime import ACCOUNT_DEFAULT_MODEL
+from proofloop_core.contracts.run_state import start_run
 
 ROOT = Path(__file__).resolve().parents[2]
 

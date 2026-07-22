@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.benchmark_environment import (
+from proofloop_core.analysis.benchmark_environment import (
     SWETrialEnvironment,
     materialize_repository,
     parse_test_output,

@@ -2,8 +2,9 @@
   "schemaVersion": "1.0",
   "slices": [
     {"id": "backend-common", "path": "references/common.md", "always": true, "estimatedTokens": 520},
-    {"id": "django-5", "path": "references/django-5.md", "adapter": "django-5", "estimatedTokens": 300},
-    {"id": "spring-3", "path": "references/spring-3.md", "adapter": "spring-3", "estimatedTokens": 300},
-    {"id": "ghost-5", "path": "references/ghost-5.md", "adapter": "ghost-5", "estimatedTokens": 260}
+    {"id": "django", "path": "references/django.md", "adapter": "django", "estimatedTokens": 800},
+    {"id": "spring", "path": "references/spring.md", "adapter": "spring", "estimatedTokens": 800},
+    {"id": "ghost", "path": "references/ghost.md", "adapter": "ghost", "estimatedTokens": 500},
+    {"id": "fastapi", "path": "references/fastapi.md", "adapter": "fastapi", "estimatedTokens": 900}
   ]
 }

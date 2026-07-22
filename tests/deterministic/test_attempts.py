@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.attempts import record_attempt
-from proofloop_core.io import write_json
+from proofloop_core.engine.attempts import record_attempt
+from proofloop_core.context.io import write_json
 
 
 class AttemptRecorderTest(unittest.TestCase):

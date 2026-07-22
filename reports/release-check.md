@@ -1,6 +1,6 @@
 # ProofLoop Core release check
 
-- Deterministic development checks: **PASS**
+- Deterministic development checks: **FAIL**
 - Automatic orchestrator kernel: **SIMULATED_MECHANICS_PROVEN**
 - Codex one-command normal fixture: **SIMULATED_HOST_E2E_PROVEN**
 - Codex one-command recovery fixture: **SIMULATED_HOST_E2E_PROVEN**

@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.assurance import build_assurance_report
-from proofloop_core.io import write_json
+from proofloop_core.assurance.assurance import build_assurance_report
+from proofloop_core.context.io import write_json
 
 
 def write_artifacts(root: Path, *, simplicity: str = "MINIMAL") -> None:

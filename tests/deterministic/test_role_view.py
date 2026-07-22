@@ -5,8 +5,8 @@ import hashlib
 import unittest
 from typing import Any
 
-from proofloop_core.execution_brief import compose_execution_brief
-from proofloop_core.role_view import (
+from proofloop_core.contracts.execution_brief import compose_execution_brief
+from proofloop_core.contracts.role_view import (
     KNOWN_ROLES,
     RoleViewValidationError,
     project_role_view,
@@ -78,7 +78,7 @@ class RoleViewProjectorTest(unittest.TestCase):
 
     def test_provenance_has_brief_hash(self) -> None:
         brief = _brief()
-        from proofloop_core.execution_brief import canonical_sha256
+        from proofloop_core.contracts.execution_brief import canonical_sha256
         expected = canonical_sha256(dict(brief))
         view = project_role_view(brief, "implementer_fast", "inv-1")
         self.assertEqual(view["provenance"]["executionBriefSha256"], expected)

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from proofloop_core.external_loop import run_external_loop
+from proofloop_core.engine.external_loop import run_external_loop
 
 
 def git(root: Path, *args: str) -> None:
