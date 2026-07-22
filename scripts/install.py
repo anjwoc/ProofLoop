@@ -348,6 +348,11 @@ def main() -> int:
         )
         payload["installManifest"] = str(home / "install-manifest.json")
     print(json.dumps(payload, indent=2))
+    
+    if not args.dry_run and not args.build_only:
+        print("\n--- Registering MCP Native Agent Integration ---", file=sys.stderr)
+        run([sys.executable, str(ROOT / "scripts" / "setup_native_agent.py")], check=False)
+        
     return 0
 
 

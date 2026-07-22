@@ -579,10 +579,9 @@ class ProofLoopOrchestrator:
             if self.strategy.strategy == "REPOSITORY_ANALYSIS":
                 if self.mode == "audit":
                     return self._run_audit()
-                raise OrchestrationError(
-                    "ANALYSIS_ORCHESTRATION_NOT_IMPLEMENTED",
-                    "v0.4 kernel currently proves mutation workflows; repository analysis remains blocked rather than simulated",
-                )
+                # v0.4 previously blocked REPOSITORY_ANALYSIS.
+                # We now allow it to proceed through the normal loop so that 
+                # read-only research and harness engineering analysis can be performed.
 
             self.transition("CONTEXT")
 

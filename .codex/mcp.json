@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "proofloop-core": {
+      "command": "/Users/jaecjeong/.dbgpt/DB-GPT/.venv/bin/python3",
+      "args": [
+        "/Users/jaecjeong/lab/ProofLoop/proofloop_core/mcp_server.py"
+      ]
+    }
+  }
+}
