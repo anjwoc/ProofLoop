@@ -14,7 +14,7 @@ def main():
     }
 
     print("Configuring Antigravity IDE (mcp.json)...")
-    antigravity_mcp_path = Path.home() / ".gemini" / "config" / "mcp.json"
+    antigravity_mcp_path = repo_root / ".agents" / "mcp.json"
     ag_config = {}
     if antigravity_mcp_path.exists():
         try:
