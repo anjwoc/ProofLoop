@@ -437,52 +437,13 @@ class ProofLoopOrchestrator:
                     "artifact": str(self.run_dir / "request-envelope.json"),
                 },
             )
-            self._emit("intent_gate.started", phase="INIT", message="IntentGate evaluation started.")
-            intent_gate_result = evaluate_intent(
-                self.request,
-                adapter=self.adapter,
-                run_dir=self.run_dir,
-                repo=self.repo,
-            )
+            intent_gate_result = evaluate_intent(self.request, adapter=self.adapter, run_dir=self.run_dir, repo=self.repo)
             self.intent_gate_result = intent_gate_result
             write_json(self.run_dir / "intent-gate.json", intent_gate_result.to_dict())
             if intent_gate_result.clarity.value == "owner_decision_required":
-                self._emit(
-                    "intent_gate.owner_decision_required",
-                    phase="INIT",
-                    message="IntentGate requires owner decision.",
-                    data={"ownerQuestion": intent_gate_result.owner_question},
-                )
-            elif intent_gate_result.clarity.value == "blocked":
-                self._emit(
-                    "intent_gate.blocked",
-                    phase="INIT",
-                    message="IntentGate blocked.",
-                    data={"blockedReason": intent_gate_result.blocked_reason},
-                )
-            self._emit(
-                "intent_gate.completed",
-                phase="INIT",
-                message="IntentGate evaluation completed.",
-                data={
-                    "intentKind": intent_gate_result.intent_kind.value,
-                    "clarity": intent_gate_result.clarity.value,
-                    "authority": intent_gate_result.authority.value,
-                    "artifact": str(self.run_dir / "intent-gate.json"),
-                },
-            )
-            if intent_gate_result.clarity.value == "owner_decision_required":
-                raise OrchestrationError(
-                    "INTENT_OWNER_DECISION_REQUIRED",
-                    intent_gate_result.owner_question or "the request requires an owner decision",
-                    verdict="BLOCKED",
-                )
+                raise OrchestrationError("INTENT_OWNER_DECISION_REQUIRED", intent_gate_result.owner_question or "owner decision", verdict="BLOCKED")
             if intent_gate_result.clarity.value == "blocked":
-                raise OrchestrationError(
-                    "INTENT_GATE_BLOCKED",
-                    intent_gate_result.blocked_reason or "the request was blocked by IntentGate",
-                    verdict="BLOCKED",
-                )
+                raise OrchestrationError("INTENT_GATE_BLOCKED", intent_gate_result.blocked_reason or "blocked", verdict="BLOCKED")
 
             # The intent contract is downstream of the immutable envelope, so
             # its originalRequest must retain the exact request bytes too.
@@ -580,12 +541,7 @@ class ProofLoopOrchestrator:
             )
             self._initialize_proof_graph()
             self._resolve_skills()
-            if self.strategy.strategy == "REPOSITORY_ANALYSIS":
-                if self.mode == "audit":
-                    return self._run_audit()
-                # v0.4 previously blocked REPOSITORY_ANALYSIS.
-                # We now allow it to proceed through the normal loop so that 
-                # read-only research and harness engineering analysis can be performed.
+
 
             self.transition("CONTEXT")
 
@@ -642,88 +598,40 @@ class ProofLoopOrchestrator:
             )
 
             # Phase 5 & 6: Grounded Compiler (Shadow & Active)
-            import os
-            active_tiers_env = os.environ.get("PROOFLOOP_COMPILER_ACTIVE_TIERS")
-            active_tiers = (
-                {t.strip() for t in active_tiers_env.split(",") if t.strip()}
-                if active_tiers_env is not None
-                else {"T2", "T3"}
-            )
-            compiler_active = self.strategy.tier in active_tiers
+            compiler_active = self.strategy.tier in {"T2", "T3"}
             compiler_policy = {
                 "schemaVersion": "1.0",
                 "policyVersion": "1.0",
-                "activeTiers": sorted(active_tiers),
+                "activeTiers": ["T2", "T3"],
                 "active": compiler_active,
-                "activationSource": (
-                    "PROOFLOOP_COMPILER_ACTIVE_TIERS"
-                    if active_tiers_env is not None
-                    else "DEFAULT_T2_T3"
-                ),
+                "activationSource": "DEFAULT_T2_T3",
             }
             write_json(self.run_dir / "compiler-policy.json", compiler_policy)
 
             try:
-                request_artifact = read_json(self.run_dir / "request-envelope.json")
-                intent_contract = read_json(self.run_dir / "intent-contract.json")
                 compiled_brief = compose_execution_brief(
-                    request_artifact=request_artifact,
-                    intent_contract=intent_contract,
+                    request_artifact=read_json(self.run_dir / "request-envelope.json"),
+                    intent_contract=read_json(self.run_dir / "intent-contract.json"),
                     strategy=self.strategy.to_dict(),
                     repository_context=grounding_snapshot.to_dict(),
                     repository_baseline=self.original_baseline,
                 )
                 if compiler_active:
-                    # Active compilation is a Core-owned, non-identity
-                    # reconciliation. It constrains only explicit target
-                    # candidates and changes no facts, criteria, unknowns, or
-                    # authorization language before role projection.
                     from proofloop_core.engine.reconciler import build_conservative_proposal, reconcile_proposal
-
-                    proposal = build_conservative_proposal(compiled_brief)
-                    reconciled = reconcile_proposal(compiled_brief, proposal)
                     from proofloop_core.contracts.execution_brief import _brief_sha256, validate_execution_brief
+                    reconciled = reconcile_proposal(compiled_brief, build_conservative_proposal(compiled_brief))
                     reconciled["provenance"]["briefSha256"] = _brief_sha256(reconciled)
                     validate_execution_brief(reconciled)
-                    reconciliation = {
-                        "schemaVersion": "1.0",
-                        "status": "PASS",
-                        "mode": "CONSERVATIVE_RECONCILIATION",
-                        "shadowBriefSha256": compiled_brief["provenance"]["briefSha256"],
-                        "reconciledBriefSha256": reconciled["provenance"]["briefSha256"],
-                        "changedFields": ["kind", "scope.approvedPaths", "scope.status", "provenance.briefSha256"],
-                        "proposalAuthority": "PROOFLOOP_CORE",
-                    }
-                    write_json(self.run_dir / "reconciliation-report.json", reconciliation)
-                    self._emit(
-                        "compiler.reconciled",
-                        phase="CONTEXT",
-                        message="Execution brief reconciliation passed.",
-                        data={**reconciliation, "artifact": str(self.run_dir / "reconciliation-report.json")},
-                    )
+                    write_json(self.run_dir / "reconciliation-report.json", {"schemaVersion": "1.0", "status": "PASS", "shadowBriefSha256": compiled_brief["provenance"]["briefSha256"], "reconciledBriefSha256": reconciled["provenance"]["briefSha256"]})
                     compiled_brief = dict(reconciled)
-                brief_path = self.run_dir / ("execution-brief.json" if compiler_active else "refined-request-shadow.json")
-                write_json(brief_path, compiled_brief)
                 self.execution_brief = compiled_brief
                 self.compiler_active = compiler_active
+                write_json(self.run_dir / ("execution-brief.json" if compiler_active else "refined-request-shadow.json"), compiled_brief)
             except Exception as e:
                 self.execution_brief = None
                 self.compiler_active = False
                 if compiler_active:
-                    self._emit(
-                        "compiler.failed",
-                        phase="CONTEXT",
-                        message=f"Compiler validation failed: {e}",
-                        level="error",
-                    )
                     raise OrchestrationError("COMPILER_BLOCKED", f"compiler validation failure: {e}", verdict="BLOCKED") from e
-                else:
-                    self._emit(
-                        "compiler.shadow_failed",
-                        phase="CONTEXT",
-                        message=f"Shadow brief compilation failed: {e}",
-                        level="warning",
-                    )
 
             # Freeze repository-declared verification authority before any
             # direct bootstrap can invoke a mutating implementer.  A later
@@ -788,7 +696,6 @@ class ProofLoopOrchestrator:
                 },
             )
 
-            self._maybe_reclassify_after_diff()
 
             if self.goal_mode:
                 contract = build_goal_contract(
@@ -831,7 +738,6 @@ class ProofLoopOrchestrator:
             for task in self.tasks:
                 try:
                     self._execute_task(task)
-                    self._maybe_reclassify_after_diff()
                 except Exception as exc:
                     self._emit(
                         "task.failed",
@@ -1433,46 +1339,6 @@ class ProofLoopOrchestrator:
             f"{references}\n"
         )
 
-    def _maybe_reclassify_after_diff(self) -> None:
-        if self.diff_reclassified or self.original_baseline is None or self.strategy is None:
-            return
-        paths = changed_source_files(self.repo, self.original_baseline)
-        if not paths:
-            return
-        previous = self.strategy
-        revised = reclassify_after_diff(previous, paths)
-        self.diff_reclassified = True
-        assert self.run_dir is not None
-        self.repository_fingerprint = build_repository_fingerprint(self.repo, self.request, tuple(paths))
-        write_json(self.run_dir / "repository-fingerprint.json", self.repository_fingerprint)
-        if revised == previous:
-            self._emit(
-                "strategy.reclassified",
-                phase="CLASSIFY",
-                message=f"First diff confirmed the initial {previous.tier} workload profile.",
-                data={"previousTier": previous.tier, "tier": revised.tier, "changedFiles": paths, "changed": False},
-            )
-            self._resolve_skills()
-            return
-        self.strategy = revised
-        write_json(self.run_dir / "strategy.json", revised.to_dict())
-        if self.proof_graph is not None and revised.tier in {"T2", "T3"}:
-            for obligation in self.proof_graph.obligations:
-                if obligation.obligation_id in {"intent-alignment", "simplicity"} and obligation.required_authority != "MODEL_REVIEW":
-                    obligation.required_authority = "MODEL_REVIEW"
-                    obligation.revision += 1
-                    obligation.status = "OPEN"
-                    obligation.last_reason = "WORKLOAD_RECLASSIFIED"
-            self._persist_proof_graph("first diff raised proof authority requirements")
-        self._emit(
-            "strategy.reclassified",
-            phase="CLASSIFY",
-            message=f"First diff upgraded workload profile from {previous.tier} to {revised.tier}.",
-            level="warning",
-            data={"previousTier": previous.tier, "tier": revised.tier, "changedFiles": paths, "hardGates": list(revised.hard_gates), "changed": True},
-        )
-        self._resolve_skills()
-
     def _account_role_budget(self, role: str, result: dict[str, Any], phase: str, task_id: str | None) -> None:
         raw_usage = result.get("usage")
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
@@ -1569,36 +1435,7 @@ class ProofLoopOrchestrator:
         record("simplicity", authority, "review.json" if review else "diff-guard.json", "PASS" if simplicity == "MINIMAL" else simplicity, review_level)
         self._persist_proof_graph("verification evidence evaluated against proof obligations")
 
-    def _run_audit(self) -> dict[str, Any]:
-        assert self.run_dir is not None and self.original_baseline is not None
-        self.transition("AUDIT")
-        result_path = self.run_dir / "audit-report.json"
-        prompt = (
-            "Act as the read-only ProofLoop repository auditor. Preserve the original request and inspect only relevant source. "
-            f"Write factual findings, evidence paths, unknowns, and recommendations as JSON to {result_path}. "
-            "Do not edit repository source."
-        )
-        self._invoke("explorer_fast", prompt, result_path=result_path, immutable_source=True, phase="AUDIT")
-        if not result_path.exists():
-            raise OrchestrationError("AUDIT_ARTIFACT_MISSING", "audit role did not produce audit-report.json")
-        if changed_source_files(self.repo, self.original_baseline):
-            raise OrchestrationError("AUDIT_SOURCE_MUTATION", "audit mode changed repository source", verdict="FAILED")
-        trace = self._build_trace_summary()
-        report = {
-            "schemaVersion": "2.0",
-            "verdict": "PROVEN",
-            "blockers": [],
-            "unproven": [],
-            "mode": "audit",
-            "evidence": {"auditReport": str(result_path), "modelTrace": str(self.run_dir / "model-trace-summary.json")},
-        }
-        write_json(self.run_dir / "truth-report.json", report)
-        self.transition("PROVEN")
-        finalize_run(self.repo, report)
-        usage = self._finalize_usage()
-        self._emit("truth.completed", phase="TRUTH", message="Read-only audit completed with PROVEN provenance.", data={"status": "PROVEN", "truthReport": report, "trace": trace})
-        self._emit("run.completed", phase="TRUTH", message="ProofLoop audit completed.", data={"verdict": "PROVEN", "runDir": str(self.run_dir), "usage": usage})
-        return {"verdict": "PROVEN", "runDir": str(self.run_dir), "truthReport": report, "usage": usage}
+
 
     def _run_planner(self) -> list[TaskBrief]:
         assert self.run_dir is not None and self.strategy is not None and self.intent is not None
