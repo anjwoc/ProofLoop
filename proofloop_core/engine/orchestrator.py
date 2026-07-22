@@ -36,7 +36,7 @@ from proofloop_core.contracts.goal import GoalFSM, build_goal_contract
 from proofloop_core.context.memory import prepare_memory, write_memory
 from proofloop_core.runtimes.runtime import ResolvedRuntime
 from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
-from proofloop_core.prompting.renderers import registry as renderer_registry
+from proofloop_core.prompting.renderers import render_prompt
 from proofloop_core.analysis.usage import budgeted_token_total, build_usage_summary
 from proofloop_core.analysis.tokscale import TokScaleAdapter
 from proofloop_core.engine.intent import IntentContract, compile_intent
@@ -332,9 +332,7 @@ class ProofLoopOrchestrator:
         """Render against the runtime selected for this role, not a generic host label."""
         resolved = self._resolved_runtime_for_role(ir.role)
         provider = resolved.runtime_id if resolved is not None else self.host
-        model = resolved.model if resolved is not None else "unknown"
-        renderer = renderer_registry.select(provider, model, ir.role, self.host)
-        return renderer.render(ir)
+        return render_prompt(ir, provider)
 
     def _record_prompt_projection(
         self,
@@ -347,7 +345,6 @@ class ProofLoopOrchestrator:
         assert self.run_dir is not None
         provider = resolved_runtime.runtime_id if resolved_runtime is not None else self.host
         model = resolved_runtime.model if resolved_runtime is not None else "unknown"
-        renderer = renderer_registry.select(provider, model, role, self.host)
         write_json(
             self.run_dir / "prompt-projections" / f"{invocation_id}.json",
             {
@@ -357,7 +354,6 @@ class ProofLoopOrchestrator:
                 "controllerHost": self.host,
                 "runtime": provider,
                 "model": model,
-                "rendererVersion": renderer.version,
                 "promptSha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
                 "promptText": prompt,
             },
