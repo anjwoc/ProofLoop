@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from proofloop_core.contracts.goal import build_goal_contract

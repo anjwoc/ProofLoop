@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from proofloop_core.context.io import append_jsonl, write_json
 
 
 TERMINAL_GOAL_STATES = {"CONVERGED", "EXHAUSTED", "BLOCKED", "CANCELED"}

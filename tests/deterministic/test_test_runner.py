@@ -29,7 +29,6 @@ class TestRunnerTest(unittest.TestCase):
         pytest_main.assert_called_once_with(
             [
                 str(ROOT / "tests" / "deterministic"),
-                str(ROOT / "tests" / "orchestration"),
                 "-q",
             ]
         )

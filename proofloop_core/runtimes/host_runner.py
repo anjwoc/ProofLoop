@@ -12,6 +12,7 @@ from proofloop_core.runtimes.hosts import capability
 from proofloop_core.context.io import write_json, append_jsonl
 from proofloop_core.output_parsers import parser_for
 from proofloop_core.runtimes.process_runner import ProcessRunner
+from proofloop_core.runtimes.xdg_sandbox_runner import XdgSandboxRunner
 from proofloop_core.runtimes.runtime import ACCOUNT_DEFAULT_MODEL
 from proofloop_core.context.trace import summarize_trace
 from proofloop_core.analysis.usage import TokenLedger, load_invocations, record_normalized_usage
@@ -30,20 +31,16 @@ _AGY_MODEL_LABELS = {
 }
 
 
-def _agy_initial_output_timeout_seconds() -> int:
-    """Bound AGY's silent-start failure mode without shortening valid runs.
-
-    AGY can remain connected while emitting neither a response nor an error.
-    Goalng handles the same provider behaviour separately.  A first-byte cap
-    prevents a detached ProofLoop role from spending the whole run budget in
-    that state; callers can raise it deliberately for unusually large work.
-    """
-    raw = os.environ.get("PROOFLOOP_AGY_INITIAL_OUTPUT_TIMEOUT_SECONDS", "90")
+def _agy_initial_output_timeout_seconds(timeout_seconds: int) -> int | None:
+    """Return an opt-in first-output cap without shortening a role by default."""
+    raw = os.environ.get("PROOFLOOP_AGY_INITIAL_OUTPUT_TIMEOUT_SECONDS")
+    if not raw:
+        return None
     try:
         value = int(raw)
     except ValueError:
-        return 90
-    return max(15, value)
+        return None
+    return min(timeout_seconds, max(15, value))
 
 
 
@@ -189,7 +186,11 @@ def invoke_role(
         command = [str(executable), *fixed_args]
         if os.environ.get("PROOFLOOP_AGY_BYPASS_PERMISSIONS") == "1":
             command.append("--dangerously-skip-permissions")
-        command.extend(["--prompt", message, "--model", _AGY_MODEL_LABELS.get(model, model)])
+        command.extend([
+            "--print-timeout", f"{timeout_seconds}s",
+            "--prompt", message,
+            "--model", _AGY_MODEL_LABELS.get(model, model),
+        ])
     elif host == "antigravity":
         command = [str(executable), *fixed_args]
         if os.environ.get("PROOFLOOP_ANTIGRAVITY_BYPASS_PERMISSIONS") == "1":
@@ -334,8 +335,11 @@ def invoke_role(
             },
         )
 
-    initial_output_timeout = _agy_initial_output_timeout_seconds() if host == "agy" else None
-    process_result = ProcessRunner().run(
+    initial_output_timeout = _agy_initial_output_timeout_seconds(timeout_seconds) if host == "agy" else None
+    engine = os.environ.get("PROOFLOOP_RUNTIME_ENGINE", "sandbox")
+    runner = XdgSandboxRunner(host=host) if engine == "sandbox" else ProcessRunner()
+
+    process_result = runner.run(
         command,
         cwd=repo,
         stdout_path=call_dir / "stdout.log",
@@ -354,6 +358,11 @@ def invoke_role(
     )
     _redact_private_reasoning_log(call_dir / "stdout.log")
     _redact_private_reasoning_log(call_dir / "stderr.log")
+    if host == "agy" and process_result.exit_code != 0:
+        stderr = (call_dir / "stderr.log").read_text(encoding="utf-8", errors="replace").lower()
+        if "timeout waiting for response" in stderr:
+            failure_reason_code = "HOST_PROVIDER_RESPONSE_TIMEOUT"
+            failure_reason = "AGY ended its own response wait before returning a role result."
     if process_result.timed_out and process_result.timeout_reason == "INITIAL_OUTPUT_TIMEOUT":
         failure_reason_code = "HOST_INITIAL_OUTPUT_TIMEOUT"
         failure_reason = (
@@ -394,6 +403,7 @@ def invoke_role(
         "exitCode": process_result.exit_code,
         "timedOut": process_result.timed_out,
         "timeoutReason": process_result.timeout_reason,
+        "initialOutputTimeoutSeconds": initial_output_timeout,
         "cancelled": process_result.cancelled,
         "transport": "legacy-cli",
         "durationSeconds": process_result.duration_seconds,

@@ -119,3 +119,25 @@ def _dedupe(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+def format_intent_contract(contract: IntentContract) -> str:
+    """Format an IntentContract into a concise, readable Markdown prompt."""
+    parts = []
+    parts.append(f"**Objective**: {contract.objective}")
+    if contract.acceptance_criteria:
+        parts.append("\n**Acceptance Criteria**:")
+        for ac in contract.acceptance_criteria:
+            parts.append(f"- [{ac.criterion_id}] {ac.statement}")
+    if contract.constraints:
+        parts.append("\n**Constraints**:")
+        for c in contract.constraints:
+            parts.append(f"- {c}")
+    if contract.non_goals:
+        parts.append("\n**Non-Goals**:")
+        for ng in contract.non_goals:
+            parts.append(f"- {ng}")
+    if contract.unknowns:
+        parts.append("\n**Unknowns / Uncertainties**:")
+        for u in contract.unknowns:
+            parts.append(f"- {u}")
+    return "\n".join(parts)

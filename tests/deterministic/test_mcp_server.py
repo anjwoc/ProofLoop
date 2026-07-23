@@ -1,6 +1,6 @@
 import pytest
 from mcp.server.fastmcp import FastMCP
-from proofloop_core.mcp_server import mcp, _get_client_name, _build_repo_context
+from proofloop_core.mcp_server import mcp, _get_client_name
 
 def test_mcp_server_initialization():
     assert isinstance(mcp, FastMCP)

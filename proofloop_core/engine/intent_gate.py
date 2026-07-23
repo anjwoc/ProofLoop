@@ -119,9 +119,12 @@ def _parse_llm_json(raw: str) -> IntentGateResult | None:
     signals = list(parsed.get("signals") or [])
     oq = parsed.get("owner_question")
 
-    if ik not in _VALID_INTENT: ik = "mutate"
-    if au not in _VALID_AUTHORITY: au = "repository_mutation"
-    if cl not in _VALID_CLARITY: cl = "clear"
+    if ik not in _VALID_INTENT:
+        ik = "mutate"
+    if au not in _VALID_AUTHORITY:
+        au = "repository_mutation"
+    if cl not in _VALID_CLARITY:
+        cl = "clear"
 
     if inj == "high":
         signals.append("injection_attempt")
@@ -233,12 +236,16 @@ def evaluate_intent(
         repo: repository path (required if adapter passed)
         host: host CLI name ('agy', 'claude-code', 'codex', 'antigravity') if adapter is None
     """
-    if adapter is not None and run_dir is not None and repo is not None:
-        result = _classify_with_adapter(request_text, adapter, run_dir, repo)
-        if result is not None:
-            logger.info("Intent classified via internal host adapter: %s/%s (%.2f)",
-                         result.intent_kind.value, result.authority.value, result.confidence)
-            return result
+    if adapter is not None:
+        if run_dir is not None and repo is not None:
+            result = _classify_with_adapter(request_text, adapter, run_dir, repo)
+            if result is not None:
+                logger.info("Intent classified via internal host adapter: %s/%s (%.2f)",
+                            result.intent_kind.value, result.authority.value, result.confidence)
+                return result
+        # A caller that supplied an adapter owns runtime selection.  Falling
+        # through to a standalone CLI can unexpectedly open an auth flow.
+        return _classify_fallback(request_text)
 
     # Try standalone internal host CLI adapter
     result = _classify_with_cli(request_text, host=host)
