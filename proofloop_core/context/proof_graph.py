@@ -16,6 +16,7 @@ AUTHORITY = {
 
 _OBLIGATION_CLAIMS = {
     "PROMPT-CONTRACT": ClaimType.PROMPT_CONTRACT_APPLIED.value,
+    "intent-alignment": ClaimType.INTENT_ALIGNMENT.value,
     "scope-integrity": ClaimType.SCOPE_INTEGRITY.value,
     "SCOPE-INTEGRITY": ClaimType.SCOPE_INTEGRITY.value,
     "simplicity": ClaimType.SIMPLICITY.value,
