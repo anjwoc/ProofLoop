@@ -19,7 +19,7 @@ These rules apply before host selection, planning, implementation, tests, progre
 
 The coordinator never decides these facts itself. It relays the deterministic parent run and its inspectable artifacts.
 
-This skill is a thin bootstrap. The deterministic orchestrator owns the workflow.
+This skill is a thin bootstrap. The deterministic orchestrator owns the workflow. The public entry command is `proofloop-core run`; internal role commands are never a user workflow.
 
 ## Required behavior
 
