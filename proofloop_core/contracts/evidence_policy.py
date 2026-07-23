@@ -19,10 +19,11 @@ class ClaimType(str, Enum):
     PROMPT_CONTRACT_APPLIED = "PROMPT_CONTRACT_APPLIED"
     PRODUCT_BEHAVIOR = "PRODUCT_BEHAVIOR"
     SCOPE_INTEGRITY = "SCOPE_INTEGRITY"
+    INTENT_ALIGNMENT = "INTENT_ALIGNMENT"
+    SIMPLICITY = "SIMPLICITY"
     HOST_EXECUTION = "HOST_EXECUTION"
     MODEL_ROUTING = "MODEL_ROUTING"
     EXTERNAL_OBSERVATION = "EXTERNAL_OBSERVATION"
-    SIMPLICITY = "SIMPLICITY"
 
 
 @dataclass(frozen=True)
@@ -35,20 +36,22 @@ _ALLOWED_ORIGINS: dict[ClaimType, frozenset[EvidenceOrigin]] = {
     ClaimType.PROMPT_CONTRACT_APPLIED: frozenset({EvidenceOrigin.CORE_DETERMINISTIC}),
     ClaimType.PRODUCT_BEHAVIOR: frozenset({EvidenceOrigin.CORE_DETERMINISTIC}),
     ClaimType.SCOPE_INTEGRITY: frozenset({EvidenceOrigin.CORE_DIFF_GUARD, EvidenceOrigin.CORE_DETERMINISTIC}),
+    ClaimType.INTENT_ALIGNMENT: frozenset({EvidenceOrigin.PARENT_REVIEW}),
+    ClaimType.SIMPLICITY: frozenset({EvidenceOrigin.PARENT_REVIEW}),
     ClaimType.HOST_EXECUTION: frozenset({EvidenceOrigin.PARENT_HOST_RECEIPT}),
     ClaimType.MODEL_ROUTING: frozenset({EvidenceOrigin.PARENT_HOST_RECEIPT}),
     ClaimType.EXTERNAL_OBSERVATION: frozenset({EvidenceOrigin.PARENT_EXTERNAL_OBSERVATION}),
-    ClaimType.SIMPLICITY: frozenset({EvidenceOrigin.CORE_DIFF_GUARD, EvidenceOrigin.CORE_DETERMINISTIC, EvidenceOrigin.PARENT_REVIEW}),
 }
 
 _AUTHORITY_MINIMUM: dict[ClaimType, frozenset[str]] = {
     ClaimType.PROMPT_CONTRACT_APPLIED: frozenset({"DETERMINISTIC_CHECK"}),
     ClaimType.PRODUCT_BEHAVIOR: frozenset({"DETERMINISTIC_CHECK"}),
     ClaimType.SCOPE_INTEGRITY: frozenset({"DIFF_GUARD", "DETERMINISTIC_CHECK"}),
+    ClaimType.INTENT_ALIGNMENT: frozenset({"MODEL_REVIEW"}),
+    ClaimType.SIMPLICITY: frozenset({"MODEL_REVIEW"}),
     ClaimType.HOST_EXECUTION: frozenset({"EXTERNAL_OBSERVATION"}),
     ClaimType.MODEL_ROUTING: frozenset({"EXTERNAL_OBSERVATION"}),
     ClaimType.EXTERNAL_OBSERVATION: frozenset({"EXTERNAL_OBSERVATION"}),
-    ClaimType.SIMPLICITY: frozenset({"DIFF_GUARD", "DETERMINISTIC_CHECK", "MODEL_REVIEW"}),
 }
 
 
