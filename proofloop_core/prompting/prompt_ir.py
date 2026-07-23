@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from typing import Any
 
+
 @dataclass(frozen=True)
 class PromptMetadata:
     compiler_version: str
     generation_time: str
+    content_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,5 +58,6 @@ class PromptIR:
             "metadata": {
                 "compiler_version": self.metadata.compiler_version,
                 "generation_time": self.metadata.generation_time,
-            }
+                "content_sha256": self.metadata.content_sha256,
+            },
         }
