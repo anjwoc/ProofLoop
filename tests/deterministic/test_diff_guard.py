@@ -14,6 +14,20 @@ def git(root: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
 
 
+def contract_fields() -> dict:
+    return {
+        "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0},
+        "simplicity": {
+            "selectedRung": "DIRECT_CHANGE",
+            "rationale": "bounded fixture change",
+            "considered": ["REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"],
+            "evidenceRefs": ["fixture#/diff-guard"],
+            "permittedNewArtifacts": [],
+        },
+        "requiredChecks": [{"command": ["python3", "-c", "pass"]}],
+    }
+
+
 class DiffGuardTest(unittest.TestCase):
     def test_scope_and_test_weakening_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -29,7 +43,10 @@ class DiffGuardTest(unittest.TestCase):
             git(root, "add", ".")
             git(root, "commit", "-m", "baseline")
 
-            (root / "tests" / "test_app.py").write_text("import pytest\n\n@pytest.mark.skip\ndef test_value():\n    pass\n", encoding="utf-8")
+            (root / "tests" / "test_app.py").write_text(
+                "import pytest\n\n@pytest.mark.skip\ndef test_value():\n    pass\n",
+                encoding="utf-8",
+            )
             (root / "config.txt").write_text("changed\n", encoding="utf-8")
             task_path = root / ".git" / "proofloop-task.json"
             task_path.write_text(json.dumps({
@@ -37,10 +54,8 @@ class DiffGuardTest(unittest.TestCase):
                 "objective": "change app",
                 "allowedPaths": ["src/**", "tests/**"],
                 "protectedPaths": [],
-
                 "changeBudget": {"maxChangedFiles": 8, "maxAddedLines": 500, "maxNewFiles": 4, "allowDependencyChanges": False},
-                "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "bounded fixture change", "considered": ["reuse existing test harness"]},
-                "requiredChecks": [{"command": ["python3", "-c", "pass"]}]
+                **contract_fields(),
             }), encoding="utf-8")
             result = inspect_diff(load_task_brief(task_path), root)
             codes = {item["code"] for item in result["violations"]}
@@ -71,8 +86,7 @@ class DiffGuardTest(unittest.TestCase):
                 "allowedPaths": ["src/**", "package.json"],
                 "protectedPaths": [],
                 "changeBudget": {"maxChangedFiles": 1, "maxAddedLines": 3, "maxNewFiles": 0, "allowDependencyChanges": False},
-                "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "should remain tiny", "considered": ["existing code"]},
-                "requiredChecks": [{"command": ["python3", "-c", "pass"]}]
+                **contract_fields(),
             }), encoding="utf-8")
             result = inspect_diff(load_task_brief(task_path), root)
             codes = {item["code"] for item in result["violations"]}
@@ -80,6 +94,7 @@ class DiffGuardTest(unittest.TestCase):
             self.assertIn("ADDED_LINE_BUDGET_EXCEEDED", codes)
             self.assertIn("NEW_FILE_BUDGET_EXCEEDED", codes)
             self.assertIn("DEPENDENCY_CHANGE_FORBIDDEN", codes)
+            self.assertIn("UNJUSTIFIED_NEW_ARTIFACT", codes)
 
 
 if __name__ == "__main__":
