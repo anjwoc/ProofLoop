@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 
 class RepairAction(str, Enum):
@@ -59,9 +59,17 @@ class RepairState:
         previous = attempts[-2] if len(attempts) > 1 else None
         evidence_delta = True
         if previous is not None:
+            # Artifact paths are sequence-specific and therefore always change.
+            # Progress is semantic only when verdict, classification, or the
+            # normalized failure fingerprint changes.
             evidence_delta = any(
                 latest.get(field) != previous.get(field)
-                for field in ("checkVerdict", "diffVerdict", "checksRef", "diffGuardRef", "classification")
+                for field in (
+                    "checkVerdict",
+                    "diffVerdict",
+                    "classification",
+                    "failureFingerprint",
+                )
             )
         return cls(
             has_attempts=True,
