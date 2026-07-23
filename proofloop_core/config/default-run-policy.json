@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "1.0",
+  "policyVersion": "1.0",
+  "run": {
+    "timeoutSeconds": 1200,
+    "retainedRuns": 30
+  },
+  "goal": {
+    "maxCycles": 8,
+    "maxReplans": 2
+  },
+  "roles": {
+    "classifier_fast": {"timeoutSeconds": 120, "tokenBudget": 12000},
+    "explorer_fast": {"timeoutSeconds": 600, "tokenBudget": 40000},
+    "planner_deep": {"timeoutSeconds": 1200, "tokenBudget": 80000},
+    "implementer_fast": {"timeoutSeconds": 1200, "tokenBudget": 100000},
+    "implementer_recovery": {"timeoutSeconds": 1200, "tokenBudget": 120000},
+    "reviewer_deep": {"timeoutSeconds": 1200, "tokenBudget": 80000}
+  },
+  "prompt": {
+    "activeTiers": ["T0", "T1", "T2", "T3"]
+  },
+  "evidence": {
+    "maxFiles": 256,
+    "maxTotalBytes": 67108864,
+    "readChunkBytes": 65536
+  },
+  "hooks": {
+    "timeoutSeconds": 30
+  },
+  "relay": {
+    "intervalSeconds": 5
+  },
+  "release": {
+    "requiredClaimTypes": [
+      "PROMPT_CONTRACT_APPLIED",
+      "PRODUCT_BEHAVIOR",
+      "SCOPE_INTEGRITY"
+    ]
+  }
+}
