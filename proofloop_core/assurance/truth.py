@@ -19,6 +19,7 @@ def _load_optional(path: Path) -> dict[str, Any] | None:
 
 def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = False) -> dict[str, Any]:
     root = Path(run_dir)
+    run = _load_optional(root / "run.json") or {}
     checks = _load_optional(root / "checks" / "checks.json")
     diff = _load_optional(root / "diff-guard.json")
     review = _load_optional(root / "review.json")
@@ -45,8 +46,12 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
             blockers.append("LIVE_EVIDENCE_INVALID")
     if not checks:
         blockers.append("CHECK_EVIDENCE_MISSING")
-    elif checks.get("verdict") != "PASS":
-        blockers.append("CHECKS_FAILED")
+    else:
+        check_items = checks.get("checks")
+        if not isinstance(check_items, list) or not check_items:
+            blockers.append("CHECK_EVIDENCE_EMPTY")
+        elif checks.get("verdict") != "PASS":
+            blockers.append("CHECKS_FAILED")
     if not diff:
         blockers.append("DIFF_GUARD_MISSING")
     elif diff.get("verdict") != "PASS":
@@ -84,6 +89,8 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
         "verdict": verdict,
         "blockers": blockers,
         "unproven": unproven,
+        "evidenceOrigin": run.get("evidenceOrigin", "UNKNOWN"),
+        "host": run.get("host", "unresolved"),
         "assurance": assurance,
         "evidence": {
             "checks": str(root / "checks" / "checks.json") if checks else None,
