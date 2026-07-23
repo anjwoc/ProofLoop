@@ -22,36 +22,44 @@ _DIRECTIVES = {
 }
 
 
-def render_prompt(ir: PromptIR, provider: str = "generic") -> str:
-    """Render one role prompt with the mandatory truth contract first."""
-    parts = [_TRUTH_AND_MINIMALITY_CONTRACT.rstrip(), ""]
+def _items(title: str, values: tuple[str, ...]) -> list[str]:
+    if not values:
+        return []
+    return [title, *(f"- {value}" for value in values), ""]
 
+
+def render_prompt(ir: PromptIR, provider: str = "generic") -> str:
+    """Render exactly one authoritative request block for later role projection.
+
+    The orchestrator replaces the ``User request`` block with the validated role
+    view. No free-form refined request is concatenated beside it.
+    """
+
+    parts = [_TRUTH_AND_MINIMALITY_CONTRACT.rstrip(), ""]
     directive = _DIRECTIVES.get(provider)
     if directive:
         parts.append(f"{directive}\n")
 
-    parts.append(f"Role: {ir.role}")
-    parts.append(f"Goal: {ir.goal}\n")
-
-    if ir.context_refs:
-        parts.append("Context:")
-        for ref in ir.context_refs:
-            parts.append(f"- {ref}")
-        parts.append("")
-
-    if ir.must_do:
-        parts.append("Must Do:")
-        for item in ir.must_do:
-            parts.append(f"- {item}")
-        parts.append("")
-
-    if ir.must_not:
-        parts.append("Must Not:")
-        for item in ir.must_not:
-            parts.append(f"- {item}")
-        parts.append("")
-
+    parts.extend((
+        f"Role: {ir.role}",
+        f"Prompt ID: {ir.prompt_id}",
+        f"Contract ID: {ir.contract_id}",
+        f"Blueprint ID: {ir.blueprint_id}",
+        "",
+        f"User request:\n{ir.goal}",
+        "",
+    ))
+    parts.extend(_items("Deliverables:", ir.deliverables))
+    parts.extend(_items("Evidence Requirements:", ir.evidence_requirements))
+    parts.extend(_items("Allowed Scope:", ir.allowed_scope))
+    parts.extend(_items("Protected Scope:", ir.protected_scope))
+    parts.extend(_items("Context:", ir.context_refs))
+    parts.extend(_items("Must Do:", ir.must_do))
+    parts.extend(_items("Must Not:", ir.must_not))
+    if ir.stop_when:
+        parts.append(f"Stop When:\n{ir.stop_when}\n")
+    if ir.escalate_when:
+        parts.extend(_items("Escalate When:", ir.escalate_when))
     if ir.output_contract:
         parts.append(f"Output Contract:\n{ir.output_contract}")
-
     return "\n".join(parts).strip()
