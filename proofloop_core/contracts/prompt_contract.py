@@ -4,10 +4,11 @@ import copy
 import hashlib
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 
 from proofloop_core.context.io import read_json, write_json
+from proofloop_core.context.proof_graph import Evidence, ProofObligation
+from proofloop_core.contracts.evidence_policy import ClaimType, EvidenceOrigin
 from proofloop_core.contracts.execution_brief import (
     _brief_sha256,
     compose_execution_brief,
@@ -79,13 +80,7 @@ def canonical_sha256(value: Any) -> str:
 
 
 def select_templates(*, authority: str, tier: str) -> tuple[TemplatePolicy, ...]:
-    """Select the existing versioned templates for one request.
-
-    Selection is deterministic and deliberately small. Repository surface is
-    always present because role prompts must be grounded in repository facts.
-    Higher-risk tiers add the existing risk template; they do not switch to a
-    parallel prompt system.
-    """
+    """Select the existing versioned templates for one request."""
 
     if authority == "read_only":
         selected: list[TemplatePolicy] = [INTENT_AUDIT, SURFACE_REPOSITORY]
@@ -126,8 +121,7 @@ def _active_brief(
         repository_baseline=repository_baseline,
     )
     proposal = build_conservative_proposal(shadow)
-    active = reconcile_proposal(shadow, proposal)
-    active = copy.deepcopy(active)
+    active = copy.deepcopy(reconcile_proposal(shadow, proposal))
     active["provenance"]["briefSha256"] = _brief_sha256(active)
     validate_execution_brief(active)
     return active
@@ -173,6 +167,39 @@ def compile_prompt_contract(
     return active, compilation
 
 
+def _record_prompt_contract_proof(orchestrator: "ProofLoopOrchestrator") -> None:
+    graph = getattr(orchestrator, "proof_graph", None)
+    root = getattr(orchestrator, "run_dir", None)
+    if graph is None or root is None:
+        return
+    obligation = next(
+        (item for item in graph.obligations if item.obligation_id == "PROMPT-CONTRACT"),
+        None,
+    )
+    if obligation is None:
+        obligation = ProofObligation(
+            "PROMPT-CONTRACT",
+            "The user request passed through the active prompt compilation contract.",
+            "DETERMINISTIC_CHECK",
+            claim_type=ClaimType.PROMPT_CONTRACT_APPLIED.value,
+        )
+        graph.add_obligation(obligation)
+    if obligation.status == "CLOSED":
+        return
+    compilation = read_json(root / "prompt-compilation.json")
+    graph.record(Evidence(
+        evidence_id=f"EV-PROMPT-{canonical_sha256(compilation)[:12]}",
+        obligation_id=obligation.obligation_id,
+        authority="DETERMINISTIC_CHECK",
+        artifact="prompt-compilation.json",
+        revision=obligation.revision,
+        origin=EvidenceOrigin.CORE_DETERMINISTIC.value,
+        claim_type=ClaimType.PROMPT_CONTRACT_APPLIED.value,
+        run_id=graph.run_id or root.name,
+    ))
+    write_json(root / "proof-graph.json", graph.to_dict())
+
+
 def ensure_active_prompt_contract(orchestrator: "ProofLoopOrchestrator") -> None:
     """Make the prompt compiler mandatory for every tier before role invocation."""
 
@@ -186,6 +213,7 @@ def ensure_active_prompt_contract(orchestrator: "ProofLoopOrchestrator") -> None
         validate_execution_brief(active)
         orchestrator.execution_brief = active
         orchestrator.compiler_active = True
+        _record_prompt_contract_proof(orchestrator)
         return
 
     envelope = read_json(root / "request-envelope.json")
@@ -210,6 +238,7 @@ def ensure_active_prompt_contract(orchestrator: "ProofLoopOrchestrator") -> None
     write_json(existing, compilation)
     orchestrator.execution_brief = active
     orchestrator.compiler_active = True
+    _record_prompt_contract_proof(orchestrator)
 
 
 def compile_role_ir(
@@ -254,7 +283,7 @@ def compile_role_ir(
         deliverables = tuple(task.deliverables or task.allowed_paths)
         evidence_requirements = tuple(item.name or " ".join(item.command) for item in task.required_checks)
     merged_policy = read_json(orchestrator.run_dir / "prompt-compilation.json")["mergedPolicy"]
-    ir = compile_ir(
+    return compile_ir(
         request_id=str(orchestrator.run_dir.name),
         role=role,
         goal=orchestrator.request,
@@ -273,4 +302,3 @@ def compile_role_ir(
         output_contract=output_contract,
         escalate_when=tuple(escalate_when),
     )
-    return ir
