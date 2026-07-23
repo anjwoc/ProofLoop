@@ -57,7 +57,7 @@
       ],
       "exitCode": 1,
       "stdout": "",
-      "stderr": "PACKAGE VALIDATION: FAIL\n- runtime source file budget exceeded: 176 > 175\n- skills/proofloop/SKILL.md: missing required fragment 'truth-report.json'\n"
+      "stderr": "PACKAGE VALIDATION: FAIL\n- runtime source file budget exceeded: 179 > 175\n- skills/proofloop/SKILL.md: missing required fragment 'truth-report.json'\n"
     },
     {
       "command": [

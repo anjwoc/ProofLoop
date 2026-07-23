@@ -169,7 +169,10 @@ def inspect_diff(task: TaskBrief, repository: str | Path, baseline: str = "HEAD"
             "path": "",
             "detail": f"{metrics['changedFiles']} > {task.change_budget.max_changed_files}",
         })
-    if metrics["addedLines"] > task.change_budget.max_added_lines:
+    if (
+        task.change_budget.max_added_lines is not None
+        and metrics["addedLines"] > task.change_budget.max_added_lines
+    ):
         violations.append({
             "code": "ADDED_LINE_BUDGET_EXCEEDED",
             "path": "",

@@ -24,6 +24,23 @@ class RelayPoll:
     pid: int | None
 
 
+def _collapse_progress(lines: list[str]) -> tuple[str, ...]:
+    """Do not replay a backlog of stale progress heartbeats as live updates."""
+    result: list[str] = []
+    latest_progress: str | None = None
+    for line in lines:
+        if line.startswith("[ProofLoop]") and " running · " in line:
+            latest_progress = line
+            continue
+        if latest_progress is not None:
+            result.append(latest_progress)
+            latest_progress = None
+        result.append(line)
+    if latest_progress is not None:
+        result.append(latest_progress)
+    return tuple(result)
+
+
 def poll_relay(relay_dir: str | Path) -> RelayPoll:
     root = Path(relay_dir).expanduser().resolve()
     if not root.is_dir():
@@ -39,7 +56,7 @@ def poll_relay(relay_dir: str | Path) -> RelayPoll:
         raw_lines = output.read_text(encoding="utf-8", errors="replace").splitlines()
     else:
         raw_lines = []
-    lines = tuple(redact_secrets(line) for line in raw_lines[next_line - 1 :])
+    lines = _collapse_progress([redact_secrets(line) for line in raw_lines[next_line - 1 :]])
     cursor.write_text(f"{len(raw_lines) + 1}\n", encoding="utf-8")
 
     pid = _read_pid(root / "pid")

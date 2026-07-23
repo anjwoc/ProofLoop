@@ -78,7 +78,6 @@ def _render_run_report(run_dir: Path) -> str:
     verdict = truth.get("verdict", "UNKNOWN")
     totals = usage.get("totals") or {}
     by_model = usage.get("byModel") or []
-    by_role = usage.get("byRole") or []
     by_inv = usage.get("byInvocation") or []
 
     req_by_role = model_trace.get("requestedModelsByRole") or {}
@@ -110,12 +109,12 @@ def _render_run_report(run_dir: Path) -> str:
 
     blockers = truth.get("blockers") or []
     if blockers:
-        lines.append(f"\n🚫 Blockers")
+        lines.append("\n🚫 Blockers")
         for b in blockers:
             lines.append(f"   • {b}")
 
     # Run info
-    lines.append(f"\n📊 Run Info")
+    lines.append("\n📊 Run Info")
     lines.append(f"   Run ID    : {run_meta.get('runId', run_dir.name)}")
     lines.append(f"   Strategy  : {strategy.get('strategy', '–')}  (risk: {strategy.get('risk', '–')})")
     lines.append(f"   Host      : {model_trace.get('host', '–')}")
@@ -124,7 +123,7 @@ def _render_run_report(run_dir: Path) -> str:
 
     # Models table
     if by_model:
-        lines.append(f"\n🤖 Token Usage by Model")
+        lines.append("\n🤖 Token Usage by Model")
         col = [18, 5, 8, 8, 10, 10, 10, 9]
         hdr = ["Model", "Inv", "Input", "Output", "CacheRead", "CacheWrite", "Total", "Cost"]
         lines.append("   " + "  ".join(h.ljust(col[i]) for i, h in enumerate(hdr)))
@@ -146,7 +145,7 @@ def _render_run_report(run_dir: Path) -> str:
     # Routing table
     all_roles = sorted(set(list(req_by_role) + list(obs_by_role) + missing_roles))
     if all_roles:
-        lines.append(f"\n🔀 Model Routing by Role")
+        lines.append("\n🔀 Model Routing by Role")
         for role in all_roles:
             req = ", ".join(req_by_role.get(role) or ["–"])
             obs = ", ".join(obs_by_role.get(role) or ["–"])
@@ -165,7 +164,7 @@ def _render_run_report(run_dir: Path) -> str:
                     pass
 
     if inv_log:
-        lines.append(f"\n⏱  Invocation Timeline")
+        lines.append("\n⏱  Invocation Timeline")
         for inv in inv_log:
             role = inv.get("role", "?")
             phase = inv.get("phase", "")
@@ -180,7 +179,7 @@ def _render_run_report(run_dir: Path) -> str:
 
     # Totals
     if totals:
-        lines.append(f"\n💰 Totals")
+        lines.append("\n💰 Totals")
         lines.append(f"   Input      : {_fmt(totals.get('input'))}")
         lines.append(f"   Output     : {_fmt(totals.get('output'))}")
         lines.append(f"   Cache Read : {_fmt(totals.get('cacheRead'))}")

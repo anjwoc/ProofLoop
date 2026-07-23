@@ -1,70 +1,69 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
-from proofloop_core.runtimes.adapters import ExternalCLIAdapter, HostAdapter, RoleInvocation
+from proofloop_core.analysis.usage import budgeted_token_total
 from proofloop_core.assurance.checks import (
     merge_check_reports,
     merge_required_and_post_proof,
-    proof_stage_checks,
     run_checks,
     run_post_implementation_proof,
     run_proof_stage,
 )
 from proofloop_core.assurance.diff_guard import inspect_diff
+from proofloop_core.assurance.live_evidence import seal_core_evidence
+from proofloop_core.context.proof_graph import Evidence, ProofObligation
+from proofloop_core.context.trace import summarize_trace
+from proofloop_core.contracts.task_brief import load_task_brief
+from proofloop_core.contracts.verification_plan import authoritative_passed_criteria, with_mandatory_checks
+from proofloop_core.prompting.prompt_ir import PromptMetadata
+from proofloop_core.runtimes.hosts import role_only_trace_summary
+
+from proofloop_core.runtimes.adapters import ExternalCLIAdapter, HostAdapter, RoleInvocation
 from proofloop_core.context.events import EventBus, EventEmitter
-from proofloop_core.context.fingerprint import fingerprint_check_report
 from proofloop_core.context.git_snapshot import changed_source_files, snapshot_worktree
+from proofloop_core.context.worktree_sandbox import GitWorktreeSandbox
 from proofloop_core.context.io import read_json, write_json, append_jsonl
 from proofloop_core.assurance.preflight import preflight
-from proofloop_core.engine.repair import decide_next
 from proofloop_core.context.repository_context import ensure_codegraph
 from proofloop_core.contracts.run_state import finalize_run, start_run
-from proofloop_core.engine.strategy import StrategyDecision, classify_request, reclassify_after_diff
-from proofloop_core.contracts.task_brief import CheckSpec, ChangeBudget, SimplicityPlan, TaskBrief, load_task_brief
-from proofloop_core.context.trace import summarize_trace
+from proofloop_core.contracts.expected_output import write_run_outcome
+from proofloop_core.engine.strategy import StrategyDecision, classify_request
+from proofloop_core.contracts.task_brief import CheckSpec, ChangeBudget, SimplicityPlan, TaskBrief
 from proofloop_core.assurance.truth import build_truth_report
 from proofloop_core.assurance.assurance import build_assurance_report
-from proofloop_core.runtimes.hosts import role_only_trace_summary
 from proofloop_core.contracts.goal import build_goal_contract
-from proofloop_core.context.memory import prepare_memory, write_memory
+from proofloop_core.context.memory import prepare_memory
 from proofloop_core.runtimes.runtime import ResolvedRuntime
-from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
+from proofloop_core.prompting.prompt_ir import PromptIR
 from proofloop_core.prompting.renderers import render_prompt
-from proofloop_core.analysis.usage import budgeted_token_total, build_usage_summary
+from proofloop_core.analysis.usage import build_usage_summary
 from proofloop_core.analysis.tokscale import TokScaleAdapter
+from proofloop_core.engine.intent import format_intent_contract
 from proofloop_core.engine.intent import IntentContract, compile_intent
 from proofloop_core.engine.intent_gate import evaluate_intent
 from proofloop_core.context.grounding import collect_grounding
-from proofloop_core.assurance.live_evidence import seal_core_evidence, validate_core_evidence
+from proofloop_core.assurance.live_evidence import validate_core_evidence
 from proofloop_core.contracts.execution_brief import compose_execution_brief
-from proofloop_core.context.proof_graph import Evidence, ProofGraph, ProofObligation
+from proofloop_core.context.proof_graph import ProofGraph
 from proofloop_core.contracts.request_envelope import create as create_request_envelope
-from proofloop_core.engine.skill_registry import ResolutionContext, SkillContract, SkillRegistry
+from proofloop_core.engine.skill_registry import SkillContract
 from proofloop_core.analysis.workload import probe_repository_signals
-from proofloop_core.engine.domain_runtime import build_repository_fingerprint, select_reference_slices
-from proofloop_core.contracts.verification_plan import (
-    authoritative_passed_criteria,
-    compile_verification_plan,
-    with_mandatory_checks,
-)
+from proofloop_core.engine.domain_runtime import build_repository_fingerprint
+from proofloop_core.engine.exceptions import OrchestrationError
+from proofloop_core.engine.roles import run_explorer, run_plan_review, run_planner
+from proofloop_core.engine.skills import resolve_skills
+from proofloop_core.engine.task_executor import TaskExecutor
+from proofloop_core.contracts.verification_plan import compile_verification_plan
 
 
 ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
-
-
-class OrchestrationError(RuntimeError):
-    def __init__(self, code: str, message: str, *, verdict: str = "BLOCKED"):
-        super().__init__(message)
-        self.code = code
-        self.verdict = verdict
-
 
 
 def _read_optional_json(path: Path) -> dict[str, Any] | None:
@@ -97,6 +96,53 @@ def _dedupe_checks(tasks: Iterable[TaskBrief]) -> tuple[CheckSpec, ...]:
                 seen.add(key)
                 checks.append(check)
     return tuple(checks)
+
+
+def aggregate_task(tasks: list[TaskBrief]) -> TaskBrief:
+    if not tasks:
+        raise ValueError("at least one task is required")
+    rung_order = {
+        "SKIP_NOT_NEEDED": 0,
+        "REUSE_EXISTING": 1,
+        "STDLIB": 2,
+        "PLATFORM_NATIVE": 3,
+        "INSTALLED_DEPENDENCY": 4,
+        "DIRECT_CHANGE": 5,
+        "MINIMAL_NEW_CODE": 6,
+    }
+    selected = max((task.simplicity.selected_rung for task in tasks), key=lambda item: rung_order[item])
+    return TaskBrief(
+        task_id="ALL-TASKS",
+        objective="; ".join(task.objective for task in tasks),
+        allowed_paths=tuple(sorted({path for task in tasks for path in task.allowed_paths})),
+        protected_paths=tuple(sorted({path for task in tasks for path in task.protected_paths})),
+        required_checks=_dedupe_checks(tasks),
+        change_budget=ChangeBudget(
+            max_changed_files=sum(task.change_budget.max_changed_files for task in tasks),
+            max_added_lines=(
+                sum(task.change_budget.max_added_lines for task in tasks)
+                if all(task.change_budget.max_added_lines is not None for task in tasks)
+                else None
+            ),
+            max_new_files=sum(task.change_budget.max_new_files for task in tasks),
+            allow_dependency_changes=any(task.change_budget.allow_dependency_changes for task in tasks),
+        ),
+        simplicity=SimplicityPlan(
+            selected_rung=selected,
+            rationale="Aggregate of approved task simplicity plans.",
+            considered=tuple(sorted({item for task in tasks for item in task.simplicity.considered})),
+        ),
+        max_fast_attempts=max(task.max_fast_attempts for task in tasks),
+        max_recovery_attempts=max(task.max_recovery_attempts for task in tasks),
+        criterion_ids=tuple(sorted({item for task in tasks for item in task.criterion_ids})),
+        deliverables=tuple(sorted({item for task in tasks for item in task.deliverables})),
+        dependencies=tuple(sorted({item for task in tasks for item in task.dependencies})),
+        interfaces=tuple(sorted({item for task in tasks for item in task.interfaces})),
+        context_refs=tuple(sorted({item for task in tasks for item in task.context_refs})),
+        tool_allowlist=tuple(sorted({item for task in tasks for item in task.tool_allowlist})),
+        stop_when="All aggregated task contracts are satisfied.",
+        escalate_on=tuple(sorted({item for task in tasks for item in task.escalate_on})),
+    )
 
 
 def task_to_dict(task: TaskBrief) -> dict[str, Any]:
@@ -163,65 +209,6 @@ def task_to_dict(task: TaskBrief) -> dict[str, Any]:
         "stop_when": task.stop_when,
         "escalate_on": list(task.escalate_on),
     }
-
-
-def aggregate_task(tasks: list[TaskBrief]) -> TaskBrief:
-    if not tasks:
-        raise ValueError("at least one task is required")
-    rung_order = {
-        "SKIP_NOT_NEEDED": 0,
-        "REUSE_EXISTING": 1,
-        "STDLIB": 2,
-        "PLATFORM_NATIVE": 3,
-        "INSTALLED_DEPENDENCY": 4,
-        "DIRECT_CHANGE": 5,
-        "MINIMAL_NEW_CODE": 6,
-    }
-    selected = max((task.simplicity.selected_rung for task in tasks), key=lambda item: rung_order[item])
-    return TaskBrief(
-        task_id="ALL-TASKS",
-        objective="; ".join(task.objective for task in tasks),
-        allowed_paths=tuple(sorted({path for task in tasks for path in task.allowed_paths})),
-        protected_paths=tuple(sorted({path for task in tasks for path in task.protected_paths})),
-        required_checks=_dedupe_checks(tasks),
-        change_budget=ChangeBudget(
-            max_changed_files=sum(task.change_budget.max_changed_files for task in tasks),
-            max_added_lines=sum(task.change_budget.max_added_lines for task in tasks),
-            max_new_files=sum(task.change_budget.max_new_files for task in tasks),
-            allow_dependency_changes=any(task.change_budget.allow_dependency_changes for task in tasks),
-        ),
-        simplicity=SimplicityPlan(
-            selected_rung=selected,
-            rationale="Aggregate of approved task simplicity plans.",
-            considered=tuple(sorted({item for task in tasks for item in task.simplicity.considered})),
-        ),
-        max_fast_attempts=max(task.max_fast_attempts for task in tasks),
-        max_recovery_attempts=max(task.max_recovery_attempts for task in tasks),
-        criterion_ids=tuple(sorted({item for task in tasks for item in task.criterion_ids})),
-        deliverables=tuple(sorted({item for task in tasks for item in task.deliverables})),
-        dependencies=tuple(sorted({item for task in tasks for item in task.dependencies})),
-        interfaces=tuple(sorted({item for task in tasks for item in task.interfaces})),
-        context_refs=tuple(sorted({item for task in tasks for item in task.context_refs})),
-        tool_allowlist=tuple(sorted({item for task in tasks for item in task.tool_allowlist})),
-        stop_when="All aggregated task contracts are satisfied.",
-        escalate_on=tuple(sorted({item for task in tasks for item in task.escalate_on})),
-    )
-
-
-def _combined_fingerprint(checks: dict[str, Any], diff: dict[str, Any]) -> str | None:
-    check_fp = fingerprint_check_report(checks)
-    violations = diff.get("violations") or []
-    if not check_fp and not violations:
-        return None
-    payload = {
-        "checkFingerprint": check_fp,
-        "violations": [
-            {"code": item.get("code"), "path": item.get("path"), "detail": item.get("detail")}
-            for item in violations
-            if isinstance(item, dict)
-        ],
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
 
 
 class ProofLoopOrchestrator:
@@ -437,27 +424,54 @@ class ProofLoopOrchestrator:
                     "artifact": str(self.run_dir / "request-envelope.json"),
                 },
             )
-            intent_gate_result = evaluate_intent(self.request, adapter=self.adapter, run_dir=self.run_dir, repo=self.repo)
+            intent_gate_result = evaluate_intent(
+                self.request,
+                adapter=self.adapter,
+                run_dir=self.run_dir,
+                repo=self.repo,
+                timeout_seconds=self.timeout_seconds,
+            )
             self.intent_gate_result = intent_gate_result
             write_json(self.run_dir / "intent-gate.json", intent_gate_result.to_dict())
             if intent_gate_result.clarity.value == "owner_decision_required":
-                raise OrchestrationError("INTENT_OWNER_DECISION_REQUIRED", intent_gate_result.owner_question or "owner decision", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "INTENT_OWNER_DECISION_REQUIRED",
+                    intent_gate_result.owner_question or "owner decision",
+                    verdict="NEEDS_INPUT",
+                    questions=(intent_gate_result.owner_question or "작업 범위와 승인 기준을 구체적으로 알려주세요.",),
+                )
             if intent_gate_result.clarity.value == "blocked":
-                raise OrchestrationError("INTENT_GATE_BLOCKED", intent_gate_result.blocked_reason or "blocked", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "INTENT_GATE_OWNER_CLARIFICATION_REQUIRED",
+                    intent_gate_result.blocked_reason or "the request cannot be safely compiled as written",
+                    verdict="NEEDS_INPUT",
+                    questions=(
+                        "현재 요청에는 실행 범위나 안전 조건을 확정할 수 없는 부분이 있습니다. "
+                        "수정할 대상과 성공 조건을 한 문장으로 다시 알려주세요.",
+                    ),
+                )
 
             # The intent contract is downstream of the immutable envelope, so
             # its originalRequest must retain the exact request bytes too.
             # Individual derived fields are normalized by compile_intent.
             self.intent = compile_intent(self.raw_request, intent_gate_result=self.intent_gate_result)
             write_json(self.run_dir / "intent-contract.json", self.intent.to_dict())
+            self.refined_request = format_intent_contract(self.intent)
+            write_json(self.run_dir / "refined-request-shadow.json", {"refinedRequest": self.refined_request})
             self._emit(
                 "intent.compiled",
-                phase="INIT",
-                message="Original request compiled into a scope-preserving intent contract.",
+                phase="INTENT",
+                message=f"Intent compiled: {self.intent.objective}",
                 data={
                     "originalRequestHash": self.intent.original_request_hash,
                     "acceptanceCriteria": len(self.intent.acceptance_criteria),
                     "unknowns": list(self.intent.unknowns),
+                    "basis": list(intent_gate_result.signals) or [
+                        f"{intent_gate_result.intent_kind.value} intent accepted with "
+                        f"{intent_gate_result.authority.value} authority"
+                    ],
+                    "targets": list(self.intent.target_artifacts),
+                    "exclusions": list(self.intent.non_goals),
                     "artifact": str(self.run_dir / "intent-contract.json"),
                 },
             )
@@ -467,7 +481,12 @@ class ProofLoopOrchestrator:
             preflight_result = preflight(self.repo)
             write_json(self.run_dir / "preflight.json", preflight_result)
             if not preflight_result.get("isGitRepository"):
-                raise OrchestrationError("GIT_REPOSITORY_REQUIRED", "mutation workflows require a Git repository")
+                raise OrchestrationError(
+                    "GIT_REPOSITORY_REQUIRED",
+                    "mutation workflows require a Git repository",
+                    verdict="NEEDS_INPUT",
+                    questions=("어느 Git 작업 폴더에서 이 작업을 실행할까요? 절대 경로를 알려주세요.",),
+                )
             self.original_baseline = snapshot_worktree(self.repo)
             run_state = read_json(self.run_dir / "run.json")
             run_state["baselineCommit"] = self.original_baseline
@@ -490,7 +509,12 @@ class ProofLoopOrchestrator:
                     level="error",
                     data=self.capability,
                 )
-                raise OrchestrationError("HOST_CLI_MISSING", f"{self.host} CLI is not available")
+                raise OrchestrationError(
+                    "HOST_CLI_MISSING",
+                    f"{self.host} CLI is not available",
+                    verdict="NEEDS_INPUT",
+                    questions=(f"{self.host}를 설치한 뒤 계속할까요, 아니면 사용할 다른 host 이름을 알려주세요?",),
+                )
             self._emit(
                 "capability.detected",
                 phase="CAPABILITY",
@@ -509,7 +533,10 @@ class ProofLoopOrchestrator:
                 repository_signals=repository_signals,
                 intent_gate_result=self.intent_gate_result,
             )
-            if self.strategy.strategy == "PLANNED_IMPLEMENTATION" and self.mode in {"orchestrate", "goal"}:
+            if (
+                self.strategy.strategy == "PLANNED_IMPLEMENTATION"
+                and self.mode in {"orchestrate", "goal"}
+            ):
                 self.strategy = replace(
                     self.strategy,
                     planner_required=True,
@@ -524,7 +551,8 @@ class ProofLoopOrchestrator:
                 raise OrchestrationError(
                     "INTENT_AUTHORITY_MISMATCH",
                     "a read-only request cannot enter a repository-mutation strategy",
-                    verdict="BLOCKED",
+                    verdict="NEEDS_INPUT",
+                    questions=("이번 요청은 분석만 할까요, 아니면 repository 파일을 수정해도 될까요?",),
                 )
             write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
             self.repository_fingerprint = build_repository_fingerprint(
@@ -535,12 +563,21 @@ class ProofLoopOrchestrator:
             write_json(self.run_dir / "repository-fingerprint.json", self.repository_fingerprint)
             self._emit(
                 "strategy.selected",
-                phase="CLASSIFY",
+                phase="STRATEGY",
                 message=f"Strategy {self.strategy.strategy} selected.",
-                data=self.strategy.to_dict(),
+                data={
+                    **self.strategy.to_dict(),
+                    "basis": list(self.strategy.reason),
+                    "expectedChanges": (
+                        f"{len(self.intent.target_artifacts)} declared target(s)"
+                        if self.intent.target_artifacts
+                        else "repository-scoped change"
+                    ),
+                    "plannedChecks": None,
+                },
             )
             self._initialize_proof_graph()
-            self._resolve_skills()
+            resolve_skills(self)
 
 
             self.transition("CONTEXT")
@@ -582,11 +619,17 @@ class ProofLoopOrchestrator:
                     self._emit(
                         "context.failed",
                         phase="CONTEXT",
-                        message="Repository context preparation failed.",
-                        level="error",
+                        message="Repository context is unavailable; continuing with bounded direct context.",
+                        level="warning",
                         data=context,
                     )
-                    raise OrchestrationError("REPOSITORY_CONTEXT_BLOCKED", "required repository context is unavailable")
+                    context = {
+                        "schemaVersion": "1.0",
+                        "verdict": "SKIPPED",
+                        "reason": "codegraph unavailable; bounded direct context selected",
+                        "originalContext": context,
+                    }
+                    write_json(context_path, context)
             else:
                 context = {"schemaVersion": "1.0", "verdict": "SKIPPED", "reason": "strategy does not require broad context"}
                 write_json(context_path, context)
@@ -626,7 +669,7 @@ class ProofLoopOrchestrator:
                     compiled_brief = dict(reconciled)
                 self.execution_brief = compiled_brief
                 self.compiler_active = compiler_active
-                write_json(self.run_dir / ("execution-brief.json" if compiler_active else "refined-request-shadow.json"), compiled_brief)
+                write_json(self.run_dir / ("execution-brief.json" if compiler_active else "execution-brief-shadow.json"), compiled_brief)
             except Exception as e:
                 self.execution_brief = None
                 self.compiler_active = False
@@ -660,19 +703,17 @@ class ProofLoopOrchestrator:
             if self.strategy.planner_required:
                 if self.goal_mode:
                     self._goal_transition("EXPLORE", "repository context is ready")
-                    self._run_explorer()
+                    run_explorer(self)
                     self._goal_transition("DESIGN", "exploration evidence is ready")
                 elif self.strategy.explorer_required:
-                    self._run_explorer()
-                self.tasks = self._run_planner()
+                    run_explorer(self)
+                self.tasks = run_planner(self)
                 if self.strategy.strategy == "HIGH_RISK_ENGINEERING":
                     if self.goal_mode:
                         self._goal_transition("PLAN_REVIEW", "high-risk plan requires independent review")
-                    self._run_plan_review()
+                    run_plan_review(self)
             else:
-                if self.goal_mode:
-                    self._goal_transition("IMPLEMENT", "direct goal implementation started")
-                self.tasks = self._run_direct_bootstrap()
+                self.tasks = run_planner(self)
 
             self.verification_plan = compile_verification_plan(
                 criterion_ids=(item.criterion_id for item in self.intent.acceptance_criteria),
@@ -735,26 +776,71 @@ class ProofLoopOrchestrator:
                     )
                     raise OrchestrationError("BLUEPRINT_VALIDATION_FAILED", str(e), verdict="BLOCKED")
 
-            for task in self.tasks:
+            source_repo = self.repo
+            isolation_dir = self.run_dir / "isolation"
+            with GitWorktreeSandbox(
+                source_repo,
+                self.original_baseline,
+                isolation_dir,
+            ) as sandbox:
+                self._emit(
+                    "sandbox.created",
+                    phase="ISOLATE",
+                    message="Detached Git worktree created for implementation.",
+                    data={
+                        "workspace": str(sandbox.path),
+                        "baseline": self.original_baseline,
+                        "artifact": str(isolation_dir / "sandbox.json"),
+                    },
+                )
+                self.repo = sandbox.path
                 try:
-                    self._execute_task(task)
-                except Exception as exc:
-                    self._emit(
-                        "task.failed",
-                        phase="EXECUTE",
-                        message=f"Task {task.task_id} failed.",
-                        level="error",
-                        task_id=task.task_id,
-                        data={"error": f"{type(exc).__name__}: {exc}"},
-                    )
-                    raise
+                    for task in self.tasks:
+                        try:
+                            TaskExecutor(self).execute_task(task)
+                        except Exception as exc:
+                            self._emit(
+                                "task.failed",
+                                phase="EXECUTE",
+                                message=f"Task {task.task_id} failed.",
+                                level="error",
+                                task_id=task.task_id,
+                                data={"error": f"{type(exc).__name__}: {exc}"},
+                            )
+                            raise
 
-            self._final_verification_and_review()
+                    self._final_verification_and_review()
+                    promotion = sandbox.promote(
+                        path
+                        for task in self.tasks
+                        for path in task.allowed_paths
+                    )
+                    self._emit(
+                        "sandbox.promoted",
+                        phase="ISOLATE",
+                        message=(
+                            f"Promoted {len(promotion['changedPaths'])} verified "
+                            "file(s) to the original worktree."
+                        ),
+                        data={
+                            **promotion,
+                            "artifact": str(isolation_dir / "promotion.json"),
+                        },
+                    )
+                finally:
+                    self.repo = source_repo
             return self._finalize_truth()
         except OrchestrationError as exc:
+            if exc.failure_domain == "PROOFLOOP":
+                return self._finalize_internal_error(exc.code, str(exc))
+            if exc.verdict == "NEEDS_INPUT":
+                return self._finalize_needs_input(exc.code, str(exc), exc.questions)
             return self._finalize_terminal(exc.verdict, exc.code, str(exc))
         except Exception as exc:
-            return self._finalize_terminal("FAILED", "ORCHESTRATOR_INTERNAL_ERROR", f"{type(exc).__name__}: {exc}")
+            return self._finalize_internal_error(
+                "ORCHESTRATOR_INTERNAL_ERROR",
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def _invoke(
         self,
@@ -800,7 +886,14 @@ class ProofLoopOrchestrator:
             cap = self.adapter.detect_capabilities()
             match = match_capability(cap, requested_model, [])
             if match["disposition"] == "BLOCK":
-                raise OrchestrationError("ROUTING_BLOCKED", f"Host capability insufficient: {match['reasons']}", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "ROUTING_OWNER_ACTION_REQUIRED",
+                    f"Host capability insufficient: {match['reasons']}",
+                    verdict="NEEDS_INPUT",
+                    questions=(
+                        "선택한 실행 호스트가 이 역할을 실행할 수 없습니다. 로그인·설치를 완료한 뒤 다시 시도하거나, 사용할 host를 알려주세요.",
+                    ),
+                )
             elif match["disposition"] == "DOWNGRADE":
                 self._emit(
                     "routing.divergence",
@@ -1005,12 +1098,18 @@ class ProofLoopOrchestrator:
             timed_out = bool(result.get("timedOut"))
             cancelled = bool(result.get("cancelled"))
             reason_code = str(result.get("reasonCode") or ("HOST_TIMEOUT" if timed_out else "HOST_CANCELLED" if cancelled else "HOST_EXIT_NONZERO"))
-            external_block = reason_code in {"HOST_RATE_LIMITED", "HOST_INITIAL_OUTPUT_TIMEOUT"}
+            external_block = reason_code in {
+                "HOST_RATE_LIMITED",
+                "HOST_INITIAL_OUTPUT_TIMEOUT",
+                "HOST_PROVIDER_RESPONSE_TIMEOUT",
+            }
             terminal_type = "role.blocked" if external_block else "role.cancelled" if cancelled else "role.failed"
             if reason_code == "HOST_RATE_LIMITED":
                 terminal_message = f"{role} blocked by provider rate limit."
             elif reason_code == "HOST_INITIAL_OUTPUT_TIMEOUT":
                 terminal_message = f"{role} blocked because the provider produced no initial output."
+            elif reason_code == "HOST_PROVIDER_RESPONSE_TIMEOUT":
+                terminal_message = f"{role} blocked because AGY ended its own response wait."
             else:
                 terminal_message = f"{role} {'cancelled' if cancelled else 'failed'}."
             self._emit(
@@ -1030,16 +1129,48 @@ class ProofLoopOrchestrator:
                     "invocationDir": result.get("invocationDir"),
                 },
             )
+            question = {
+                "HOST_RATE_LIMITED": "호스트 제공자의 사용량 제한에 도달했습니다. 제한이 해제된 뒤 다시 시도할까요, 아니면 다른 host를 사용할까요?",
+                "HOST_INITIAL_OUTPUT_TIMEOUT": "호스트가 초기 응답을 반환하지 못했습니다. 로그인과 네트워크를 확인한 뒤 같은 host로 다시 시도할까요?",
+                "HOST_PROVIDER_RESPONSE_TIMEOUT": "호스트가 역할 결과를 반환하기 전에 자체 응답 대기 시간을 끝냈습니다. 로그인·네트워크를 확인한 뒤 다시 시도할까요?",
+            }.get(reason_code)
             raise OrchestrationError(
                 reason_code if external_block else f"{role.upper()}_INVOCATION_FAILED",
                 (
                     f"{role} blocked by provider rate limit: {result.get('reason') or 'quota exhausted'}"
                     if reason_code == "HOST_RATE_LIMITED"
-                    else f"{role} blocked: {result.get('reason') or 'provider produced no initial output'}"
+                    else (
+                        f"{role} blocked because AGY ended its own response wait: "
+                        f"{result.get('reason') or 'provider timeout'}"
+                        if reason_code == "HOST_PROVIDER_RESPONSE_TIMEOUT"
+                        else f"{role} blocked: {result.get('reason') or 'provider produced no initial output'}"
+                    )
                 )
                 if external_block
                 else f"{role} invocation failed: {result.get('reason') or result.get('exitCode')}",
-                verdict="BLOCKED",
+                verdict="NEEDS_INPUT" if external_block else "FAILED",
+                questions=(question,) if question else (),
+            )
+        if result_path is not None and not result_path.is_file():
+            self._emit(
+                "role.failed",
+                phase=invocation_phase,
+                message=f"{role} ended without its required completion result.",
+                level="error",
+                task_id=task_id,
+                data={
+                    **role_data,
+                    "reasonCode": "ROLE_RESULT_MISSING",
+                    "resultPath": str(result_path),
+                    "invocationId": result.get("invocationId"),
+                    "invocationDir": result.get("invocationDir"),
+                },
+            )
+            raise OrchestrationError(
+                "ROLE_RESULT_MISSING",
+                f"{role} exited successfully but did not return the required ProofLoop result. "
+                "No source mutation is accepted without that completion evidence.",
+                verdict="FAILED",
             )
         self._emit(
             "role.completed",
@@ -1059,47 +1190,6 @@ class ProofLoopOrchestrator:
         )
         return result
 
-    def _run_explorer(self) -> None:
-        assert self.run_dir is not None and self.strategy is not None
-        result_path = self.run_dir / "exploration.json"
-
-        ir = PromptIR(
-            prompt_id="explorer-1",
-            request_id="todo",
-            contract_id="todo",
-            blueprint_id="todo",
-            role="explorer_fast",
-            goal=str(self.request),
-            stop_when="",
-            deliverables=(),
-            evidence_requirements=(),
-            allowed_scope=(),
-            protected_scope=(),
-            must_do=("Map only the relevant entry points, callers, tests, constraints, and open risks.",),
-            must_not=("Do not edit source and do not design speculative features.",),
-            context_refs=(
-                f"Strategy: {self.strategy.strategy}",
-                f"Repository: {self.repo}",
-                f"Repository context: {self.run_dir / 'repository-context.json'}"
-            ),
-            allowed_tools=(),
-            output_contract=f"Write JSON to {result_path} exactly:\n{{\"schemaVersion\":\"1.0\",\"entryPoints\":[],\"impactedFiles\":[],\"tests\":[],\"constraints\":[],\"openRisks\":[]}}\n",
-            escalate_when=(),
-            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
-        )
-
-        prompt = self._render_prompt(ir)
-
-        self._invoke(
-            "explorer_fast",
-            prompt,
-            result_path=result_path,
-            immutable_source=True,
-            phase="EXPLORE",
-        )
-        if not result_path.exists():
-            raise OrchestrationError("EXPLORATION_ARTIFACT_MISSING", "explorer did not produce exploration.json")
-
     def _initialize_proof_graph(self) -> None:
         assert self.run_dir is not None and self.intent is not None and self.strategy is not None
         review_authority = "MODEL_REVIEW" if self.strategy.tier in {"T2", "T3"} else "DIFF_GUARD"
@@ -1116,183 +1206,22 @@ class ProofLoopOrchestrator:
         self.proof_graph = ProofGraph(obligations)
         self._persist_proof_graph("proof obligations initialized")
 
-    def _resolve_skills(self) -> None:
-        assert self.run_dir is not None and self.strategy is not None and self.proof_graph is not None
-        protocols_root = Path(__file__).resolve().parents[1] / "proofloop_protocols"
-        domain_root = Path(__file__).resolve().parents[1] / "proofloop_domain_packs"
-        protocol_registry = SkillRegistry.discover(protocols_root) if protocols_root.exists() else SkillRegistry([])
-        domain_registry = SkillRegistry.discover(domain_root) if domain_root.exists() else SkillRegistry([])
-        registry = SkillRegistry([*protocol_registry.skills, *domain_registry.skills])
-        write_json(self.run_dir / "skill-registry.json", registry.to_dict())
-        token_budgets = {"T0": 20_000, "T1": 60_000, "T2": 180_000, "T3": 360_000}
-        budget = token_budgets[self.strategy.tier]
-        strategy = self.strategy
-        proof_graph = self.proof_graph
-        self.token_budget = budget
-        resolution_mode = "goal" if self.goal_mode or self.mode == "orchestrate" else self.mode
-        fingerprint = self.repository_fingerprint or {
-            "taskTypes": [], "signals": [], "languages": [], "frameworks": {}, "tools": {}
-        }
-        raw_frameworks = fingerprint.get("frameworks")
-        frameworks = raw_frameworks if isinstance(raw_frameworks, dict) else {}
-        raw_tools = fingerprint.get("tools")
-        tools = raw_tools if isinstance(raw_tools, dict) else {}
-
-        def resolution_context(remaining_tokens: int, task_type: str | None = None) -> ResolutionContext:
-            return ResolutionContext(
-                mode=resolution_mode,
-                host=self.host,
-                tier=strategy.tier,
-                open_obligations=tuple(item.obligation_id for item in proof_graph.obligations),
-                remaining_tokens=remaining_tokens,
-                task_type=task_type,
-                repository_signals=tuple(str(item) for item in fingerprint.get("signals", [])),
-                languages=tuple(str(item) for item in fingerprint.get("languages", [])),
-                frameworks=tuple((str(name), str(version)) for name, version in frameworks.items()),
-                tools=tuple((str(name), str(version)) for name, version in tools.items()),
-                allow_experimental_domains=self.experimental_domain_packs,
-            )
-
-        selected_protocols = protocol_registry.resolve(resolution_context(budget)) if self.skills_enabled else []
-        selected_domains: list[SkillContract] = []
-        selected_domain_names: set[str] = set()
-        reserved = sum(item.max_tokens for item in selected_protocols)
-        if self.skills_enabled:
-            for task_type in list(fingerprint.get("taskTypes", []))[:3]:
-                candidates = domain_registry.resolve(
-                    resolution_context(max(0, budget - reserved), str(task_type))
-                )
-                for candidate in candidates:
-                    if candidate.name in selected_domain_names:
-                        continue
-                    if reserved + candidate.max_tokens > budget:
-                        continue
-                    selected_domains.append(candidate)
-                    selected_domain_names.add(candidate.name)
-                    reserved += candidate.max_tokens
-        selected = [*selected_protocols, *selected_domains]
-        self.selected_skills = selected
-        self.selected_skill_references = {}
-        task_types = {str(item) for item in fingerprint.get("taskTypes", [])}
-        skipped_domains = [
-            {
-                "skill": skill.name,
-                "status": skill.status,
-                "reasonCode": "EXPERIMENTAL_REQUIRES_OPT_IN",
-            }
-            for skill in domain_registry.skills
-            if skill.name not in selected_domain_names
-            and skill.status == "EXPERIMENTAL"
-            and bool(task_types.intersection(skill.task_types))
-            and not self.experimental_domain_packs
-        ]
-        domain_selections: list[dict[str, Any]] = []
-        for skill in selected_domains:
-            reference_selection = select_reference_slices(
-                skill.root,
-                fingerprint,
-                max_tokens=skill.max_injected_tokens,
-            )
-            self.selected_skill_references[skill.name] = list(reference_selection["slices"])
-            domain_selections.append(
-                {
-                    "skill": skill.name,
-                    "status": skill.status,
-                    "adapters": reference_selection["adapters"],
-                    "slices": reference_selection["slices"],
-                    "estimatedTokens": reference_selection["estimatedTokens"],
-                    "proposedObligations": list(skill.adds),
-                    "gatingObligationsActivated": skill.status in {"VERIFIED", "DEFAULT"},
-                }
-            )
-        write_json(
-            self.run_dir / "domain-selection.json",
-            {
-                "schemaVersion": "1.0",
-                "fingerprint": str(self.run_dir / "repository-fingerprint.json"),
-                "selected": domain_selections,
-                "skipped": skipped_domains,
-                "policy": {"primary": 1, "maxAdjunct": 2, "technologyAdaptersAreConditional": True},
-            },
-        )
-        write_json(
-            self.run_dir / "skill-resolution.json",
-            {
-                "schemaVersion": "1.0",
-                "mode": resolution_mode,
-                "tier": self.strategy.tier,
-                "tokenBudget": budget,
-                "skillsEnabled": self.skills_enabled,
-                "selected": [item.to_dict() for item in selected],
-                "processProtocols": [item.name for item in selected_protocols],
-                "domainPacks": [item.name for item in selected_domains],
-                "experimentalDomainPacks": self.experimental_domain_packs,
-            },
-        )
-        self._emit(
-            "budget.updated",
-            phase="CLASSIFY",
-            message=f"Hard run token budget set for {self.strategy.tier}.",
-            data={"tier": self.strategy.tier, "maxTokens": budget},
-        )
-        if not selected:
-            self._emit(
-                "skill.skipped",
-                phase="CLASSIFY",
-                message=(
-                    "Skill selection is disabled for this ablation run."
-                    if not self.skills_enabled
-                    else "No installed skill contract matched the current proof gaps and budget."
-                ),
-                data={"tier": self.strategy.tier, "skillsEnabled": self.skills_enabled, "openObligations": [item.obligation_id for item in self.proof_graph.obligations]},
-            )
-        for skill in selected:
-            selection_description = (
-                "selected as a repository-compatible domain workflow"
-                if skill.kind == "DOMAIN_PACK"
-                else "selected to close an open proof gap"
-            )
-            self._emit(
-                "skill.selected",
-                phase="CLASSIFY",
-                message=f"Skill {skill.name} {selection_description}.",
-                data={
-                    "skill": skill.name,
-                    "kind": skill.kind,
-                    "version": skill.version,
-                    "contentHash": skill.content_hash,
-                    "closes": list(skill.closes),
-                    "proposedObligations": list(skill.adds),
-                },
-            )
-            self._emit(
-                "skill.reference_loaded",
-                phase="CLASSIFY",
-                message=f"Skill contract and instructions loaded for {skill.name}.",
-                data={
-                    "skill": skill.name,
-                    "skillPath": str(skill.root / "SKILL.md"),
-                    "contractPath": str(skill.root / "proofloop.skill.json"),
-                    "references": self.selected_skill_references.get(skill.name, []),
-                },
-            )
-        for skipped in skipped_domains:
-            self._emit(
-                "skill.skipped",
-                phase="CLASSIFY",
-                message=f"Experimental domain pack {skipped['skill']} was not auto-selected.",
-                data=skipped,
-            )
-
     def _role_time_budget_seconds(self, role: str) -> int:
-        tier = self.strategy.tier if self.strategy is not None else "T1"
-        budgets = {
-            "T0": {"explorer_fast": 60, "planner_deep": 120, "implementer_fast": 120, "implementer_recovery": 120, "reviewer_deep": 120},
-            "T1": {"explorer_fast": 90, "planner_deep": 180, "implementer_fast": 180, "implementer_recovery": 180, "reviewer_deep": 180},
-            "T2": {"explorer_fast": 120, "planner_deep": 240, "implementer_fast": 300, "implementer_recovery": 300, "reviewer_deep": 240},
-            "T3": {"explorer_fast": 180, "planner_deep": 360, "implementer_fast": 480, "implementer_recovery": 480, "reviewer_deep": 360},
-        }
-        return budgets[tier][role]
+        """Return the explicit run deadline, never a hidden per-role cap.
+
+        A caller may opt into a smaller uniform role deadline for an
+        operational environment. Without that setting each role gets the
+        deadline selected for the run.
+        """
+        del role
+        configured = os.environ.get("PROOFLOOP_ROLE_TIMEOUT_SECONDS")
+        if not configured:
+            return self.timeout_seconds
+        try:
+            value = int(configured)
+        except ValueError:
+            return self.timeout_seconds
+        return min(self.timeout_seconds, value) if value > 0 else self.timeout_seconds
 
     def _prompt_with_selected_skills(self, role: str, prompt: str) -> str:
         assert self.run_dir is not None
@@ -1352,8 +1281,6 @@ class ProofLoopOrchestrator:
         budgeted_total = usage.get("budgetedTotal")
         if not isinstance(budgeted_total, int) or isinstance(budgeted_total, bool):
             budgeted_total = budgeted_token_total(usage)
-        # Legacy adapters that expose only rawTotal intentionally count in
-        # full; cache weighting is available only with provider evidence.
         self.consumed_tokens += budgeted_total
         if raw_total or budgeted_total:
             self._emit(
@@ -1404,7 +1331,12 @@ class ProofLoopOrchestrator:
             },
         )
 
-    def _record_verification_proof(self, checks: dict[str, Any], diff: dict[str, Any], review: dict[str, Any] | None = None) -> None:
+    def _record_verification_proof(
+        self,
+        checks: dict[str, Any],
+        diff: dict[str, Any],
+        review: dict[str, Any] | None = None,
+    ) -> None:
         assert self.proof_graph is not None
         proof_graph = self.proof_graph
         sequence = len(proof_graph.evidence)
@@ -1425,7 +1357,7 @@ class ProofLoopOrchestrator:
         for obligation in proof_graph.obligations:
             if obligation.obligation_id in passed_criteria:
                 record(obligation.obligation_id, "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict, check_level)
-        if any(item.obligation_id == "recovery-progress" for item in self.proof_graph.obligations):
+        if any(item.obligation_id == "recovery-progress" for item in proof_graph.obligations):
             record("recovery-progress", "DETERMINISTIC_CHECK", "checks/checks.json", check_verdict, check_level)
         authority = "MODEL_REVIEW" if review and review.get("reviewMode") != "DETERMINISTIC_FAST_LANE" else "DIFF_GUARD"
         verdict = str(review.get("verdict")) if review else diff_verdict
@@ -1435,556 +1367,7 @@ class ProofLoopOrchestrator:
         record("simplicity", authority, "review.json" if review else "diff-guard.json", "PASS" if simplicity == "MINIMAL" else simplicity, review_level)
         self._persist_proof_graph("verification evidence evaluated against proof obligations")
 
-
-
-    def _run_planner(self) -> list[TaskBrief]:
-        assert self.run_dir is not None and self.strategy is not None and self.intent is not None
-        self.transition("PLAN")
-        result_path = self.run_dir / "plan.json"
-        accepted_criteria = ", ".join(item.criterion_id for item in self.intent.acceptance_criteria)
-
-        ir = PromptIR(
-            prompt_id="planner-1",
-            request_id="todo",
-            contract_id="todo",
-            blueprint_id="todo",
-            role="planner_deep",
-            goal=str(self.request),
-            stop_when="",
-            deliverables=(),
-            evidence_requirements=(),
-            allowed_scope=(),
-            protected_scope=(),
-            must_do=("Inspect real files and create the smallest sufficient implementation plan.",),
-            must_not=("Do not edit production or test source.",),
-            context_refs=(
-                f"Strategy: {self.strategy.strategy}",
-                f"Repository: {self.repo}",
-                f"Repository evidence: {self.run_dir / 'repository-context.json'}",
-                f"Exploration evidence: {self.run_dir / 'exploration.json' if (self.run_dir / 'exploration.json').exists() else 'not requested'}"
-            ),
-            allowed_tools=(),
-            output_contract=(
-                f"Write JSON to {result_path} with exactly this shape:\n"
-                "{\n"
-                '  "schemaVersion": "1.0",\n'
-                '  "verdict": "READY",\n'
-                '  "summary": "concise plan",\n'
-                '  "tasks": [\n'
-                '    {\n'
-                '      "id": "TASK-001",\n'
-                '      "objective": "...",\n'
-                f'      "criterion_ids": ["{self.intent.acceptance_criteria[0].criterion_id}"],\n'
-                '      "allowedPaths": ["path/**"],\n'
-                '      "protectedPaths": [],\n'
-                '      "requiredChecks": [{"name": "tests", "command": ["executable", "arg"], "timeoutSeconds": 300}],\n'
-                '      "proofPlan": {"baselineChecks": [], "redChecks": [], "automatedChecks": [{"name": "behavior", "command": ["executable", "arg"], "timeoutSeconds": 300}], "surfaceScenarios": [], "adversarialChecks": [], "cleanupChecks": []},\n'
-                '      "changeBudget": {"maxChangedFiles": 4, "maxAddedLines": 160, "maxNewFiles": 1, "allowDependencyChanges": false},\n'
-                '      "simplicity": {"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": []},\n'
-                '      "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1}\n'
-                '    }\n'
-                '  ]\n'
-                "}\n"
-                f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); every command (including every surface scenario command) must be executable in this repository; proofPlan automated/adversarial/cleanup/surface checks run after the change and must contain at least one executable check; baseline checks must pass before mutation and red checks must fail before mutation; stop at the first sufficient simplicity rung; no speculative work.\n"
-            ),
-            escalate_when=(),
-            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
-        )
-
-        prompt = self._render_prompt(ir)
-
-        self._invoke("planner_deep", prompt, result_path=result_path, immutable_source=True, phase="PLAN")
-        return self._materialize_plan(result_path)
-
-    def _run_direct_bootstrap(self) -> list[TaskBrief]:
-        """Use one fast role to define and execute a truly bounded direct change."""
-        assert self.run_dir is not None and self.intent is not None
-        self.transition("DIRECT_BOOTSTRAP")
-        task_path = self.run_dir / "tasks" / "TASK-001.json"
-
-        ir = PromptIR(
-            prompt_id="bootstrap-1",
-            request_id="todo",
-            contract_id="todo",
-            blueprint_id="BOOTSTRAP",
-            role="implementer_fast",
-            goal=str(self.request),
-            stop_when="",
-            deliverables=(),
-            evidence_requirements=(),
-            allowed_scope=(),
-            protected_scope=(),
-            must_do=(
-                f"Before editing, write a bounded task brief to {task_path} using the standard ProofLoop TaskBrief JSON fields. "
-                f"The brief must include criterion_ids using only these declared IDs: {', '.join(item.criterion_id for item in self.intent.acceptance_criteria)}. "
-                "Then implement that task with the minimum change. Use actual repository test commands.",
-            ),
-            must_not=("Do not broaden scope or claim success.",),
-            context_refs=(),
-            allowed_tools=(),
-            output_contract="",
-            escalate_when=(),
-            metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
-        )
-
-        prompt = self._render_prompt(ir)
-        baseline = snapshot_worktree(self.repo)
-        self._invoke(
-            "implementer_fast",
-            prompt,
-            result_path=task_path,
-            phase="EXECUTE",
-            task_id="TASK-001",
-            attempt=1,
-        )
-        if not task_path.exists():
-            raise OrchestrationError("DIRECT_TASK_BRIEF_MISSING", "fast implementer did not create a task brief")
-        try:
-            task = load_task_brief(task_path)
-            if not task.allowed_paths:
-                raise ValueError("allowedPaths must not be empty")
-        except Exception as exc:
-            raise OrchestrationError("DIRECT_TASK_BRIEF_INVALID", str(exc), verdict="FAILED") from exc
-        if not task.criterion_ids and len(self.intent.acceptance_criteria) == 1:
-            # A legacy direct-bootstrap host may omit criterion_ids.  Mapping
-            # exactly one task to exactly one immutable acceptance criterion
-            # is a deterministic Core inference; plural criteria never get
-            # this convenience fallback.
-            criterion_id = self.intent.acceptance_criteria[0].criterion_id
-            task = replace(task, criterion_ids=(criterion_id,))
-            raw_task = read_json(task_path)
-            raw_task["criterion_ids"] = [criterion_id]
-            write_json(task_path, raw_task)
-            self._emit(
-                "criterion_mapping.inferred",
-                phase="PLAN",
-                message=f"Direct bootstrap deterministically linked {task.task_id} to {criterion_id}.",
-                task_id=task.task_id,
-                data={"taskId": task.task_id, "criterionIds": [criterion_id], "reason": "SINGLE_TASK_SINGLE_CRITERION"},
-            )
-        # Store baseline so the already-performed direct implementation becomes attempt 1.
-        write_json(self.run_dir / "direct-bootstrap.json", {"taskId": task.task_id, "baselineCommit": baseline})
-        self._emit(
-            "task.created",
-            phase="PLAN",
-            message=f"Task {task.task_id} created.",
-            task_id=task.task_id,
-            data=task_to_dict(task),
-        )
-        return [task]
-
-    def _materialize_plan(self, result_path: Path) -> list[TaskBrief]:
-        assert self.run_dir is not None and self.intent is not None
-        if not result_path.exists():
-            raise OrchestrationError("PLAN_ARTIFACT_MISSING", "planner did not produce plan.json")
-        try:
-            plan = read_json(result_path)
-        except Exception as exc:
-            raise OrchestrationError("PLAN_ARTIFACT_INVALID", str(exc), verdict="FAILED") from exc
-        if plan.get("verdict") != "READY":
-            raise OrchestrationError("PLAN_NOT_READY", str(plan.get("reason") or plan.get("verdict")))
-        tasks_raw = plan.get("tasks")
-        if not isinstance(tasks_raw, list) or not 1 <= len(tasks_raw) <= 4:
-            raise OrchestrationError("PLAN_TASK_COUNT_INVALID", "plan must contain between 1 and 4 tasks", verdict="FAILED")
-        tasks_dir = self.run_dir / "tasks"
-        tasks_dir.mkdir(parents=True, exist_ok=True)
-        tasks: list[TaskBrief] = []
-        ids: set[str] = set()
-        for index, raw in enumerate(tasks_raw, start=1):
-            if not isinstance(raw, dict):
-                raise OrchestrationError("PLAN_TASK_INVALID", f"task {index} is not an object", verdict="FAILED")
-            task_id = raw.get("id")
-            if not isinstance(task_id, str) or task_id in ids:
-                raise OrchestrationError("PLAN_TASK_ID_INVALID", f"invalid or duplicate task id: {task_id}", verdict="FAILED")
-            ids.add(task_id)
-            path = tasks_dir / f"{task_id}.json"
-            write_json(path, raw)
-            try:
-                loaded = load_task_brief(path)
-                if not loaded.allowed_paths:
-                    raise ValueError("allowedPaths must not be empty")
-                tasks.append(loaded)
-                self._emit(
-                    "task.created",
-                    phase="PLAN",
-                    message=f"Task {loaded.task_id} created.",
-                    task_id=loaded.task_id,
-                    data=task_to_dict(loaded),
-                )
-            except Exception as exc:
-                raise OrchestrationError("PLAN_TASK_SCHEMA_INVALID", f"{task_id}: {exc}", verdict="FAILED") from exc
-        if (
-            len(tasks) == 1
-            and not tasks[0].criterion_ids
-            and len(self.intent.acceptance_criteria) == 1
-        ):
-            criterion_id = self.intent.acceptance_criteria[0].criterion_id
-            task = replace(tasks[0], criterion_ids=(criterion_id,))
-            tasks[0] = task
-            path = tasks_dir / f"{task.task_id}.json"
-            raw_task = read_json(path)
-            raw_task["criterion_ids"] = [criterion_id]
-            write_json(path, raw_task)
-            self._emit(
-                "criterion_mapping.inferred",
-                phase="PLAN",
-                message=f"Single-task plan deterministically linked {task.task_id} to {criterion_id}.",
-                task_id=task.task_id,
-                data={"taskId": task.task_id, "criterionIds": [criterion_id], "reason": "SINGLE_TASK_SINGLE_CRITERION"},
-            )
-        (self.run_dir / "plan.md").write_text(str(plan.get("summary") or "ProofLoop plan") + "\n", encoding="utf-8")
-        return tasks
-
-    def _run_plan_review(self) -> None:
-        assert self.run_dir is not None
-        self.transition("PLAN_REVIEW")
-        result_path = self.run_dir / "plan-review.json"
-
-        ir = PromptIR(
-            prompt_id="plan-review-1",
-            request_id="todo",
-            contract_id="todo",
-
-            role="reviewer_deep", blueprint_id="PLAN_REVIEW",
-            goal="",
-            stop_when="",
-            deliverables=(),
-            evidence_requirements=(),
-            allowed_scope=(),
-            protected_scope=(),
-            must_do=(),
-            must_not=("Do not edit source.",),
-            context_refs=(),
-            allowed_tools=(),
-            output_contract=(
-                f"Write JSON to {result_path}:\n"
-                '{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{"severity":"critical|important|minor","message":"..."}]}\n'
-                "Approve only if acceptance criteria, checks, scope, and escalation conditions are sufficient and minimal.\n"
-            ),
-            escalate_when=(),
-            metadata=PromptMetadata(compiler_version=str(self.run_dir / 'plan.json'), generation_time="todo")
-        )
-
-        prompt = self._render_prompt(ir)
-        self._emit("review.started", phase="PLAN", message="High-risk plan review started.")
-        self._invoke(
-            "reviewer_deep",
-            prompt,
-            result_path=result_path,
-            immutable_source=True,
-            phase="PLAN",
-        )
-        review = _read_optional_json(result_path)
-        if not review or review.get("verdict") != "APPROVED":
-            raise OrchestrationError("PLAN_REVIEW_NOT_APPROVED", "high-risk plan review did not approve the plan")
-        self._emit(
-            "review.completed",
-            phase="PLAN",
-            message="High-risk plan review approved.",
-            data={"verdict": review.get("verdict"), "findings": review.get("findings", [])},
-        )
-
-    def _execute_task(self, task: TaskBrief) -> None:
-        assert self.run_dir is not None and self.strategy is not None and self.proof_graph is not None
-        self._emit(
-            "task.started",
-            phase="EXECUTE",
-            message=f"Task {task.task_id} started.",
-            task_id=task.task_id,
-            data={"objective": task.objective},
-        )
-        task_path = self.run_dir / "tasks" / f"{task.task_id}.json"
-        task_dir = self.run_dir / "task-runs" / task.task_id
-        task_dir.mkdir(parents=True, exist_ok=True)
-        direct = _read_optional_json(self.run_dir / "direct-bootstrap.json")
-        if direct and direct.get("taskId") == task.task_id:
-            baseline = str(direct["baselineCommit"])
-            role = "implementer_fast"
-            preinvoked = True
-        else:
-            baseline = snapshot_worktree(self.repo)
-            role = "implementer_fast"
-            preinvoked = False
-        write_json(task_dir / "task-state.json", {"taskId": task.task_id, "baselineCommit": baseline})
-        attempts: list[dict[str, Any]] = []
-        replan_count = 0
-
-        # A baseline or red test only proves something when it ran before the
-        # first source mutation for this task. Direct bootstrap intentionally
-        # mutates before it writes a task brief, so it cannot make that claim.
-        if preinvoked and any(proof_stage_checks(task, stage) for stage in ("baseline", "red")):
-            raise OrchestrationError(
-                "PREIMPLEMENTATION_PROOF_UNAVAILABLE",
-                f"{task.task_id} declares baseline/red proof after direct bootstrap mutation",
-                verdict="BLOCKED",
-            )
-        if not preinvoked:
-            self._run_preimplementation_proof(task, task_dir)
-
-        while True:
-            if self.goal_mode:
-                self.goal_cycles += 1
-                if self.goal_cycles > self.max_goal_cycles:
-                    self._goal_transition("EXHAUSTED", "goal cycle budget exhausted", taskId=task.task_id)
-                    raise OrchestrationError("GOAL_CYCLE_BUDGET_EXHAUSTED", f"{task.task_id} exceeded goal cycle budget")
-                self._goal_transition("IMPLEMENT", "implementation cycle started", taskId=task.task_id)
-            sequence = len(attempts) + 1
-            self.transition("EXECUTE", taskId=task.task_id, role=role, attempt=sequence)
-            result_path = task_dir / f"attempt-{sequence:02d}-{role}-result.json"
-            if not preinvoked:
-                evidence_note = ""
-                if attempts:
-                    last = attempts[-1]
-                    evidence_note = (
-                        f"\nPrevious attempt evidence: {last['checksRef']} and {last['diffGuardRef']}. "
-                        f"Failure fingerprint: {last.get('failureFingerprint')}."
-                    )
-                memory_note = ""
-                if self.goal_mode:
-                    memory = prepare_memory(self.repo, task.task_id)
-                    memory_note = (
-                        f"\nRead workflow memory at {memory.workflow_path} and task memory at {memory.task_path}. "
-                        "Treat memory as context, not proof."
-                    )
-                ir = PromptIR(
-                    prompt_id=f"execute-{sequence}",
-                    request_id="todo",
-                    contract_id="todo",
-                    blueprint_id="todo",
-                    role="implementer_fast",
-                    goal="",
-                    stop_when="",
-                    deliverables=(),
-                    evidence_requirements=(),
-                    allowed_scope=(),
-                    protected_scope=(),
-                    must_do=("Use TDD for behavior changes. Make the smallest change inside allowed paths.",),
-                    must_not=("Do not weaken tests or expand the contract.",),
-                    context_refs=(
-                        f"Repository: {self.repo}\nEvidence run: {self.run_dir}\n{evidence_note}\n{memory_note}".strip(),
-                    ),
-                    allowed_tools=(),
-                    output_contract=(
-                        f"Write optional JSON to {result_path}: {{\"status\":\"DONE|BLOCKED\",\"classification\":\"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE\",\"summary\":\"...\"}}.\n"
-                        "Do not decide whether tests passed; ProofLoop will run them.\n"
-                    ),
-                    escalate_when=(),
-                    metadata=PromptMetadata(compiler_version=str(task_path), generation_time=role)
-                )
-
-                prompt = self._render_prompt(ir)
-                self._invoke(
-                    role,
-                    prompt,
-                    task_path=task_path,
-                    result_path=result_path,
-                    phase="EXECUTE",
-                    task_id=task.task_id,
-                    attempt=sequence,
-                )
-            preinvoked = False
-
-            checks_dir = task_dir / f"attempt-{sequence:02d}-checks"
-            if self.goal_mode:
-                self._goal_transition("VERIFY", "deterministic verification started", taskId=task.task_id)
-            self.transition("VERIFY", taskId=task.task_id, attempt=sequence)
-            required_checks = run_checks(task, self.repo, checks_dir, emitter=self.emitter)
-            post_proof = run_post_implementation_proof(
-                task,
-                self.repo,
-                task_dir / f"attempt-{sequence:02d}-proof",
-                emitter=self.emitter,
-            )
-            checks = merge_required_and_post_proof(task.task_id, required_checks, post_proof)
-            combined_checks_path = task_dir / f"attempt-{sequence:02d}-verification.json"
-            write_json(combined_checks_path, checks)
-            diff = inspect_diff(task, self.repo, baseline)
-            diff_path = task_dir / f"attempt-{sequence:02d}-diff-guard.json"
-            write_json(diff_path, diff)
-            self._emit(
-                "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
-                phase="VERIFY",
-                message=f"Task {task.task_id} diff guard {str(diff.get('verdict')).lower()}.",
-                level="info" if diff.get("verdict") == "PASS" else "error",
-                task_id=task.task_id,
-                data={
-                    "verdict": diff.get("verdict"),
-                    "metrics": diff.get("metrics", {}),
-                    "violations": diff.get("violations", []),
-                    "artifact": str(diff_path),
-                },
-            )
-            role_result = _read_optional_json(result_path) or {}
-            attempt = {
-                "sequence": sequence,
-                "taskId": task.task_id,
-                "timestampEpoch": time.time(),
-                "role": role,
-                "checkVerdict": checks.get("verdict"),
-                "diffVerdict": diff.get("verdict"),
-                "failureFingerprint": _combined_fingerprint(checks, diff),
-                "classification": role_result.get("classification"),
-                "checksRef": str(combined_checks_path),
-                "requiredChecksRef": str(checks_dir / "checks.json"),
-                "postProofRef": str(task_dir / f"attempt-{sequence:02d}-proof" / "post-proof.json"),
-                "diffGuardRef": str(diff_path),
-                "roleResultRef": str(result_path) if result_path.exists() else None,
-            }
-            attempts.append(attempt)
-            append_jsonl(self.run_dir / "attempts.jsonl", attempt)
-            write_json(task_dir / "latest-attempt.json", attempt)
-            self._emit(
-                "attempt.recorded",
-                phase="REPAIR",
-                message=f"Attempt {sequence} recorded for {task.task_id}.",
-                level="info" if checks.get("verdict") == "PASS" and diff.get("verdict") == "PASS" else "warning",
-                task_id=task.task_id,
-                data=attempt,
-            )
-            if self.goal_mode:
-                memory = prepare_memory(self.repo, task.task_id)
-                write_memory(
-                    memory.task_path,
-                    (
-                        f"## Cycle {sequence}\n\n"
-                        f"- Role: {role}\n"
-                        f"- Checks: {checks.get('verdict')}\n"
-                        f"- Diff guard: {diff.get('verdict')}\n"
-                        f"- Failure fingerprint: {attempt.get('failureFingerprint') or 'none'}\n"
-                    ),
-                    append=True,
-                )
-            if len(attempts) >= 2 and attempt.get("failureFingerprint") and (
-                attempt.get("failureFingerprint") == attempts[-2].get("failureFingerprint")
-            ):
-                self._emit(
-                    "progress.stalled",
-                    phase="REPAIR",
-                    message="The same failure fingerprint repeated.",
-                    level="warning",
-                    task_id=task.task_id,
-                    data={
-                        "fingerprint": attempt.get("failureFingerprint"),
-                        "previousAttempt": attempts[-2].get("sequence"),
-                        "attempt": sequence,
-                        "improved": False,
-                    },
-                )
-            elif len(attempts) >= 2 and checks.get("verdict") == "PASS" and diff.get("verdict") == "PASS":
-                self._emit(
-                    "progress.detected",
-                    phase="REPAIR",
-                    message="The latest attempt resolved deterministic failures.",
-                    task_id=task.task_id,
-                    data={"attempt": sequence, "improved": True},
-                )
-            decision = decide_next(attempts, task.max_fast_attempts, task.max_recovery_attempts)
-            write_json(task_dir / "next-action.json", decision)
-
-            action = decision["action"]
-            self.transition(action, taskId=task.task_id, attempt=sequence, reason=decision.get("reason"))
-            fast_used = sum(1 for item in attempts if item.get("role") == "implementer_fast")
-            recovery_used = sum(1 for item in attempts if item.get("role") == "implementer_recovery")
-            self._emit(
-                "budget.updated",
-                phase="REPAIR",
-                message="Repair budget updated.",
-                task_id=task.task_id,
-                data={
-                    "fastRemaining": max(0, task.max_fast_attempts - fast_used),
-                    "recoveryRemaining": max(0, task.max_recovery_attempts - recovery_used),
-                    "nextAction": action,
-                },
-            )
-            if action == "REVIEW":
-                write_json(task_dir / "task-result.json", {"verdict": "PASS", "attempts": sequence})
-                self._emit(
-                    "task.completed",
-                    phase="EXECUTE",
-                    message=f"Task {task.task_id} completed.",
-                    task_id=task.task_id,
-                    data={"attempts": sequence, "verdict": "PASS"},
-                )
-                return
-            if action in {"RETRY_FAST", "RUN_FAST"}:
-                if self.goal_mode:
-                    self._goal_transition("TRIAGE", "fast implementation requires another cycle", taskId=task.task_id)
-                self._emit(
-                    "retry.scheduled",
-                    phase="REPAIR",
-                    message="Fast implementation retry scheduled.",
-                    level="warning",
-                    task_id=task.task_id,
-                    data={
-                        "role": "implementer_fast",
-                        "attempt": sequence + 1,
-                        "reasonCode": "FAST_ATTEMPT_FAILED",
-                        "reason": decision.get("reason"),
-                        "fingerprint": attempt.get("failureFingerprint"),
-                    },
-                )
-                role = "implementer_fast"
-                continue
-            if action in {"RUN_RECOVERY", "RETRY_RECOVERY"}:
-                if action == "RUN_RECOVERY":
-                    self._activate_recovery_protocol()
-                if self.goal_mode:
-                    self._goal_transition("TRIAGE", "recovery implementation required", taskId=task.task_id)
-                self._emit(
-                    "recovery.scheduled" if action == "RUN_RECOVERY" else "retry.scheduled",
-                    phase="REPAIR",
-                    message="Recovery implementation scheduled.",
-                    level="warning",
-                    task_id=task.task_id,
-                    data={
-                        "fromRole": role,
-                        "toRole": "implementer_recovery",
-                        "fromRequestedModel": self._requested_model_for_role(role),
-                        "toRequestedModel": self._requested_model_for_role("implementer_recovery"),
-                        "attempt": sequence + 1,
-                        "reasonCode": "SAME_FINGERPRINT_REPEATED" if action == "RUN_RECOVERY" else "RECOVERY_ATTEMPT_FAILED",
-                        "reason": decision.get("reason"),
-                        "fingerprint": attempt.get("failureFingerprint"),
-                    },
-                )
-                role = "implementer_recovery"
-                continue
-            if action == "RETURN_TO_PLANNER":
-                if self.max_replans != 1:
-                    replan_limit = self.max_replans
-                else:
-                    replan_limit = 3 if self.strategy.tier == "T3" else 2
-
-                if replan_count >= replan_limit:
-                    raise OrchestrationError("REPLAN_BUDGET_EXHAUSTED", f"{task.task_id} still requires redesign")
-
-                classification = attempt.get("classification")
-                if classification == "CONTRACT_CHANGE":
-                    for obligation in self.proof_graph.obligations:
-                        obligation.revision += 1
-                        obligation.status = "OPEN"
-
-                self._emit(
-                    "replan.scheduled",
-                    phase="REPAIR",
-                    message="Task replan scheduled.",
-                    level="warning",
-                    task_id=task.task_id,
-                    data={"reasonCode": classification, "reason": decision.get("reason")},
-                )
-                if self.goal_mode:
-                    self._goal_transition("TRIAGE", "implementation evidence requires redesign", taskId=task.task_id)
-                    self._goal_transition("DESIGN", "task returned to planner", taskId=task.task_id)
-                task = self._replan_task(task, task_path, attempts[-1])
-                replan_count += 1
-                role = "implementer_fast"
-                continue
-            if self.goal_mode:
-                self._goal_transition("EXHAUSTED", "task repair budget exhausted", taskId=task.task_id)
-            raise OrchestrationError("TASK_REPAIR_BUDGET_EXHAUSTED", f"{task.task_id}: {decision.get('reason')}")
-
     def _run_preimplementation_proof(self, task: TaskBrief, task_dir: Path) -> None:
-        """Capture declared baseline/red evidence before the first mutation."""
         assert self.run_dir is not None
         for stage in ("baseline", "red"):
             report = run_proof_stage(
@@ -2048,7 +1431,7 @@ class ProofLoopOrchestrator:
                 data={"previousTier": previous_tier, "tier": "T2", "hardGates": list(self.strategy.hard_gates), "changed": True},
             )
         self._persist_proof_graph("recovery failure opened a new proof obligation")
-        self._resolve_skills()
+        resolve_skills(self)
 
     def _replan_task(self, task: TaskBrief, task_path: Path, attempt: dict[str, Any]) -> TaskBrief:
         assert self.run_dir is not None
@@ -2068,20 +1451,15 @@ class ProofLoopOrchestrator:
             protected_scope=(),
             must_do=("Do not edit source. Preserve the user contract unless evidence proves it impossible.",),
             must_not=("Do not increase change budgets without explicit evidence and rationale.",),
-            context_refs=(
-                str(attempt['checksRef']),
-                str(attempt['diffGuardRef'])
-            ),
+            context_refs=(str(attempt["checksRef"]), str(attempt["diffGuardRef"])),
             allowed_tools=(),
             output_contract=f"Write one valid TaskBrief JSON to {result_path} with the same task id.",
             escalate_when=(),
-            metadata=PromptMetadata(compiler_version=str(task_path), generation_time="todo")
+            metadata=PromptMetadata(compiler_version=str(task_path), generation_time="todo"),
         )
-
-        prompt = self._render_prompt(ir)
         self._invoke(
             "planner_deep",
-            prompt,
+            self._render_prompt(ir),
             task_path=task_path,
             result_path=result_path,
             immutable_source=True,
@@ -2094,333 +1472,6 @@ class ProofLoopOrchestrator:
             raise OrchestrationError("REPLAN_TASK_INVALID", str(exc), verdict="FAILED") from exc
         write_json(task_path, read_json(result_path))
         return revised
-
-    def _final_verification_and_review(self) -> None:
-        assert self.run_dir is not None and self.original_baseline is not None and self.strategy is not None
-        aggregate = aggregate_task(self.tasks)
-        aggregate = with_mandatory_checks(aggregate, self.verification_plan or {})
-        aggregate_path = self.run_dir / "tasks" / "ALL-TASKS.json"
-        write_json(aggregate_path, task_to_dict(aggregate))
-        pending_repair = False
-
-        for review_cycle in range(1, 3):
-            self.transition("FINAL_VERIFY", reviewCycle=review_cycle)
-            if self.goal_mode:
-                self._goal_transition("VERIFY", "final deterministic verification started", reviewCycle=review_cycle)
-            required_checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
-            post_proof_reports = [
-                run_post_implementation_proof(
-                    task,
-                    self.repo,
-                    self.run_dir / "final-proof" / f"review-{review_cycle:02d}" / task.task_id,
-                    emitter=self.emitter,
-                )
-                for task in self.tasks
-            ]
-            post_proof = merge_check_reports("ALL-TASKS", post_proof_reports)
-            checks = merge_required_and_post_proof("ALL-TASKS", required_checks, post_proof)
-            write_json(self.run_dir / "checks" / "checks.json", checks)
-            diff = inspect_diff(aggregate, self.repo, self.original_baseline)
-            write_json(self.run_dir / "diff-guard.json", diff)
-            self._emit(
-                "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
-                phase="VERIFY",
-                message=f"Final diff guard {str(diff.get('verdict')).lower()}.",
-                level="info" if diff.get("verdict") == "PASS" else "error",
-                data={
-                    "verdict": diff.get("verdict"),
-                    "metrics": diff.get("metrics", {}),
-                    "violations": diff.get("violations", []),
-                    "artifact": str(self.run_dir / "diff-guard.json"),
-                },
-            )
-            try:
-                live_evidence = seal_core_evidence(
-                    self.run_dir,
-                    checks=checks,
-                    diff=diff,
-                    verification_plan=self.verification_plan or {},
-                    baseline_commit=self.original_baseline,
-                )
-            except Exception as exc:
-                raise OrchestrationError(
-                    "CORE_EVIDENCE_CAPTURE_FAILED",
-                    f"Core evidence capture failed: {exc}",
-                    verdict="FAILED",
-                ) from exc
-            write_json(
-                self.run_dir / "live-evidence-validation.json",
-                _live_evidence_summary(live_evidence),
-            )
-            self._emit(
-                "live_evidence.sealed" if live_evidence.get("status") == "VALID" else "live_evidence.rejected",
-                phase="VERIFY",
-                message="Core-owned verification evidence was sealed." if live_evidence.get("status") == "VALID" else "Core-owned verification evidence was rejected.",
-                level="info" if live_evidence.get("status") == "VALID" else "error",
-                data=_live_evidence_summary(live_evidence),
-            )
-            if pending_repair:
-                attempt = {
-                    "sequence": self._attempt_count() + 1,
-                    "taskId": "FINAL-REVIEW-REPAIR",
-                    "timestampEpoch": time.time(),
-                    "role": "implementer_recovery",
-                    "checkVerdict": checks.get("verdict"),
-                    "diffVerdict": diff.get("verdict"),
-                    "failureFingerprint": _combined_fingerprint(checks, diff),
-                    "classification": "REVIEW_FINDINGS",
-                    "checksRef": str(self.run_dir / "checks" / "checks.json"),
-                    "diffGuardRef": str(self.run_dir / "diff-guard.json"),
-                }
-                append_jsonl(self.run_dir / "attempts.jsonl", attempt)
-                self._emit(
-                    "attempt.recorded",
-                    phase="REPAIR",
-                    message="Final review repair attempt recorded.",
-                    task_id="FINAL-REVIEW-REPAIR",
-                    data=attempt,
-                )
-                pending_repair = False
-            self._record_verification_proof(checks, diff)
-            if checks.get("verdict") != "PASS" or diff.get("verdict") != "PASS":
-                if self.goal_mode:
-                    self._goal_transition("EXHAUSTED", "final deterministic verification failed", reviewCycle=review_cycle)
-                raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
-
-            if self.mode == "adaptive" and not self.strategy.reviewer_required:
-                fast_review = {
-                    "schemaVersion": "1.0",
-                    "verdict": "APPROVED",
-                    "simplicityVerdict": "MINIMAL",
-                    "reviewMode": "DETERMINISTIC_FAST_LANE",
-                    "criteria": [],
-                    "findings": [],
-                    "deletionCandidates": [],
-                    "evidence": ["checks/checks.json", "diff-guard.json"],
-                }
-                write_json(self.run_dir / "review.json", fast_review)
-                self._record_verification_proof(checks, diff, fast_review)
-                self._emit(
-                    "review.skipped",
-                    phase="REVIEW",
-                    message=f"Deep review skipped by adaptive {self.strategy.tier} policy; deterministic truth gates remain active.",
-                    data={"tier": self.strategy.tier, "reviewMode": "DETERMINISTIC_FAST_LANE"},
-                )
-                return
-
-            self.transition("REVIEW", reviewCycle=review_cycle)
-            if self.goal_mode:
-                self._goal_transition("DEEP_REVIEW", "deterministic evidence passed", reviewCycle=review_cycle)
-            self._emit(
-                "review.started",
-                phase="REVIEW",
-                message=f"Final review cycle {review_cycle} started.",
-                data={"reviewCycle": review_cycle},
-            )
-            cycle_path = self.run_dir / f"review-{review_cycle:02d}.json"
-            ir = PromptIR(
-                prompt_id=f"review-{review_cycle}",
-                request_id="todo",
-                contract_id="todo",
-
-                role="reviewer_deep", blueprint_id="FINAL_REVIEW",
-                goal=str(self.request),
-                stop_when="",
-                deliverables=(),
-                evidence_requirements=(),
-                allowed_scope=(),
-                protected_scope=(),
-                must_do=(f"Review the real source diff from baseline {self.original_baseline}. Do not edit source.",),
-                must_not=("Do not trust implementer summaries. APPROVED requires correct behavior, test integrity, scope compliance, and no unnecessary abstractions.",),
-                context_refs=(
-                    f"Plan: {self.run_dir / 'plan.json'}\nTask briefs: {self.run_dir / 'tasks'}",
-                    f"Checks: {self.run_dir / 'checks' / 'checks.json'}\nDiff guard: {self.run_dir / 'diff-guard.json'}\nGoal contract: {self.run_dir / 'goal-contract.json' if self.goal_mode else 'legacy orchestrate mode'}"
-                ),
-                allowed_tools=(),
-                output_contract=(
-                    f"Write JSON to {cycle_path} exactly:\n"
-                    "{\n"
-                    '  "verdict": "APPROVED|FIX_REQUIRED|DESIGN_CONFLICT|CANNOT_VERIFY",\n'
-                    '  "simplicityVerdict": "MINIMAL|OVERBUILT|CANNOT_VERIFY",\n'
-                    '  "criteria": [{"id":"SC-...","status":"SATISFIED|UNSATISFIED|UNKNOWN","evidence":[]}],\n'
-                    '  "findings": [],\n'
-                    '  "deletionCandidates": []\n'
-                    "}\n"
-                ),
-                escalate_when=(),
-                metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
-            )
-
-            prompt = self._render_prompt(ir)
-            self._invoke(
-                "reviewer_deep",
-                prompt,
-                result_path=cycle_path,
-                immutable_source=True,
-                phase="REVIEW",
-            )
-            review = _read_optional_json(cycle_path)
-            if not review:
-                raise OrchestrationError("REVIEW_ARTIFACT_MISSING", "reviewer did not produce a review artifact")
-            if self.goal_mode and review.get("verdict") == "APPROVED" and not self._goal_review_satisfied(review):
-                review["verdict"] = "FIX_REQUIRED"
-                raw_findings = review.get("findings")
-                findings: list[Any] = raw_findings if isinstance(raw_findings, list) else []
-                findings.append({"severity": "important", "message": "goal criteria are missing or unsatisfied"})
-                review["findings"] = findings
-            write_json(self.run_dir / "review.json", review)
-            if review.get("verdict") == "APPROVED" and review.get("simplicityVerdict") == "MINIMAL":
-                self._record_verification_proof(checks, diff, review)
-                self._emit(
-                    "review.completed",
-                    phase="REVIEW",
-                    message="Final review approved.",
-                    data={
-                        "reviewCycle": review_cycle,
-                        "verdict": review.get("verdict"),
-                        "simplicityVerdict": review.get("simplicityVerdict"),
-                        "findings": review.get("findings", []),
-                    },
-                )
-                if self.goal_mode:
-                    self._goal_transition("CONVERGED", "deep review approved every goal criterion")
-                    workflow_memory = prepare_memory(self.repo, "RUN-HANDOFF").workflow_path
-                    write_memory(
-                        workflow_memory,
-                        (
-                            f"## Approved run {self.run_dir.name}\n\n"
-                            f"- Request: {self.request}\n"
-                            f"- Review: {self.run_dir / 'review.json'}\n"
-                            f"- Truth evidence: {self.run_dir / 'truth-report.json'}\n"
-                        ),
-                        append=True,
-                    )
-                return
-            if review_cycle == 1 and (
-                review.get("verdict") == "FIX_REQUIRED" or review.get("simplicityVerdict") == "OVERBUILT"
-            ):
-                if self.goal_mode:
-                    self._goal_transition("TRIAGE", "deep review requires repair", reviewCycle=review_cycle)
-                self.transition("REVIEW_REPAIR", findings=review.get("findings", []))
-                raw_repair_findings = review.get("findings")
-                review_findings: list[Any] = raw_repair_findings if isinstance(raw_repair_findings, list) else []
-                finding = None
-                if review_findings and isinstance(review_findings[0], dict):
-                    finding = review_findings[0].get("message")
-                self._emit(
-                    "review.fix_required",
-                    phase="REVIEW",
-                    message="Final review requires repair.",
-                    level="warning",
-                    data={
-                        "reviewCycle": review_cycle,
-                        "verdict": review.get("verdict"),
-                        "simplicityVerdict": review.get("simplicityVerdict"),
-                        "finding": finding,
-                        "findings": findings,
-                    },
-                )
-                if review.get("simplicityVerdict") == "OVERBUILT":
-                    self._emit(
-                        "review.overbuilt",
-                        phase="REVIEW",
-                        message="Final review found overbuilt implementation.",
-                        level="warning",
-                        data={"deletionCandidates": review.get("deletionCandidates", [])},
-                    )
-                self._emit(
-                    "recovery.scheduled",
-                    phase="REPAIR",
-                    message="Review repair scheduled.",
-                    level="warning",
-                    data={
-                        "fromRole": "reviewer_deep",
-                        "toRole": "implementer_recovery",
-                        "fromRequestedModel": self._requested_model_for_role("reviewer_deep"),
-                        "toRequestedModel": self._requested_model_for_role("implementer_recovery"),
-                        "reasonCode": "REVIEW_FIX_REQUIRED",
-                        "reason": finding or review.get("simplicityVerdict"),
-                    },
-                )
-                repair_result = self.run_dir / "review-repair-result.json"
-                ir = PromptIR(
-                    prompt_id=f"repair-{review_cycle}",
-                    request_id="todo",
-                    contract_id="todo",
-
-                    role="implementer_recovery", blueprint_id="FINAL_REPAIR",
-                    goal="",
-                    stop_when="",
-                    deliverables=(),
-                    evidence_requirements=(),
-                    allowed_scope=(),
-                    protected_scope=(),
-                    must_do=(f"Use the aggregate task contract at {aggregate_path}.", "Preserve scope and change budgets.", "If the review says OVERBUILT, remove unnecessary abstractions without weakening correctness, security, or tests."),
-                    must_not=("Do not decide pass/fail; ProofLoop will rerun all checks.",),
-                    context_refs=(),
-                    allowed_tools=(),
-                    output_contract=f"Write optional JSON to {repair_result}: {{\"status\":\"DONE|BLOCKED\",\"classification\":\"REVIEW_FINDINGS\",\"summary\":\"...\"}}.",
-                    escalate_when=(),
-                    metadata=PromptMetadata(compiler_version=str(cycle_path), generation_time="todo")
-                )
-
-                repair_prompt = self._render_prompt(ir)
-                self._invoke(
-                    "implementer_recovery",
-                    repair_prompt,
-                    task_path=aggregate_path,
-                    result_path=repair_result,
-                    phase="REPAIR",
-                    task_id="FINAL-REVIEW-REPAIR",
-                    attempt=review_cycle,
-                )
-                if self.goal_mode:
-                    self._goal_transition("IMPLEMENT", "review repair completed", reviewCycle=review_cycle)
-                pending_repair = True
-                continue
-            if review.get("verdict") == "DESIGN_CONFLICT":
-                if self.goal_mode and review_cycle == 1:
-                    self._goal_transition("DESIGN", "deep review found a design conflict", reviewCycle=review_cycle)
-                    self.tasks = self._run_planner()
-                    contract = build_goal_contract(
-                        self.request,
-                        self.tasks,
-                        max_cycles=self.max_goal_cycles,
-                        max_replans=self.max_replans,
-                    )
-                    write_json(self.run_dir / "goal-contract.json", contract.to_dict())
-                    self._goal_transition("IMPLEMENT", "replanned goal contract is ready")
-                    execution_brief = self.execution_brief
-                    if execution_brief is not None and execution_brief.get("kind") == "EXECUTION_BRIEF":
-                        from proofloop_core.contracts.blueprint import validate_blueprint, BlueprintValidationError
-                        try:
-                            validate_blueprint(execution_brief, self.tasks, require_structured_proof=True)
-                        except BlueprintValidationError as e:
-                            self._emit(
-                                "blueprint.invalid",
-                                phase="PLAN",
-                                message=f"Blueprint validation failed: {e}",
-                                level="error"
-                            )
-                            raise OrchestrationError("BLUEPRINT_VALIDATION_FAILED", str(e), verdict="BLOCKED")
-
-                    for task in self.tasks:
-                        self._execute_task(task)
-                    aggregate = aggregate_task(self.tasks)
-                    aggregate_path = self.run_dir / "tasks" / "ALL-TASKS.json"
-                    write_json(aggregate_path, task_to_dict(aggregate))
-                    continue
-                if self.goal_mode:
-                    self._goal_transition("EXHAUSTED", "design conflict remained after replan")
-                raise OrchestrationError("FINAL_REVIEW_DESIGN_CONFLICT", str(review.get("findings") or "design conflict"))
-            if self.goal_mode:
-                self._goal_transition("EXHAUSTED", "deep review did not approve the goal")
-            raise OrchestrationError(
-                "REVIEW_NOT_APPROVED",
-                str(review.get("findings") or review.get("simplicityVerdict") or review.get("verdict")),
-                verdict="FAILED",
-            )
-        raise OrchestrationError("REVIEW_LOOP_EXHAUSTED", "review remained unapproved after one bounded repair", verdict="FAILED")
 
     def _goal_review_satisfied(self, review: dict[str, Any]) -> bool:
         assert self.run_dir is not None
@@ -2463,21 +1514,19 @@ class ProofLoopOrchestrator:
         assert self.run_dir is not None
         review = _read_optional_json(self.run_dir / "review.json") or {}
         fast_lane = review.get("reviewMode") == "DETERMINISTIC_FAST_LANE"
-        checks_claim: dict[str, Any] = {
+        checks_claim = {
             "id": "checks-pass",
             "category": "CHECK_RESULT",
             "kind": "FACT" if core_evidence_valid else "UNKNOWN",
             "statement": "All required commands passed." if core_evidence_valid else "Required command evidence failed Core integrity validation.",
-            "evidence": ([{"artifact": "core-evidence/checks.json", "jsonPointer": "/verdict", "equals": "PASS"}]
-                         if core_evidence_valid else []),
+            "evidence": ([{"artifact": "core-evidence/checks.json", "jsonPointer": "/verdict", "equals": "PASS"}] if core_evidence_valid else []),
         }
-        scope_claim: dict[str, Any] = {
+        scope_claim = {
             "id": "scope-pass",
             "category": "CHANGE_SCOPE",
             "kind": "FACT" if core_evidence_valid else "UNKNOWN",
             "statement": "The final diff passed scope and integrity checks." if core_evidence_valid else "Final diff evidence failed Core integrity validation.",
-            "evidence": ([{"artifact": "core-evidence/diff-guard.json", "jsonPointer": "/verdict", "equals": "PASS"}]
-                         if core_evidence_valid else []),
+            "evidence": ([{"artifact": "core-evidence/diff-guard.json", "jsonPointer": "/verdict", "equals": "PASS"}] if core_evidence_valid else []),
         }
         claims: list[dict[str, Any]] = [
             checks_claim,
@@ -2486,22 +1535,14 @@ class ProofLoopOrchestrator:
                 "id": "review-approved",
                 "category": "REVIEW_RESULT",
                 "kind": "FACT",
-                "statement": (
-                    "The deterministic fast-lane policy approved the bounded change without deep review."
-                    if fast_lane
-                    else "The independent review approved the change."
-                ),
+                "statement": "The deterministic fast-lane policy approved the bounded change without deep review." if fast_lane else "The independent review approved the change.",
                 "evidence": [{"artifact": "review.json", "jsonPointer": "/verdict", "equals": "APPROVED"}],
             },
             {
                 "id": "simplicity-minimal",
                 "category": "SIMPLICITY",
                 "kind": "FACT",
-                "statement": (
-                    "Diff scope and change budgets found the fast-lane implementation minimal."
-                    if fast_lane
-                    else "The reviewer found the implementation minimal."
-                ),
+                "statement": "Diff scope and change budgets found the fast-lane implementation minimal." if fast_lane else "The reviewer found the implementation minimal.",
                 "evidence": [{"artifact": "review.json", "jsonPointer": "/simplicityVerdict", "equals": "MINIMAL"}],
             },
         ]
@@ -2527,6 +1568,161 @@ class ProofLoopOrchestrator:
                     }
                 )
         write_json(self.run_dir / "claims.json", {"schemaVersion": "1.0", "claims": claims})
+
+    def _final_verification_and_review(self) -> None:
+        assert self.run_dir is not None and self.original_baseline is not None and self.strategy is not None
+        aggregate = with_mandatory_checks(aggregate_task(self.tasks), self.verification_plan or {})
+        write_json(self.run_dir / "tasks" / "ALL-TASKS.json", task_to_dict(aggregate))
+
+        for review_cycle in range(1, 3):
+            self.transition("FINAL_VERIFY", reviewCycle=review_cycle)
+            if self.goal_mode:
+                self._goal_transition("VERIFY", "final deterministic verification started", reviewCycle=review_cycle)
+            required_checks = run_checks(aggregate, self.repo, self.run_dir / "checks", emitter=self.emitter)
+            post_proof = merge_check_reports(
+                "ALL-TASKS",
+                [
+                    run_post_implementation_proof(
+                        task,
+                        self.repo,
+                        self.run_dir / "final-proof" / f"review-{review_cycle:02d}" / task.task_id,
+                        emitter=self.emitter,
+                    )
+                    for task in self.tasks
+                ],
+            )
+            checks = merge_required_and_post_proof("ALL-TASKS", required_checks, post_proof)
+            write_json(self.run_dir / "checks" / "checks.json", checks)
+            diff = inspect_diff(aggregate, self.repo, self.original_baseline)
+            write_json(self.run_dir / "diff-guard.json", diff)
+            self._emit(
+                "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
+                phase="VERIFY",
+                message=f"Final diff guard {str(diff.get('verdict')).lower()}.",
+                level="info" if diff.get("verdict") == "PASS" else "error",
+                data={"verdict": diff.get("verdict"), "metrics": diff.get("metrics", {}), "violations": diff.get("violations", []), "artifact": str(self.run_dir / "diff-guard.json")},
+            )
+            try:
+                live_evidence = seal_core_evidence(
+                    self.run_dir,
+                    checks=checks,
+                    diff=diff,
+                    verification_plan=self.verification_plan or {},
+                    baseline_commit=self.original_baseline,
+                )
+            except Exception as exc:
+                raise OrchestrationError("CORE_EVIDENCE_CAPTURE_FAILED", f"Core evidence capture failed: {exc}", verdict="FAILED") from exc
+            write_json(self.run_dir / "live-evidence-validation.json", _live_evidence_summary(live_evidence))
+            self._emit(
+                "live_evidence.sealed" if live_evidence.get("status") == "VALID" else "live_evidence.rejected",
+                phase="VERIFY",
+                message="Core-owned verification evidence was sealed." if live_evidence.get("status") == "VALID" else "Core-owned verification evidence was rejected.",
+                level="info" if live_evidence.get("status") == "VALID" else "error",
+                data=_live_evidence_summary(live_evidence),
+            )
+            self._record_verification_proof(checks, diff)
+            if checks.get("verdict") != "PASS" or diff.get("verdict") != "PASS":
+                if self.goal_mode:
+                    self._goal_transition("EXHAUSTED", "final deterministic verification failed", reviewCycle=review_cycle)
+                raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
+
+            if not self.strategy.reviewer_required:
+                review = {
+                    "schemaVersion": "1.0",
+                    "verdict": "APPROVED",
+                    "simplicityVerdict": "MINIMAL",
+                    "reviewMode": "DETERMINISTIC_FAST_LANE",
+                    "criteria": [],
+                    "findings": [],
+                    "deletionCandidates": [],
+                    "evidence": ["checks/checks.json", "diff-guard.json"],
+                }
+                write_json(self.run_dir / "review.json", review)
+                self._record_verification_proof(checks, diff, review)
+                self._emit(
+                    "review.completed",
+                    phase="REVIEW",
+                    message="Deterministic review approved the verified change.",
+                    data={
+                        "verdict": "PASS",
+                        "finding": "허용 범위·변경 예산 준수",
+                        "tier": self.strategy.tier,
+                        "reviewMode": "DETERMINISTIC_FAST_LANE",
+                    },
+                )
+                return
+
+            self.transition("REVIEW", reviewCycle=review_cycle)
+            cycle_path = self.run_dir / f"review-{review_cycle:02d}.json"
+            ir = PromptIR(
+                prompt_id=f"review-{review_cycle}",
+                request_id="todo",
+                contract_id="todo",
+                blueprint_id="FINAL_REVIEW",
+                role="reviewer_deep",
+                goal=self.request,
+                stop_when="",
+                deliverables=(),
+                evidence_requirements=(),
+                allowed_scope=(),
+                protected_scope=(),
+                must_do=(f"Review the real source diff from baseline {self.original_baseline}. Do not edit source.",),
+                must_not=("Do not trust implementer summaries. APPROVED requires correct behavior, test integrity, scope compliance, and no unnecessary abstractions.",),
+                context_refs=(
+                    f"Plan: {self.run_dir / 'plan.json'}\nTask briefs: {self.run_dir / 'tasks'}",
+                    f"Checks: {self.run_dir / 'checks' / 'checks.json'}\nDiff guard: {self.run_dir / 'diff-guard.json'}",
+                ),
+                allowed_tools=(),
+                output_contract=(
+                    f"Write JSON to {cycle_path} exactly:\n"
+                    '{"verdict":"APPROVED|FIX_REQUIRED|DESIGN_CONFLICT|CANNOT_VERIFY",'
+                    '"simplicityVerdict":"MINIMAL|OVERBUILT|CANNOT_VERIFY",'
+                    '"criteria":[],"findings":[],"deletionCandidates":[]}'
+                ),
+                escalate_when=(),
+                metadata=PromptMetadata(compiler_version="todo", generation_time="todo"),
+            )
+            self._invoke("reviewer_deep", self._render_prompt(ir), result_path=cycle_path, immutable_source=True, phase="REVIEW")
+            review = _read_optional_json(cycle_path)
+            if not review:
+                raise OrchestrationError("REVIEW_ARTIFACT_MISSING", "reviewer did not produce a review artifact")
+            if self.goal_mode and review.get("verdict") == "APPROVED" and not self._goal_review_satisfied(review):
+                review["verdict"] = "FIX_REQUIRED"
+                review.setdefault("findings", []).append({"severity": "important", "message": "goal criteria are missing or unsatisfied"})
+            write_json(self.run_dir / "review.json", review)
+            if review.get("verdict") == "APPROVED" and review.get("simplicityVerdict") == "MINIMAL":
+                self._record_verification_proof(checks, diff, review)
+                self._emit("review.completed", phase="REVIEW", message="Final review approved.", data={"reviewCycle": review_cycle, "findings": review.get("findings", [])})
+                if self.goal_mode:
+                    self._goal_transition("CONVERGED", "deep review approved every goal criterion")
+                return
+            if review_cycle == 1 and (review.get("verdict") == "FIX_REQUIRED" or review.get("simplicityVerdict") == "OVERBUILT"):
+                repair_result = self.run_dir / "review-repair-result.json"
+                repair = PromptIR(
+                    prompt_id="final-review-repair",
+                    request_id="todo",
+                    contract_id="todo",
+                    blueprint_id="FINAL_REPAIR",
+                    role="implementer_recovery",
+                    goal="Address only the independent review findings.",
+                    stop_when="",
+                    deliverables=(),
+                    evidence_requirements=(),
+                    allowed_scope=(),
+                    protected_scope=(),
+                    must_do=("Make the smallest change that resolves the review findings.",),
+                    must_not=("Do not broaden the approved scope or weaken tests.",),
+                    context_refs=(str(self.run_dir / "review.json"), str(self.run_dir / "diff-guard.json")),
+                    allowed_tools=(),
+                    output_contract=f"Write a concise repair summary to {repair_result}.",
+                    escalate_when=(),
+                    metadata=PromptMetadata(compiler_version="todo", generation_time="todo"),
+                )
+                self._invoke("implementer_recovery", self._render_prompt(repair), result_path=repair_result, phase="REPAIR")
+                continue
+            raise OrchestrationError("FINAL_REVIEW_REJECTED", "final review did not approve a minimal implementation", verdict="FAILED")
+
+        raise OrchestrationError("FINAL_REVIEW_LOOP_EXHAUSTED", "final review repair did not converge", verdict="FAILED")
 
     def _emit_audited_claims(self, assurance: dict[str, Any]) -> None:
         raw_audit = assurance.get("claimAudit")
@@ -2579,22 +1775,50 @@ class ProofLoopOrchestrator:
             level="info" if truth.get("verdict") == "PROVEN" else "warning",
             data={"verdict": truth.get("verdict"), "truthReport": truth},
         )
+        checks_report = _read_optional_json(self.run_dir / "checks" / "checks.json") or {}
+        check_items = [
+            item for item in checks_report.get("checks", []) if isinstance(item, dict)
+        ]
+        diff_report = _read_optional_json(self.run_dir / "diff-guard.json") or {}
+        changed_paths = (
+            changed_source_files(self.repo, self.original_baseline)
+            if self.original_baseline is not None
+            else []
+        )
         self._emit(
             "truth.completed",
             phase="TRUTH",
             message=f"Truth gate completed with {truth['verdict']}.",
             level="info" if truth.get("verdict") == "PROVEN" else "warning",
-            data={"status": truth.get("verdict"), "verdict": truth.get("verdict"), "truthReport": truth},
+            data={
+                "status": truth.get("verdict"),
+                "verdict": truth.get("verdict"),
+                "changedFiles": (diff_report.get("metrics") or {}).get(
+                    "changedFiles", len(changed_paths)
+                ),
+                "checksPassed": sum(
+                    1 for item in check_items if item.get("status") == "PASS"
+                ),
+                "checksTotal": len(check_items),
+                "result": changed_paths[0] if changed_paths else None,
+                "evidenceRefs": [
+                    str(self.run_dir / "checks" / "checks.json"),
+                    str(self.run_dir / "diff-guard.json"),
+                    str(self.run_dir / "truth-report.json"),
+                ],
+                "truthReport": truth,
+            },
         )
         finalize_run(self.repo, truth)
         usage = self._finalize_usage()
+        outcome = write_run_outcome(self.run_dir, truth, usage=usage)
         self._emit(
             "run.completed",
             phase="TRUTH",
             message="ProofLoop run completed.",
-            data={"verdict": truth.get("verdict"), "runDir": str(self.run_dir), "usage": usage},
+            data={"verdict": truth.get("verdict"), "runDir": str(self.run_dir), "usage": usage, "outcome": str(self.run_dir / "run-outcome.json")},
         )
-        return {"verdict": truth["verdict"], "runDir": str(self.run_dir), "truthReport": truth, "usage": usage}
+        return {"verdict": truth["verdict"], "runDir": str(self.run_dir), "truthReport": truth, "usage": usage, "outcome": outcome}
 
     def _finalize_terminal(self, verdict: str, code: str, message: str) -> dict[str, Any]:
         if self.run_dir is None:
@@ -2611,6 +1835,7 @@ class ProofLoopOrchestrator:
         self.transition(verdict, code=code, message=message)
         finalize_run(self.repo, report)
         usage = self._finalize_usage()
+        outcome = write_run_outcome(self.run_dir, report, usage=usage, message=message)
         self._emit(
             "verdict.issued",
             phase="TRUTH",
@@ -2633,6 +1858,125 @@ class ProofLoopOrchestrator:
             "runDir": str(self.run_dir),
             "truthReport": report,
             "usage": usage,
+            "outcome": outcome,
+        }
+
+    def _finalize_needs_input(
+        self,
+        code: str,
+        message: str,
+        questions: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Persist an answerable pause without issuing a Truth verdict."""
+        assert self.run_dir is not None
+        items = list(questions) or ["계속하려면 필요한 선택이나 정보를 알려주세요."]
+        request = {
+            "schemaVersion": "1.0",
+            "status": "NEEDS_INPUT",
+            "code": code,
+            "message": message,
+            "questions": items,
+        }
+        write_json(self.run_dir / "input-request.json", request)
+        self.transition("NEEDS_INPUT", code=code, questions=items)
+        usage = self._finalize_usage()
+        outcome = {
+            "schemaVersion": "1.0",
+            "runId": (_read_optional_json(self.run_dir / "run.json") or {}).get("runId"),
+            "status": "NEEDS_INPUT",
+            "verdict": None,
+            "code": code,
+            "summary": message,
+            "questions": items,
+            "usage": usage,
+            "artifacts": {
+                "inputRequest": str(self.run_dir / "input-request.json"),
+                "events": str(self.run_dir / "events.jsonl"),
+                "run": str(self.run_dir / "run.json"),
+            },
+        }
+        write_json(self.run_dir / "run-outcome.json", outcome)
+        finalize_run(self.repo, {"verdict": "NEEDS_INPUT"})
+        self._emit(
+            "input.required",
+            phase="INPUT",
+            message="사용자 답변이 필요합니다.",
+            level="warning",
+            data={**request, "artifact": str(self.run_dir / "input-request.json")},
+        )
+        self._emit(
+            "run.awaiting_input",
+            phase="INPUT",
+            message=message,
+            level="warning",
+            data={"code": code, "questions": items, "runDir": str(self.run_dir)},
+        )
+        return {
+            "verdict": "NEEDS_INPUT",
+            "code": code,
+            "message": message,
+            "questions": items,
+            "runDir": str(self.run_dir),
+            "usage": usage,
+            "outcome": outcome,
+        }
+
+    def _finalize_internal_error(self, code: str, message: str) -> dict[str, Any]:
+        if self.run_dir is None:
+            return {
+                "verdict": "FAILED",
+                "failureDomain": "PROOFLOOP",
+                "code": code,
+                "message": message,
+            }
+        run = _read_optional_json(self.run_dir / "run.json") or {}
+        error = {
+            "schemaVersion": "1.0",
+            "status": "FAILED",
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "message": message,
+        }
+        write_json(self.run_dir / "run-error.json", error)
+        self.transition("ERROR", code=code, message=message)
+        usage = self._finalize_usage()
+        outcome = {
+            "schemaVersion": "1.0",
+            "runId": run.get("runId"),
+            "status": "FAILED",
+            "verdict": None,
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "summary": message,
+            "usage": usage,
+            "artifacts": {
+                "runError": str(self.run_dir / "run-error.json"),
+                "events": str(self.run_dir / "events.jsonl"),
+                "run": str(self.run_dir / "run.json"),
+            },
+        }
+        write_json(self.run_dir / "run-outcome.json", outcome)
+        self._emit(
+            "run.failed",
+            phase="SYSTEM",
+            message=message,
+            level="error",
+            data={
+                "failureDomain": "PROOFLOOP",
+                "code": code,
+                "message": message,
+                "runDir": str(self.run_dir),
+            },
+        )
+        finalize_run(self.repo, {"verdict": "ERROR"})
+        return {
+            "verdict": "FAILED",
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "message": message,
+            "runDir": str(self.run_dir),
+            "usage": usage,
+            "outcome": outcome,
         }
 
     def _finalize_usage(self) -> dict[str, Any]:

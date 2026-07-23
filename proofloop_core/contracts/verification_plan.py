@@ -15,8 +15,6 @@ from proofloop_core.contracts.task_brief import CheckSpec, TaskBrief
 
 
 SCHEMA_VERSION = "1.0"
-
-
 def normalize_command(command: Iterable[str]) -> tuple[str, ...]:
     parts = [str(part) for part in command]
     if not parts:
@@ -75,7 +73,6 @@ def compile_verification_plan(
     mandatory_by_digest = {item["commandSha256"]: item for item in mandatory}
     for item in mandatory:
         item["criterionIds"] = []
-
     candidates: list[dict[str, Any]] = []
     candidate_index = 0
     mandatory_digests = {item["commandSha256"] for item in mandatory}
@@ -161,7 +158,6 @@ def with_mandatory_checks(task: TaskBrief, plan: dict[str, Any]) -> TaskBrief:
         additions.append(
             CheckSpec(
                 command=[str(part) for part in command],
-                timeout_seconds=600,
                 name=str(item.get("name") or item.get("checkId")),
             )
         )

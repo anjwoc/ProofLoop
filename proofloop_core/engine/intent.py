@@ -17,6 +17,9 @@ _RISK_PATTERNS = {
 }
 _UNCERTAINTY = re.compile(r"\b(appropriate|somehow|as needed|if needed|unknown|unclear|maybe)\b|적당히|알아서|필요하면|불명확|모르", re.I)
 _TARGET = re.compile(r"(?<![\w/.-])([\w.-]+(?:/[\w.-]+)+|[\w.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|md|json|ya?ml))(?![\w/.-])")
+_DIRECTORY_TARGET = re.compile(
+    r"(?<![\w/.-])([A-Za-z0-9_.-]+)(?:이란|이라는|라는)?\s*(?:디렉토리|폴더)"
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,11 @@ def compile_intent(
     if not explicit:
         unknowns.append("Acceptance checks are not explicit and must be derived from repository tests and observable behavior.")
 
-    targets = tuple(dict.fromkeys(_TARGET.findall(request)))
+    target_candidates = [
+        *(value.rstrip(".,;:!?") for value in _TARGET.findall(request)),
+        *(f"{name}/**" for name in _DIRECTORY_TARGET.findall(request)),
+    ]
+    targets = tuple(dict.fromkeys(value for value in target_candidates if value))
     return IntentContract(
         original_request=request,
         original_request_hash=hashlib.sha256(request.encode("utf-8")).hexdigest(),
@@ -119,3 +126,25 @@ def _dedupe(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+def format_intent_contract(contract: IntentContract) -> str:
+    """Format an IntentContract into a concise, readable Markdown prompt."""
+    parts = []
+    parts.append(f"**Objective**: {contract.objective}")
+    if contract.acceptance_criteria:
+        parts.append("\n**Acceptance Criteria**:")
+        for ac in contract.acceptance_criteria:
+            parts.append(f"- [{ac.criterion_id}] {ac.statement}")
+    if contract.constraints:
+        parts.append("\n**Constraints**:")
+        for c in contract.constraints:
+            parts.append(f"- {c}")
+    if contract.non_goals:
+        parts.append("\n**Non-Goals**:")
+        for ng in contract.non_goals:
+            parts.append(f"- {ng}")
+    if contract.unknowns:
+        parts.append("\n**Unknowns / Uncertainties**:")
+        for u in contract.unknowns:
+            parts.append(f"- {u}")
+    return "\n".join(parts)

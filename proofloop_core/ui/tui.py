@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -488,7 +486,6 @@ def watch_tui(
     from proofloop_core.ui.watch import watch_events
 
     tui = ProofLoopTUI()
-    renderer = TuiRenderer(stream, tui=tui, tab=tab)
     event_bus = bus if bus is not None else EventBus()
     event_bus.subscribe(tui.consume)
 

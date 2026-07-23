@@ -91,7 +91,8 @@ def run_checks(
         )
         if process_result.timed_out:
             with stderr_path.open("a", encoding="utf-8") as handle:
-                handle.write(f"\nProofLoop timeout after {check.timeout_seconds}s\n")
+                timeout = f" after {check.timeout_seconds}s" if check.timeout_seconds is not None else ""
+                handle.write(f"\nProofLoop check timed out{timeout}\n")
                 handle.flush()
         finished = time.time()
         status = "PASS" if process_result.exit_code == 0 else "FAIL"
@@ -115,7 +116,11 @@ def run_checks(
             event_type = "check.completed" if process_result.exit_code == 0 else "check.failed"
             failure_reason = None
             if process_result.timed_out:
-                failure_reason = f"timeout after {check.timeout_seconds}s"
+                failure_reason = (
+                    f"timeout after {check.timeout_seconds}s"
+                    if check.timeout_seconds is not None
+                    else "check timed out"
+                )
             elif process_result.cancelled:
                 failure_reason = "check cancelled"
             elif process_result.exit_code != 0:

@@ -30,6 +30,7 @@ def _task(command: list[str]) -> TaskBrief:
 
 
 class VerificationPlanTest(unittest.TestCase):
+
     def test_python_executable_paths_normalize_to_same_command(self) -> None:
         self.assertEqual(
             normalize_command([sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
@@ -52,6 +53,7 @@ class VerificationPlanTest(unittest.TestCase):
         self.assertEqual("MODEL_CLAIM", plan["candidateChecks"][0]["authority"])
         aggregate = with_mandatory_checks(_task([sys.executable, "-c", "print('1 passed')"]), plan)
         self.assertEqual(2, len(aggregate.required_checks))
+        self.assertIsNone(aggregate.required_checks[1].timeout_seconds)
 
     def test_only_passing_mandatory_core_checks_close_criteria(self) -> None:
         command = ["python3", "-m", "unittest", "discover", "-s", "tests"]

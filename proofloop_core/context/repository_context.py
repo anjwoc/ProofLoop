@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -10,6 +11,18 @@ from proofloop_core.context.io import write_json
 
 SOURCE_SUFFIXES = {".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".kt", ".go", ".rs", ".cs", ".rb", ".php", ".sql"}
 SKIP = {".git", ".proofloop", ".codegraph", "node_modules", "dist", "build", "target", ".venv", "venv"}
+
+
+def _codegraph_timeout_seconds() -> float | None:
+    """Use a CodeGraph deadline only when an operator explicitly sets one."""
+    raw = os.environ.get("PROOFLOOP_CODEGRAPH_TIMEOUT_SECONDS")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _has_source(root: Path) -> bool:
@@ -66,7 +79,14 @@ def ensure_codegraph(repository: str | Path, output: str | Path, *, required: bo
     commands = [[executable, action, str(repo)], [executable, "status", str(repo)]]
     evidence: list[dict[str, Any]] = []
     for command in commands:
-        completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False, timeout=300)
+        completed = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_codegraph_timeout_seconds(),
+        )
         evidence.append({"command": command, "exitCode": completed.returncode, "stdout": completed.stdout[-4000:], "stderr": completed.stderr[-4000:]})
         if completed.returncode != 0:
             result = {"status": "BLOCKED", "provider": "codegraph", "action": action.upper(), "repository": str(repo), "commands": evidence}

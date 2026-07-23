@@ -222,7 +222,7 @@ printf 'RELAY_DIR=%s\nPID=%s\n' "$RELAY_DIR" "$(cat "$RELAY_DIR/pid")"
 ```
 
 5. Relay every new `[ProofLoop]` line to the user between polling tool calls. The command prints every new observable line exactly once. Present the observed role, phase, elapsed time, PID, check, recovery, review, and host output lines. Do not invent progress or expose provider private reasoning or the submitted prompt.
-6. When the relay finishes, extract the run ID from the first `ProofLoop run` line in `output.log`, read `.proofloop/runs/<run-id>/truth-report.json`, and present its `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` status exactly. Requested model names are not proof of resolved models.
+6. When the relay finishes, extract the run ID from the first `ProofLoop run` line in `output.log` and read `.proofloop/runs/<run-id>/run-outcome.json` first. If its status is `NEEDS_INPUT`, present every question from `input-request.json` exactly and wait for the user; do not call it `BLOCKED` or claim a Truth verdict. Otherwise read `truth-report.json` and present its `PROVEN`, `UNPROVEN`, `FAILED`, or `BLOCKED` status exactly. Requested model names are not proof of resolved models.
 """
 
 
