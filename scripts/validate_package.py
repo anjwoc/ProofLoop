@@ -59,11 +59,13 @@ for path in (ROOT / "plugin" / "plugin.json", ROOT / "plugin" / "marketplace.jso
 source_files = [p for p in ROOT.rglob("*") if p.is_file() and "dist" not in p.parts and "__pycache__" not in p.parts]
 runtime_roots = {"proofloop_core", "scripts", "skills", "proofloop_protocols", "proofloop_domain_packs", "agents", "hooks", "plugin"}
 runtime_files = [p for p in source_files if p.relative_to(ROOT).parts[0] in runtime_roots]
-# The repository baseline already contains 183 runtime files. Static-web proof
-# and verified worktree promotion add two bounded Core modules.
-runtime_file_budget = 185
+# Baseline 183 + the 11 approved integrity artifacts from
+# plans/proofloop-integrity-policy-hardening.md. Any additional runtime artifact
+# requires an explicit plan/budget update rather than an unnoticed expansion.
+runtime_file_budget = 194
 if len(runtime_files) > runtime_file_budget:
     errors.append(f"runtime source file budget exceeded: {len(runtime_files)} > {runtime_file_budget}")
+
 
 def exists_in_core(name: str) -> bool:
     if (ROOT / "proofloop_core" / name).exists():
@@ -114,11 +116,7 @@ for path in list((ROOT / "skills").rglob("*.md")) + list((ROOT / "proofloop_prot
     if manual_pass_pattern.search(path.read_text(encoding="utf-8")):
         errors.append(f"{path.relative_to(ROOT)}: manual PASS interface is forbidden")
 
-
-required_host_files = [
-    "hosts.py",
-    "host_runner.py",
-]
+required_host_files = ["hosts.py", "host_runner.py"]
 for name in required_host_files:
     if not exists_in_core(name):
         errors.append(f"proofloop_core/{name}: required host adapter file missing")
@@ -150,13 +148,7 @@ except Exception as exc:
 
 try:
     domain_registry = SkillRegistry.discover(ROOT / "proofloop_domain_packs")
-    required_domains = {
-        "backend-development",
-        "frontend-development",
-        "devops-delivery",
-        "test-engineering",
-        "code-review",
-    }
+    required_domains = {"backend-development", "frontend-development", "devops-delivery", "test-engineering", "code-review"}
     observed_domains = {item.name for item in domain_registry.skills}
     if observed_domains != required_domains:
         errors.append(f"proofloop_domain_packs: built-in domain contracts mismatch: {sorted(observed_domains)}")
