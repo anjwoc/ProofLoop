@@ -11,6 +11,25 @@ from proofloop_core.assurance.checks import run_checks
 from proofloop_core.contracts.task_brief import load_task_brief
 
 
+def _contract_fields() -> dict[str, Any]:
+    return {
+        "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0},
+        "changeBudget": {
+            "maxChangedFiles": 8,
+            "maxAddedLines": 500,
+            "maxNewFiles": 4,
+            "allowDependencyChanges": False,
+        },
+        "simplicity": {
+            "selectedRung": "DIRECT_CHANGE",
+            "rationale": "bounded fixture change",
+            "considered": ["REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"],
+            "evidenceRefs": ["fixture#/check-runner"],
+            "permittedNewArtifacts": [],
+        },
+    }
+
+
 class RecordingEmitter:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
@@ -48,10 +67,8 @@ class CheckRunnerTest(unittest.TestCase):
                 "objective": "prove failure",
                 "allowedPaths": [],
                 "protectedPaths": [],
-
-                "changeBudget": {"maxChangedFiles": 8, "maxAddedLines": 500, "maxNewFiles": 4, "allowDependencyChanges": False},
-                "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "bounded fixture change", "considered": ["reuse existing test harness"]},
-                "requiredChecks": [{"command": ["python3", "-c", "import sys; print('no'); sys.exit(7)"]}]
+                **_contract_fields(),
+                "requiredChecks": [{"command": ["python3", "-c", "import sys; print('no'); sys.exit(7)"]}],
             }), encoding="utf-8")
             emitter = RecordingEmitter()
             report = run_checks(load_task_brief(task_path), root, root / "evidence", emitter=emitter)
@@ -70,36 +87,26 @@ class CheckRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             task_path = root / "task.json"
-            task_path.write_text(
-                json.dumps(
-                    {
-                        "id": "TASK-1",
-                        "objective": "stream output",
-                        "allowedPaths": [],
-                        "protectedPaths": [],
-                        "changeBudget": {"maxChangedFiles": 1, "maxAddedLines": 1, "maxNewFiles": 0, "allowDependencyChanges": False},
-                        "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "fixture", "considered": []},
-                        "requiredChecks": [
-                            {
-                                "name": "slow",
-                                "command": [
-                                    "python3",
-                                    "-u",
-                                    "-c",
-                                    "import time; print('early', flush=True); time.sleep(.6); print('late', flush=True)",
-                                ],
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            task_path.write_text(json.dumps({
+                "id": "TASK-1",
+                "objective": "stream output",
+                "allowedPaths": [],
+                "protectedPaths": [],
+                **_contract_fields(),
+                "requiredChecks": [{
+                    "name": "slow",
+                    "command": [
+                        "python3",
+                        "-u",
+                        "-c",
+                        "import time; print('early', flush=True); time.sleep(.6); print('late', flush=True)",
+                    ],
+                }],
+            }), encoding="utf-8")
             emitter = RecordingEmitter()
             started = time.monotonic()
-
             report = run_checks(load_task_brief(task_path), root, root / "evidence", emitter=emitter)
             finished = time.monotonic()
-
             output_events = [event for event in emitter.events if event["type"] == "check.output"]
             self.assertEqual("PASS", report["verdict"])
             self.assertEqual(2, len(output_events))
@@ -110,26 +117,18 @@ class CheckRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             task_path = root / "task.json"
-            task_path.write_text(
-                json.dumps(
-                    {
-                        "id": "TASK-tail",
-                        "objective": "bound failure output",
-                        "allowedPaths": [],
-                        "protectedPaths": [],
-                        "changeBudget": {"maxChangedFiles": 8, "maxAddedLines": 500, "maxNewFiles": 4, "allowDependencyChanges": False},
-                        "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "fixture", "considered": []},
-                        "requiredChecks": [
-                            {"command": ["python3", "-c", "import sys; [print(f'line-{i}') for i in range(100)]; sys.exit(1)"]}
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            task_path.write_text(json.dumps({
+                "id": "TASK-tail",
+                "objective": "bound failure output",
+                "allowedPaths": [],
+                "protectedPaths": [],
+                **_contract_fields(),
+                "requiredChecks": [{
+                    "command": ["python3", "-c", "import sys; [print(f'line-{i}') for i in range(100)]; sys.exit(1)"]
+                }],
+            }), encoding="utf-8")
             emitter = RecordingEmitter()
-
             run_checks(load_task_brief(task_path), root, root / "evidence", emitter=emitter)
-
             tail = emitter.events[-1]["data"]["outputTail"]
             self.assertEqual(20, len(tail))
             self.assertEqual("line-80", tail[0])
