@@ -1,0 +1,39 @@
+name: Evidence Gates
+
+on:
+  push:
+    branches:
+      - main
+      - codex/**
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package and test runner
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest
+
+      - name: Validate documented command paths
+        run: python scripts/validate_documented_commands.py
+
+      - name: Run deterministic suite
+        run: python scripts/run_tests.py
+
+      - name: Validate package
+        run: python scripts/validate_package.py
