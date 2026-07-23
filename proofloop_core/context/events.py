@@ -26,12 +26,12 @@ _EVENT_ID = re.compile(r"^evt-[0-9]{6,}$")
 # a single authoritative list to emit against and guards against typos.
 V2_EVENT_TYPES: frozenset[str] = frozenset({
     # lifecycle
-    "run.created", "run.started", "run.completed", "run.cancelled", "run.failed",
+    "run.created", "run.started", "run.completed", "run.cancelled", "run.failed", "run.awaiting_input",
     # request
     "request.received", "request.envelope_created",
     # intent
     "intent_gate.started", "intent_gate.completed",
-    "intent_gate.owner_decision_required", "intent_gate.blocked",
+    "intent_gate.owner_decision_required", "intent_gate.blocked", "input.required",
     # grounding
     "grounding.started", "grounding.file_read", "grounding.command_detected", "grounding.completed",
     # compilation

@@ -6,12 +6,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from proofloop_core.context.repository_context import ensure_codegraph, get_files_by_extension
+from proofloop_core.context.repository_context import (
+    _codegraph_timeout_seconds,
+    ensure_codegraph,
+    get_files_by_extension,
+)
 
 MOCK_OPT_IN = "PROOFLOOP_ALLOW_MOCK_CONTEXT"
 
 
 class RepositoryContextTest(unittest.TestCase):
+    def test_codegraph_has_no_hidden_timeout_unless_operator_sets_one(self) -> None:
+        env = dict(os.environ)
+        env.pop("PROOFLOOP_CODEGRAPH_TIMEOUT_SECONDS", None)
+        with patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(_codegraph_timeout_seconds())
+        with patch.dict(os.environ, {"PROOFLOOP_CODEGRAPH_TIMEOUT_SECONDS": "45"}):
+            self.assertEqual(45.0, _codegraph_timeout_seconds())
+
     def test_mock_initializes_index_evidence_when_opted_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

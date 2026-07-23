@@ -2,6 +2,8 @@
 
 ProofLoop는 에이전트의 요약이나 MCP 클라이언트의 판결을 진실로 취급하지 않는다. 실행 중에는 이벤트를, 종료 시에는 Core가 만든 결과 계약을 제공한다.
 
+사람이 보는 단계별 기대 출력, Codex·Antigravity smoke test, Truth 상태의 해석은 [기대 결과와 테스트 시나리오](../EXPECTED_RESULTS_AND_TEST_SCENARIOS.md)를 따른다.
+
 ## MCP 실행 흐름
 
 1. 클라이언트가 `proofloop_start_run(request_text, host, repository?, mode?)`를 호출한다. `host`는 인증된 외부 CLI를 실행할 수 있으므로 항상 명시한다.

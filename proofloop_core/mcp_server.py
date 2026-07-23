@@ -121,7 +121,7 @@ def _run_session(session_id: str) -> None:
             state["error"] = f"{type(exc).__name__}: {exc}"
     else:
         with _sessions_lock:
-            state["status"] = "COMPLETED"
+            state["status"] = "NEEDS_INPUT" if result.get("verdict") == "NEEDS_INPUT" else "COMPLETED"
             state["result"] = result
 
 
@@ -152,7 +152,55 @@ def proofloop_start_run(
             "client": _get_client_name(ctx),
             "orchestrator": orchestrator,
             "status": "QUEUED",
+            "host": host,
+            "repository": repo,
+            "request": request_text,
+            "mode": mode,
         }
+    threading.Thread(target=_run_session, args=(session_id,), daemon=True).start()
+    return json.dumps(_session_payload(session_id, after=0), ensure_ascii=False)
+
+
+@mcp.tool()
+def proofloop_answer_question(session_id: str, answers: list[str], ctx: Context) -> str:
+    """Answer a Core question and start a fresh continuation run for that answer.
+
+    The paused run stays immutable. The continuation has its own request
+    envelope containing both the original request and the supplied answers.
+    """
+    del ctx
+    cleaned = [answer.strip() for answer in answers if isinstance(answer, str) and answer.strip()]
+    if not cleaned:
+        raise ValueError("answers must contain at least one non-empty answer")
+    with _sessions_lock:
+        state = _sessions.get(session_id)
+        if state is None:
+            raise ValueError(f"unknown ProofLoop session: {session_id}")
+        if state.get("status") != "NEEDS_INPUT":
+            raise ValueError("ProofLoop is not waiting for input in this session")
+        previous = state["orchestrator"]
+        previous_run = getattr(previous, "run_dir", None)
+        if isinstance(previous_run, Path):
+            (previous_run / "input-answers.json").write_text(
+                json.dumps({"schemaVersion": "1.0", "answers": cleaned}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        continuation_request = (
+            f"{state['request'].rstrip()}\n\n"
+            "Owner clarifications for this continuation:\n"
+            + "\n".join(f"- {answer}" for answer in cleaned)
+        )
+        orchestrator = ProofLoopOrchestrator(
+            state["host"],
+            state["repository"],
+            continuation_request,
+            mode=state["mode"],
+        )
+        state["orchestrator"] = orchestrator
+        state["request"] = continuation_request
+        state["status"] = "QUEUED"
+        state["result"] = None
+        state["error"] = None
     threading.Thread(target=_run_session, args=(session_id,), daemon=True).start()
     return json.dumps(_session_payload(session_id, after=0), ensure_ascii=False)
 

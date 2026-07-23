@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 import time
 from dataclasses import replace
@@ -27,6 +28,7 @@ from proofloop_core.runtimes.hosts import role_only_trace_summary
 from proofloop_core.runtimes.adapters import ExternalCLIAdapter, HostAdapter, RoleInvocation
 from proofloop_core.context.events import EventBus, EventEmitter
 from proofloop_core.context.git_snapshot import changed_source_files, snapshot_worktree
+from proofloop_core.context.worktree_sandbox import GitWorktreeSandbox
 from proofloop_core.context.io import read_json, write_json, append_jsonl
 from proofloop_core.assurance.preflight import preflight
 from proofloop_core.context.repository_context import ensure_codegraph
@@ -55,12 +57,10 @@ from proofloop_core.engine.skill_registry import SkillContract
 from proofloop_core.analysis.workload import probe_repository_signals
 from proofloop_core.engine.domain_runtime import build_repository_fingerprint
 from proofloop_core.engine.exceptions import OrchestrationError
-from proofloop_core.engine.roles import run_direct_bootstrap, run_explorer, run_plan_review, run_planner
+from proofloop_core.engine.roles import run_explorer, run_plan_review, run_planner
 from proofloop_core.engine.skills import resolve_skills
 from proofloop_core.engine.task_executor import TaskExecutor
-from proofloop_core.contracts.verification_plan import (
-    compile_verification_plan,
-)
+from proofloop_core.contracts.verification_plan import compile_verification_plan
 
 
 ROLE_SET = {"planner_deep", "explorer_fast", "implementer_fast", "implementer_recovery", "reviewer_deep"}
@@ -119,7 +119,11 @@ def aggregate_task(tasks: list[TaskBrief]) -> TaskBrief:
         required_checks=_dedupe_checks(tasks),
         change_budget=ChangeBudget(
             max_changed_files=sum(task.change_budget.max_changed_files for task in tasks),
-            max_added_lines=sum(task.change_budget.max_added_lines for task in tasks),
+            max_added_lines=(
+                sum(task.change_budget.max_added_lines for task in tasks)
+                if all(task.change_budget.max_added_lines is not None for task in tasks)
+                else None
+            ),
             max_new_files=sum(task.change_budget.max_new_files for task in tasks),
             allow_dependency_changes=any(task.change_budget.allow_dependency_changes for task in tasks),
         ),
@@ -420,13 +424,32 @@ class ProofLoopOrchestrator:
                     "artifact": str(self.run_dir / "request-envelope.json"),
                 },
             )
-            intent_gate_result = evaluate_intent(self.request, adapter=self.adapter, run_dir=self.run_dir, repo=self.repo)
+            intent_gate_result = evaluate_intent(
+                self.request,
+                adapter=self.adapter,
+                run_dir=self.run_dir,
+                repo=self.repo,
+                timeout_seconds=self.timeout_seconds,
+            )
             self.intent_gate_result = intent_gate_result
             write_json(self.run_dir / "intent-gate.json", intent_gate_result.to_dict())
             if intent_gate_result.clarity.value == "owner_decision_required":
-                raise OrchestrationError("INTENT_OWNER_DECISION_REQUIRED", intent_gate_result.owner_question or "owner decision", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "INTENT_OWNER_DECISION_REQUIRED",
+                    intent_gate_result.owner_question or "owner decision",
+                    verdict="NEEDS_INPUT",
+                    questions=(intent_gate_result.owner_question or "작업 범위와 승인 기준을 구체적으로 알려주세요.",),
+                )
             if intent_gate_result.clarity.value == "blocked":
-                raise OrchestrationError("INTENT_GATE_BLOCKED", intent_gate_result.blocked_reason or "blocked", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "INTENT_GATE_OWNER_CLARIFICATION_REQUIRED",
+                    intent_gate_result.blocked_reason or "the request cannot be safely compiled as written",
+                    verdict="NEEDS_INPUT",
+                    questions=(
+                        "현재 요청에는 실행 범위나 안전 조건을 확정할 수 없는 부분이 있습니다. "
+                        "수정할 대상과 성공 조건을 한 문장으로 다시 알려주세요.",
+                    ),
+                )
 
             # The intent contract is downstream of the immutable envelope, so
             # its originalRequest must retain the exact request bytes too.
@@ -437,12 +460,18 @@ class ProofLoopOrchestrator:
             write_json(self.run_dir / "refined-request-shadow.json", {"refinedRequest": self.refined_request})
             self._emit(
                 "intent.compiled",
-                phase="INIT",
-                message="Original request compiled into a scope-preserving intent contract.",
+                phase="INTENT",
+                message=f"Intent compiled: {self.intent.objective}",
                 data={
                     "originalRequestHash": self.intent.original_request_hash,
                     "acceptanceCriteria": len(self.intent.acceptance_criteria),
                     "unknowns": list(self.intent.unknowns),
+                    "basis": list(intent_gate_result.signals) or [
+                        f"{intent_gate_result.intent_kind.value} intent accepted with "
+                        f"{intent_gate_result.authority.value} authority"
+                    ],
+                    "targets": list(self.intent.target_artifacts),
+                    "exclusions": list(self.intent.non_goals),
                     "artifact": str(self.run_dir / "intent-contract.json"),
                 },
             )
@@ -452,7 +481,12 @@ class ProofLoopOrchestrator:
             preflight_result = preflight(self.repo)
             write_json(self.run_dir / "preflight.json", preflight_result)
             if not preflight_result.get("isGitRepository"):
-                raise OrchestrationError("GIT_REPOSITORY_REQUIRED", "mutation workflows require a Git repository")
+                raise OrchestrationError(
+                    "GIT_REPOSITORY_REQUIRED",
+                    "mutation workflows require a Git repository",
+                    verdict="NEEDS_INPUT",
+                    questions=("어느 Git 작업 폴더에서 이 작업을 실행할까요? 절대 경로를 알려주세요.",),
+                )
             self.original_baseline = snapshot_worktree(self.repo)
             run_state = read_json(self.run_dir / "run.json")
             run_state["baselineCommit"] = self.original_baseline
@@ -475,7 +509,12 @@ class ProofLoopOrchestrator:
                     level="error",
                     data=self.capability,
                 )
-                raise OrchestrationError("HOST_CLI_MISSING", f"{self.host} CLI is not available")
+                raise OrchestrationError(
+                    "HOST_CLI_MISSING",
+                    f"{self.host} CLI is not available",
+                    verdict="NEEDS_INPUT",
+                    questions=(f"{self.host}를 설치한 뒤 계속할까요, 아니면 사용할 다른 host 이름을 알려주세요?",),
+                )
             self._emit(
                 "capability.detected",
                 phase="CAPABILITY",
@@ -494,7 +533,10 @@ class ProofLoopOrchestrator:
                 repository_signals=repository_signals,
                 intent_gate_result=self.intent_gate_result,
             )
-            if self.strategy.strategy == "PLANNED_IMPLEMENTATION" and self.mode in {"orchestrate", "goal"}:
+            if (
+                self.strategy.strategy == "PLANNED_IMPLEMENTATION"
+                and self.mode in {"orchestrate", "goal"}
+            ):
                 self.strategy = replace(
                     self.strategy,
                     planner_required=True,
@@ -509,7 +551,8 @@ class ProofLoopOrchestrator:
                 raise OrchestrationError(
                     "INTENT_AUTHORITY_MISMATCH",
                     "a read-only request cannot enter a repository-mutation strategy",
-                    verdict="BLOCKED",
+                    verdict="NEEDS_INPUT",
+                    questions=("이번 요청은 분석만 할까요, 아니면 repository 파일을 수정해도 될까요?",),
                 )
             write_json(self.run_dir / "strategy.json", self.strategy.to_dict())
             self.repository_fingerprint = build_repository_fingerprint(
@@ -520,9 +563,18 @@ class ProofLoopOrchestrator:
             write_json(self.run_dir / "repository-fingerprint.json", self.repository_fingerprint)
             self._emit(
                 "strategy.selected",
-                phase="CLASSIFY",
+                phase="STRATEGY",
                 message=f"Strategy {self.strategy.strategy} selected.",
-                data=self.strategy.to_dict(),
+                data={
+                    **self.strategy.to_dict(),
+                    "basis": list(self.strategy.reason),
+                    "expectedChanges": (
+                        f"{len(self.intent.target_artifacts)} declared target(s)"
+                        if self.intent.target_artifacts
+                        else "repository-scoped change"
+                    ),
+                    "plannedChecks": None,
+                },
             )
             self._initialize_proof_graph()
             resolve_skills(self)
@@ -567,11 +619,17 @@ class ProofLoopOrchestrator:
                     self._emit(
                         "context.failed",
                         phase="CONTEXT",
-                        message="Repository context preparation failed.",
-                        level="error",
+                        message="Repository context is unavailable; continuing with bounded direct context.",
+                        level="warning",
                         data=context,
                     )
-                    raise OrchestrationError("REPOSITORY_CONTEXT_BLOCKED", "required repository context is unavailable")
+                    context = {
+                        "schemaVersion": "1.0",
+                        "verdict": "SKIPPED",
+                        "reason": "codegraph unavailable; bounded direct context selected",
+                        "originalContext": context,
+                    }
+                    write_json(context_path, context)
             else:
                 context = {"schemaVersion": "1.0", "verdict": "SKIPPED", "reason": "strategy does not require broad context"}
                 write_json(context_path, context)
@@ -611,7 +669,7 @@ class ProofLoopOrchestrator:
                     compiled_brief = dict(reconciled)
                 self.execution_brief = compiled_brief
                 self.compiler_active = compiler_active
-                write_json(self.run_dir / ("execution-brief.json" if compiler_active else "refined-request-shadow.json"), compiled_brief)
+                write_json(self.run_dir / ("execution-brief.json" if compiler_active else "execution-brief-shadow.json"), compiled_brief)
             except Exception as e:
                 self.execution_brief = None
                 self.compiler_active = False
@@ -655,9 +713,7 @@ class ProofLoopOrchestrator:
                         self._goal_transition("PLAN_REVIEW", "high-risk plan requires independent review")
                     run_plan_review(self)
             else:
-                if self.goal_mode:
-                    self._goal_transition("IMPLEMENT", "direct goal implementation started")
-                self.tasks = run_direct_bootstrap(self)
+                self.tasks = run_planner(self)
 
             self.verification_plan = compile_verification_plan(
                 criterion_ids=(item.criterion_id for item in self.intent.acceptance_criteria),
@@ -720,26 +776,71 @@ class ProofLoopOrchestrator:
                     )
                     raise OrchestrationError("BLUEPRINT_VALIDATION_FAILED", str(e), verdict="BLOCKED")
 
-            for task in self.tasks:
+            source_repo = self.repo
+            isolation_dir = self.run_dir / "isolation"
+            with GitWorktreeSandbox(
+                source_repo,
+                self.original_baseline,
+                isolation_dir,
+            ) as sandbox:
+                self._emit(
+                    "sandbox.created",
+                    phase="ISOLATE",
+                    message="Detached Git worktree created for implementation.",
+                    data={
+                        "workspace": str(sandbox.path),
+                        "baseline": self.original_baseline,
+                        "artifact": str(isolation_dir / "sandbox.json"),
+                    },
+                )
+                self.repo = sandbox.path
                 try:
-                    TaskExecutor(self).execute_task(task)
-                except Exception as exc:
-                    self._emit(
-                        "task.failed",
-                        phase="EXECUTE",
-                        message=f"Task {task.task_id} failed.",
-                        level="error",
-                        task_id=task.task_id,
-                        data={"error": f"{type(exc).__name__}: {exc}"},
-                    )
-                    raise
+                    for task in self.tasks:
+                        try:
+                            TaskExecutor(self).execute_task(task)
+                        except Exception as exc:
+                            self._emit(
+                                "task.failed",
+                                phase="EXECUTE",
+                                message=f"Task {task.task_id} failed.",
+                                level="error",
+                                task_id=task.task_id,
+                                data={"error": f"{type(exc).__name__}: {exc}"},
+                            )
+                            raise
 
-            self._final_verification_and_review()
+                    self._final_verification_and_review()
+                    promotion = sandbox.promote(
+                        path
+                        for task in self.tasks
+                        for path in task.allowed_paths
+                    )
+                    self._emit(
+                        "sandbox.promoted",
+                        phase="ISOLATE",
+                        message=(
+                            f"Promoted {len(promotion['changedPaths'])} verified "
+                            "file(s) to the original worktree."
+                        ),
+                        data={
+                            **promotion,
+                            "artifact": str(isolation_dir / "promotion.json"),
+                        },
+                    )
+                finally:
+                    self.repo = source_repo
             return self._finalize_truth()
         except OrchestrationError as exc:
+            if exc.failure_domain == "PROOFLOOP":
+                return self._finalize_internal_error(exc.code, str(exc))
+            if exc.verdict == "NEEDS_INPUT":
+                return self._finalize_needs_input(exc.code, str(exc), exc.questions)
             return self._finalize_terminal(exc.verdict, exc.code, str(exc))
         except Exception as exc:
-            return self._finalize_terminal("FAILED", "ORCHESTRATOR_INTERNAL_ERROR", f"{type(exc).__name__}: {exc}")
+            return self._finalize_internal_error(
+                "ORCHESTRATOR_INTERNAL_ERROR",
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def _invoke(
         self,
@@ -785,7 +886,14 @@ class ProofLoopOrchestrator:
             cap = self.adapter.detect_capabilities()
             match = match_capability(cap, requested_model, [])
             if match["disposition"] == "BLOCK":
-                raise OrchestrationError("ROUTING_BLOCKED", f"Host capability insufficient: {match['reasons']}", verdict="BLOCKED")
+                raise OrchestrationError(
+                    "ROUTING_OWNER_ACTION_REQUIRED",
+                    f"Host capability insufficient: {match['reasons']}",
+                    verdict="NEEDS_INPUT",
+                    questions=(
+                        "선택한 실행 호스트가 이 역할을 실행할 수 없습니다. 로그인·설치를 완료한 뒤 다시 시도하거나, 사용할 host를 알려주세요.",
+                    ),
+                )
             elif match["disposition"] == "DOWNGRADE":
                 self._emit(
                     "routing.divergence",
@@ -1021,6 +1129,11 @@ class ProofLoopOrchestrator:
                     "invocationDir": result.get("invocationDir"),
                 },
             )
+            question = {
+                "HOST_RATE_LIMITED": "호스트 제공자의 사용량 제한에 도달했습니다. 제한이 해제된 뒤 다시 시도할까요, 아니면 다른 host를 사용할까요?",
+                "HOST_INITIAL_OUTPUT_TIMEOUT": "호스트가 초기 응답을 반환하지 못했습니다. 로그인과 네트워크를 확인한 뒤 같은 host로 다시 시도할까요?",
+                "HOST_PROVIDER_RESPONSE_TIMEOUT": "호스트가 역할 결과를 반환하기 전에 자체 응답 대기 시간을 끝냈습니다. 로그인·네트워크를 확인한 뒤 다시 시도할까요?",
+            }.get(reason_code)
             raise OrchestrationError(
                 reason_code if external_block else f"{role.upper()}_INVOCATION_FAILED",
                 (
@@ -1035,7 +1148,29 @@ class ProofLoopOrchestrator:
                 )
                 if external_block
                 else f"{role} invocation failed: {result.get('reason') or result.get('exitCode')}",
-                verdict="BLOCKED" if external_block else "FAILED",
+                verdict="NEEDS_INPUT" if external_block else "FAILED",
+                questions=(question,) if question else (),
+            )
+        if result_path is not None and not result_path.is_file():
+            self._emit(
+                "role.failed",
+                phase=invocation_phase,
+                message=f"{role} ended without its required completion result.",
+                level="error",
+                task_id=task_id,
+                data={
+                    **role_data,
+                    "reasonCode": "ROLE_RESULT_MISSING",
+                    "resultPath": str(result_path),
+                    "invocationId": result.get("invocationId"),
+                    "invocationDir": result.get("invocationDir"),
+                },
+            )
+            raise OrchestrationError(
+                "ROLE_RESULT_MISSING",
+                f"{role} exited successfully but did not return the required ProofLoop result. "
+                "No source mutation is accepted without that completion evidence.",
+                verdict="FAILED",
             )
         self._emit(
             "role.completed",
@@ -1072,14 +1207,21 @@ class ProofLoopOrchestrator:
         self._persist_proof_graph("proof obligations initialized")
 
     def _role_time_budget_seconds(self, role: str) -> int:
-        tier = self.strategy.tier if self.strategy is not None else "T1"
-        budgets = {
-            "T0": {"explorer_fast": 60, "planner_deep": 120, "implementer_fast": 120, "implementer_recovery": 120, "reviewer_deep": 120},
-            "T1": {"explorer_fast": 90, "planner_deep": 180, "implementer_fast": 180, "implementer_recovery": 180, "reviewer_deep": 180},
-            "T2": {"explorer_fast": 120, "planner_deep": 240, "implementer_fast": 300, "implementer_recovery": 300, "reviewer_deep": 240},
-            "T3": {"explorer_fast": 180, "planner_deep": 360, "implementer_fast": 480, "implementer_recovery": 480, "reviewer_deep": 360},
-        }
-        return budgets[tier][role]
+        """Return the explicit run deadline, never a hidden per-role cap.
+
+        A caller may opt into a smaller uniform role deadline for an
+        operational environment. Without that setting each role gets the
+        deadline selected for the run.
+        """
+        del role
+        configured = os.environ.get("PROOFLOOP_ROLE_TIMEOUT_SECONDS")
+        if not configured:
+            return self.timeout_seconds
+        try:
+            value = int(configured)
+        except ValueError:
+            return self.timeout_seconds
+        return min(self.timeout_seconds, value) if value > 0 else self.timeout_seconds
 
     def _prompt_with_selected_skills(self, role: str, prompt: str) -> str:
         assert self.run_dir is not None
@@ -1484,7 +1626,7 @@ class ProofLoopOrchestrator:
                     self._goal_transition("EXHAUSTED", "final deterministic verification failed", reviewCycle=review_cycle)
                 raise OrchestrationError("FINAL_VERIFICATION_FAILED", "final checks or branch diff guard failed", verdict="FAILED")
 
-            if self.mode == "adaptive" and not self.strategy.reviewer_required:
+            if not self.strategy.reviewer_required:
                 review = {
                     "schemaVersion": "1.0",
                     "verdict": "APPROVED",
@@ -1498,10 +1640,15 @@ class ProofLoopOrchestrator:
                 write_json(self.run_dir / "review.json", review)
                 self._record_verification_proof(checks, diff, review)
                 self._emit(
-                    "review.skipped",
+                    "review.completed",
                     phase="REVIEW",
-                    message=f"Deep review skipped by adaptive {self.strategy.tier} policy; deterministic truth gates remain active.",
-                    data={"tier": self.strategy.tier, "reviewMode": "DETERMINISTIC_FAST_LANE"},
+                    message="Deterministic review approved the verified change.",
+                    data={
+                        "verdict": "PASS",
+                        "finding": "허용 범위·변경 예산 준수",
+                        "tier": self.strategy.tier,
+                        "reviewMode": "DETERMINISTIC_FAST_LANE",
+                    },
                 )
                 return
 
@@ -1628,12 +1775,39 @@ class ProofLoopOrchestrator:
             level="info" if truth.get("verdict") == "PROVEN" else "warning",
             data={"verdict": truth.get("verdict"), "truthReport": truth},
         )
+        checks_report = _read_optional_json(self.run_dir / "checks" / "checks.json") or {}
+        check_items = [
+            item for item in checks_report.get("checks", []) if isinstance(item, dict)
+        ]
+        diff_report = _read_optional_json(self.run_dir / "diff-guard.json") or {}
+        changed_paths = (
+            changed_source_files(self.repo, self.original_baseline)
+            if self.original_baseline is not None
+            else []
+        )
         self._emit(
             "truth.completed",
             phase="TRUTH",
             message=f"Truth gate completed with {truth['verdict']}.",
             level="info" if truth.get("verdict") == "PROVEN" else "warning",
-            data={"status": truth.get("verdict"), "verdict": truth.get("verdict"), "truthReport": truth},
+            data={
+                "status": truth.get("verdict"),
+                "verdict": truth.get("verdict"),
+                "changedFiles": (diff_report.get("metrics") or {}).get(
+                    "changedFiles", len(changed_paths)
+                ),
+                "checksPassed": sum(
+                    1 for item in check_items if item.get("status") == "PASS"
+                ),
+                "checksTotal": len(check_items),
+                "result": changed_paths[0] if changed_paths else None,
+                "evidenceRefs": [
+                    str(self.run_dir / "checks" / "checks.json"),
+                    str(self.run_dir / "diff-guard.json"),
+                    str(self.run_dir / "truth-report.json"),
+                ],
+                "truthReport": truth,
+            },
         )
         finalize_run(self.repo, truth)
         usage = self._finalize_usage()
@@ -1683,6 +1857,124 @@ class ProofLoopOrchestrator:
             "message": message,
             "runDir": str(self.run_dir),
             "truthReport": report,
+            "usage": usage,
+            "outcome": outcome,
+        }
+
+    def _finalize_needs_input(
+        self,
+        code: str,
+        message: str,
+        questions: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Persist an answerable pause without issuing a Truth verdict."""
+        assert self.run_dir is not None
+        items = list(questions) or ["계속하려면 필요한 선택이나 정보를 알려주세요."]
+        request = {
+            "schemaVersion": "1.0",
+            "status": "NEEDS_INPUT",
+            "code": code,
+            "message": message,
+            "questions": items,
+        }
+        write_json(self.run_dir / "input-request.json", request)
+        self.transition("NEEDS_INPUT", code=code, questions=items)
+        usage = self._finalize_usage()
+        outcome = {
+            "schemaVersion": "1.0",
+            "runId": (_read_optional_json(self.run_dir / "run.json") or {}).get("runId"),
+            "status": "NEEDS_INPUT",
+            "verdict": None,
+            "code": code,
+            "summary": message,
+            "questions": items,
+            "usage": usage,
+            "artifacts": {
+                "inputRequest": str(self.run_dir / "input-request.json"),
+                "events": str(self.run_dir / "events.jsonl"),
+                "run": str(self.run_dir / "run.json"),
+            },
+        }
+        write_json(self.run_dir / "run-outcome.json", outcome)
+        finalize_run(self.repo, {"verdict": "NEEDS_INPUT"})
+        self._emit(
+            "input.required",
+            phase="INPUT",
+            message="사용자 답변이 필요합니다.",
+            level="warning",
+            data={**request, "artifact": str(self.run_dir / "input-request.json")},
+        )
+        self._emit(
+            "run.awaiting_input",
+            phase="INPUT",
+            message=message,
+            level="warning",
+            data={"code": code, "questions": items, "runDir": str(self.run_dir)},
+        )
+        return {
+            "verdict": "NEEDS_INPUT",
+            "code": code,
+            "message": message,
+            "questions": items,
+            "runDir": str(self.run_dir),
+            "usage": usage,
+            "outcome": outcome,
+        }
+
+    def _finalize_internal_error(self, code: str, message: str) -> dict[str, Any]:
+        if self.run_dir is None:
+            return {
+                "verdict": "FAILED",
+                "failureDomain": "PROOFLOOP",
+                "code": code,
+                "message": message,
+            }
+        run = _read_optional_json(self.run_dir / "run.json") or {}
+        error = {
+            "schemaVersion": "1.0",
+            "status": "FAILED",
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "message": message,
+        }
+        write_json(self.run_dir / "run-error.json", error)
+        self.transition("ERROR", code=code, message=message)
+        usage = self._finalize_usage()
+        outcome = {
+            "schemaVersion": "1.0",
+            "runId": run.get("runId"),
+            "status": "FAILED",
+            "verdict": None,
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "summary": message,
+            "usage": usage,
+            "artifacts": {
+                "runError": str(self.run_dir / "run-error.json"),
+                "events": str(self.run_dir / "events.jsonl"),
+                "run": str(self.run_dir / "run.json"),
+            },
+        }
+        write_json(self.run_dir / "run-outcome.json", outcome)
+        self._emit(
+            "run.failed",
+            phase="SYSTEM",
+            message=message,
+            level="error",
+            data={
+                "failureDomain": "PROOFLOOP",
+                "code": code,
+                "message": message,
+                "runDir": str(self.run_dir),
+            },
+        )
+        finalize_run(self.repo, {"verdict": "ERROR"})
+        return {
+            "verdict": "FAILED",
+            "failureDomain": "PROOFLOOP",
+            "code": code,
+            "message": message,
+            "runDir": str(self.run_dir),
             "usage": usage,
             "outcome": outcome,
         }

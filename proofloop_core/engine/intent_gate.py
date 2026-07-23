@@ -152,6 +152,7 @@ def _classify_with_adapter(
     adapter: Any,
     run_dir: Path,
     repo: Path,
+    timeout_seconds: int,
 ) -> IntentGateResult | None:
     """Use ProofLoop's internal host adapter to run the classifier_fast role."""
     from proofloop_core.runtimes.adapters import RoleInvocation
@@ -163,7 +164,7 @@ def _classify_with_adapter(
             prompt=prompt,
             repository=repo,
             run_dir=run_dir,
-            timeout_seconds=30,
+            timeout_seconds=timeout_seconds,
             phase="CLASSIFY",
         )
         result = adapter.invoke(invocation)
@@ -184,14 +185,18 @@ def _classify_with_adapter(
     return _parse_llm_json(raw_text)
 
 
-def _classify_with_cli(request_text: str, host: str = "agy") -> IntentGateResult | None:
+def _classify_with_cli(
+    request_text: str,
+    host: str = "agy",
+    timeout_seconds: int = 1200,
+) -> IntentGateResult | None:
     """Standalone classification via host adapter CLI when no adapter instance is passed."""
     try:
         from proofloop_core.runtimes.adapters import ExternalCLIAdapter
         run_dir = Path(tempfile.mkdtemp(prefix="proofloop-intent-"))
         repo = Path.cwd()
         adapter = ExternalCLIAdapter(host)
-        return _classify_with_adapter(request_text, adapter, run_dir, repo)
+        return _classify_with_adapter(request_text, adapter, run_dir, repo, timeout_seconds)
     except Exception as exc:
         logger.debug("Standalone host CLI classification failed: %s", exc)
         return None
@@ -226,6 +231,7 @@ def evaluate_intent(
     run_dir: Path | None = None,
     repo: Path | None = None,
     host: str = "agy",
+    timeout_seconds: int = 1200,
 ) -> IntentGateResult:
     """Classify user request intent via ProofLoop's host CLI adapter.
 
@@ -238,7 +244,7 @@ def evaluate_intent(
     """
     if adapter is not None:
         if run_dir is not None and repo is not None:
-            result = _classify_with_adapter(request_text, adapter, run_dir, repo)
+            result = _classify_with_adapter(request_text, adapter, run_dir, repo, timeout_seconds)
             if result is not None:
                 logger.info("Intent classified via internal host adapter: %s/%s (%.2f)",
                             result.intent_kind.value, result.authority.value, result.confidence)
@@ -248,7 +254,7 @@ def evaluate_intent(
         return _classify_fallback(request_text)
 
     # Try standalone internal host CLI adapter
-    result = _classify_with_cli(request_text, host=host)
+    result = _classify_with_cli(request_text, host=host, timeout_seconds=timeout_seconds)
     if result is not None:
         logger.info("Intent classified via standalone host CLI (%s): %s/%s",
                      host, result.intent_kind.value, result.authority.value)

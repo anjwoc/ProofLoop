@@ -179,12 +179,18 @@ def invoke_role(
         else:
             command.extend(["--permission-mode", "bypassPermissions"])
     elif host == "agy":
-        # AGY is not Gemini CLI.  Goalng's production adapter uses this
-        # exact prompt/model shape; AGY has no structured-output or
-        # approval-mode flag.  Its display model labels are required by the
+        # AGY is not Gemini CLI. Its display model labels are required by the
         # installed client even though ``agy models`` lists canonical IDs.
+        # ``--prompt`` is non-interactive; an implementer must therefore be
+        # told to accept edits explicitly or it can stop after describing its
+        # first action without changing the repository.
         command = [str(executable), *fixed_args]
-        if os.environ.get("PROOFLOOP_AGY_BYPASS_PERMISSIONS") == "1":
+        mutating_role = role in {"implementer_fast", "implementer_recovery"}
+        if mutating_role and access_mode != "read-only":
+            command.extend(["--mode", "accept-edits"])
+        if mutating_role and (
+            access_mode == "yolo" or os.environ.get("PROOFLOOP_AGY_BYPASS_PERMISSIONS") == "1"
+        ):
             command.append("--dangerously-skip-permissions")
         command.extend([
             "--print-timeout", f"{timeout_seconds}s",

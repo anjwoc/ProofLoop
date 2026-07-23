@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from proofloop_core.contracts.task_brief import load_task_brief
+from proofloop_core.engine.orchestrator import task_to_dict
 
 class TaskBriefTest(unittest.TestCase):
     def setUp(self):
@@ -21,7 +22,6 @@ class TaskBriefTest(unittest.TestCase):
             "allowedPaths": ["src/"],
             "protectedPaths": [],
             "requiredChecks": [{"command": ["pytest"]}],
-            "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1},
             "changeBudget": {
                 "maxChangedFiles": 5,
                 "maxAddedLines": 500,
@@ -49,6 +49,9 @@ class TaskBriefTest(unittest.TestCase):
         self.assertIsNone(brief.proof_plan)
         self.assertEqual("", brief.stop_when)
         self.assertEqual((), brief.escalate_on)
+        self.assertEqual(1, brief.max_fast_attempts)
+        self.assertEqual(0, brief.max_recovery_attempts)
+        self.assertIsNone(brief.required_checks[0].timeout_seconds)
 
     def test_loads_v2_brief_with_proof_plan_and_criterion_ids(self):
         data = {
@@ -146,6 +149,33 @@ class TaskBriefTest(unittest.TestCase):
         self.brief_path.write_text(json.dumps(data), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "surfaceScenarios\\[0\\]\\.command"):
             load_task_brief(self.brief_path)
+
+    def test_empty_required_checks_round_trip_as_model_candidates(self):
+        data = {
+            "id": "T-EMPTY",
+            "objective": "Create a static web example",
+            "allowedPaths": ["example/**"],
+            "protectedPaths": [],
+            "requiredChecks": [],
+            "changeBudget": {
+                "maxChangedFiles": 3,
+                "maxAddedLines": 1500,
+                "maxNewFiles": 3,
+                "allowDependencyChanges": False,
+            },
+            "simplicity": {
+                "selectedRung": "MINIMAL_NEW_CODE",
+                "rationale": "Use three static files",
+                "considered": ["STDLIB", "PLATFORM_NATIVE"],
+            },
+        }
+        self.brief_path.write_text(json.dumps(data), encoding="utf-8")
+
+        brief = load_task_brief(self.brief_path)
+        self.assertEqual((), brief.required_checks)
+
+        self.brief_path.write_text(json.dumps(task_to_dict(brief)), encoding="utf-8")
+        self.assertEqual(brief, load_task_brief(self.brief_path))
 
 if __name__ == "__main__":
     unittest.main()

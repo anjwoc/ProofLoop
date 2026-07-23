@@ -22,14 +22,14 @@ SIMPLICITY_RUNGS = {
 class CheckSpec:
     command: list[str]
     cwd: str | None = None
-    timeout_seconds: int = 300
+    timeout_seconds: int | None = None
     name: str | None = None
 
 
 @dataclass(frozen=True)
 class ChangeBudget:
     max_changed_files: int
-    max_added_lines: int
+    max_added_lines: int | None
     max_new_files: int
     allow_dependency_changes: bool
 
@@ -51,7 +51,7 @@ class SurfaceScenario:
     cleanup: str | None
     command: list[str]
     cwd: str | None = None
-    timeout_seconds: int = 300
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,8 +73,8 @@ class TaskBrief:
     required_checks: tuple[CheckSpec, ...]
     change_budget: ChangeBudget
     simplicity: SimplicityPlan
-    max_fast_attempts: int = 2
-    max_recovery_attempts: int = 1
+    max_fast_attempts: int = 1
+    max_recovery_attempts: int = 0
 
     title: str = ""
     criterion_ids: tuple[str, ...] = ()
@@ -110,6 +110,20 @@ def _positive_int(value: Any, field: str, *, allow_zero: bool = False) -> int:
     return value
 
 
+def _optional_positive_int(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, field)
+
+
+def _optional_timeout(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer when provided")
+    return value
+
+
 def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
     if raw_list is None:
         return ()
@@ -123,9 +137,7 @@ def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
         command = item.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
             raise ValueError(f"{field}[{index}].command must be a non-empty string list")
-        timeout = item.get("timeoutSeconds", 300)
-        if not isinstance(timeout, int) or timeout <= 0:
-            raise ValueError(f"{field}[{index}].timeoutSeconds must be a positive integer")
+        timeout = _optional_timeout(item.get("timeoutSeconds"), f"{field}[{index}].timeoutSeconds")
         cwd = item.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ValueError(f"{field}[{index}].cwd must be a string")
@@ -140,15 +152,13 @@ def load_task_brief(path: str | Path) -> TaskBrief:
     raw = read_json(path)
 
     checks_raw = raw.get("requiredChecks")
-    if checks_raw is not None and (not isinstance(checks_raw, list) or not checks_raw):
-        raise ValueError("requiredChecks must contain at least one command if present")
     checks = _parse_check_list(checks_raw, "requiredChecks")
 
     budgets = raw.get("budgets") or {}
     if not isinstance(budgets, dict):
         raise ValueError("budgets must be an object")
-    fast = budgets.get("maxFastAttempts", 2)
-    recovery = budgets.get("maxRecoveryAttempts", 1)
+    fast = budgets.get("maxFastAttempts", 1)
+    recovery = budgets.get("maxRecoveryAttempts", 0)
     if not isinstance(fast, int) or fast < 1:
         raise ValueError("budgets.maxFastAttempts must be >= 1")
     if not isinstance(recovery, int) or recovery < 0:
@@ -162,7 +172,7 @@ def load_task_brief(path: str | Path) -> TaskBrief:
         raise ValueError("changeBudget.allowDependencyChanges must be boolean")
     change_budget = ChangeBudget(
         max_changed_files=_positive_int(change_raw.get("maxChangedFiles"), "changeBudget.maxChangedFiles"),
-        max_added_lines=_positive_int(change_raw.get("maxAddedLines"), "changeBudget.maxAddedLines"),
+        max_added_lines=_optional_positive_int(change_raw.get("maxAddedLines"), "changeBudget.maxAddedLines"),
         max_new_files=_positive_int(change_raw.get("maxNewFiles"), "changeBudget.maxNewFiles", allow_zero=True),
         allow_dependency_changes=allow_dependency_changes,
     )
@@ -202,9 +212,10 @@ def load_task_brief(path: str | Path) -> TaskBrief:
             cwd = s.get("cwd")
             if cwd is not None and not isinstance(cwd, str):
                 raise ValueError(f"proofPlan.surfaceScenarios[{i}].cwd must be a string or null")
-            timeout = s.get("timeoutSeconds", 300)
-            if not isinstance(timeout, int) or timeout <= 0:
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}].timeoutSeconds must be a positive integer")
+            timeout = _optional_timeout(
+                s.get("timeoutSeconds"),
+                f"proofPlan.surfaceScenarios[{i}].timeoutSeconds",
+            )
             scenarios.append(SurfaceScenario(
                 scenario_id=_require_string(s.get("scenario_id"), f"surfaceScenarios[{i}].scenario_id"),
                 invocation=_require_string(s.get("invocation"), f"surfaceScenarios[{i}].invocation"),

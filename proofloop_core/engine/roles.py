@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from proofloop_core.context.git_snapshot import snapshot_worktree
 from proofloop_core.context.io import write_json, read_json
 from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
 from proofloop_core.contracts.task_brief import TaskBrief, load_task_brief
@@ -89,15 +88,15 @@ def run_planner(orchestrator: "ProofLoopOrchestrator") -> Any:
             f'      "criterion_ids": ["{orchestrator.intent.acceptance_criteria[0].criterion_id}"],\n'
             '      "allowedPaths": ["path/**"],\n'
             '      "protectedPaths": [],\n'
-            '      "requiredChecks": [{"name": "tests", "command": ["executable", "arg"], "timeoutSeconds": 300}],\n'
-            '      "proofPlan": {"baselineChecks": [], "redChecks": [], "automatedChecks": [{"name": "behavior", "command": ["executable", "arg"], "timeoutSeconds": 300}], "surfaceScenarios": [], "adversarialChecks": [], "cleanupChecks": []},\n'
-            '      "changeBudget": {"maxChangedFiles": 4, "maxAddedLines": 160, "maxNewFiles": 1, "allowDependencyChanges": false},\n'
+            '      "requiredChecks": [{"name": "tests", "command": ["executable", "arg"]}],\n'
+            '      "proofPlan": {"baselineChecks": [], "redChecks": [], "automatedChecks": [{"name": "behavior", "command": ["executable", "arg"]}], "surfaceScenarios": [], "adversarialChecks": [], "cleanupChecks": []},\n'
+            '      "changeBudget": {"maxChangedFiles": <positive integer derived from allowedPaths>, "maxAddedLines": <optional positive integer only when a line cap is justified>, "maxNewFiles": <nonnegative integer derived from deliverables>, "allowDependencyChanges": false},\n'
             '      "simplicity": {"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": []},\n'
-            '      "budgets": {"maxFastAttempts": 2, "maxRecoveryAttempts": 1}\n'
+            '      "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0}\n'
             '    }\n'
             '  ]\n'
             "}\n"
-            f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); every command (including every surface scenario command) must be executable in this repository; proofPlan automated/adversarial/cleanup/surface checks run after the change and must contain at least one executable check; baseline checks must pass before mutation and red checks must fail before mutation; stop at the first sufficient simplicity rung; no speculative work.\n"
+            f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); replace every <...> budget placeholder with an integer derived from the declared deliverables before writing JSON; every command (including every surface scenario command) must be executable in this repository; proofPlan automated/adversarial/cleanup/surface checks run after the change and must contain at least one executable check; baseline checks must pass before mutation and red checks must fail before mutation; stop at the first sufficient simplicity rung; no speculative work.\n"
         ),
         escalate_when=(),
         metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
@@ -152,81 +151,6 @@ def run_plan_review(orchestrator: "ProofLoopOrchestrator") -> Any:
         data={"verdict": review.get("verdict"), "findings": review.get("findings", [])},
     )
 
-def run_direct_bootstrap(orchestrator: "ProofLoopOrchestrator") -> Any:
-    """Use one fast role to define and execute a truly bounded direct change."""
-    assert orchestrator.run_dir is not None and orchestrator.intent is not None
-    orchestrator.transition("DIRECT_BOOTSTRAP")
-    task_path = orchestrator.run_dir / "tasks" / "TASK-001.json"
-    ir = PromptIR(
-        prompt_id="bootstrap-1",
-        request_id="todo",
-        contract_id="todo",
-        blueprint_id="BOOTSTRAP",
-        role="implementer_fast",
-        goal=orchestrator.refined_request or str(orchestrator.request),
-        stop_when="",
-        deliverables=(),
-        evidence_requirements=(),
-        allowed_scope=(),
-        protected_scope=(),
-        must_do=(
-            f"Before editing, write a bounded task brief to {task_path} using the standard ProofLoop TaskBrief JSON fields. "
-            f"The brief must include criterion_ids using only these declared IDs: {', '.join(item.criterion_id for item in orchestrator.intent.acceptance_criteria)}. "
-            "Then implement that task with the minimum change. Use actual repository test commands.",
-        ),
-        must_not=("Do not broaden scope or claim success.",),
-        context_refs=(),
-        allowed_tools=(),
-        output_contract="",
-        escalate_when=(),
-        metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
-    )
-    prompt = orchestrator._render_prompt(ir)
-    baseline = snapshot_worktree(orchestrator.repo)
-    orchestrator._invoke(
-        "implementer_fast",
-        prompt,
-        result_path=task_path,
-        phase="EXECUTE",
-        task_id="TASK-001",
-        attempt=1,
-    )
-    if not task_path.exists():
-        raise OrchestrationError("DIRECT_TASK_BRIEF_MISSING", "fast implementer did not create a task brief")
-    try:
-        task = load_task_brief(task_path)
-        if not task.allowed_paths:
-            raise ValueError("allowedPaths must not be empty")
-    except Exception as exc:
-        raise OrchestrationError("DIRECT_TASK_BRIEF_INVALID", str(exc), verdict="FAILED") from exc
-    if not task.criterion_ids and len(orchestrator.intent.acceptance_criteria) == 1:
-        # A legacy direct-bootstrap host may omit criterion_ids.  Mapping
-        # exactly one task to exactly one immutable acceptance criterion
-        # is a deterministic Core inference; plural criteria never get
-        # this convenience fallback.
-        criterion_id = orchestrator.intent.acceptance_criteria[0].criterion_id
-        task = replace(task, criterion_ids=(criterion_id,))
-        raw_task = read_json(task_path)
-        raw_task["criterion_ids"] = [criterion_id]
-        write_json(task_path, raw_task)
-        orchestrator._emit(
-            "criterion_mapping.inferred",
-            phase="PLAN",
-            message=f"Direct bootstrap deterministically linked {task.task_id} to {criterion_id}.",
-            task_id=task.task_id,
-            data={"taskId": task.task_id, "criterionIds": [criterion_id], "reason": "SINGLE_TASK_SINGLE_CRITERION"},
-        )
-    # Store baseline so the already-performed direct implementation becomes attempt 1.
-    write_json(orchestrator.run_dir / "direct-bootstrap.json", {"taskId": task.task_id, "baselineCommit": baseline})
-    orchestrator._emit(
-        "task.created",
-        phase="PLAN",
-        message=f"Task {task.task_id} created.",
-        task_id=task.task_id,
-        data=read_json(task_path),
-    )
-    return [task]
-
 def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
     assert orchestrator.run_dir is not None and orchestrator.intent is not None
     if not result_path.exists():
@@ -234,22 +158,42 @@ def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
     try:
         plan = read_json(result_path)
     except Exception as exc:
-        raise OrchestrationError("PLAN_ARTIFACT_INVALID", str(exc), verdict="FAILED") from exc
+        raise OrchestrationError(
+            "PLAN_ARTIFACT_INVALID",
+            str(exc),
+            verdict="FAILED",
+            failure_domain="PROOFLOOP",
+        ) from exc
     if plan.get("verdict") != "READY":
         raise OrchestrationError("PLAN_NOT_READY", str(plan.get("reason") or plan.get("verdict")))
     tasks_raw = plan.get("tasks")
     if not isinstance(tasks_raw, list) or not 1 <= len(tasks_raw) <= 4:
-        raise OrchestrationError("PLAN_TASK_COUNT_INVALID", "plan must contain between 1 and 4 tasks", verdict="FAILED")
+        raise OrchestrationError(
+            "PLAN_TASK_COUNT_INVALID",
+            "plan must contain between 1 and 4 tasks",
+            verdict="FAILED",
+            failure_domain="PROOFLOOP",
+        )
     tasks_dir = orchestrator.run_dir / "tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     tasks: list[TaskBrief] = []
     ids: set[str] = set()
     for index, raw in enumerate(tasks_raw, start=1):
         if not isinstance(raw, dict):
-            raise OrchestrationError("PLAN_TASK_INVALID", f"task {index} is not an object", verdict="FAILED")
+            raise OrchestrationError(
+                "PLAN_TASK_INVALID",
+                f"task {index} is not an object",
+                verdict="FAILED",
+                failure_domain="PROOFLOOP",
+            )
         task_id = raw.get("id")
         if not isinstance(task_id, str) or task_id in ids:
-            raise OrchestrationError("PLAN_TASK_ID_INVALID", f"invalid or duplicate task id: {task_id}", verdict="FAILED")
+            raise OrchestrationError(
+                "PLAN_TASK_ID_INVALID",
+                f"invalid or duplicate task id: {task_id}",
+                verdict="FAILED",
+                failure_domain="PROOFLOOP",
+            )
         ids.add(task_id)
         path = tasks_dir / f"{task_id}.json"
         write_json(path, raw)
@@ -259,6 +203,22 @@ def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
                 raise ValueError("allowedPaths must not be empty")
             tasks.append(loaded)
             orchestrator._emit(
+                "contract.frozen",
+                phase="CONTRACT",
+                message=f"{loaded.task_id} contract validated and frozen.",
+                task_id=loaded.task_id,
+                data={
+                    "deliverables": list(loaded.deliverables or loaded.allowed_paths),
+                    "successCriteria": [
+                        item.statement
+                        for item in orchestrator.intent.acceptance_criteria
+                        if item.criterion_id in loaded.criterion_ids
+                    ],
+                    "allowedPaths": list(loaded.allowed_paths),
+                    "artifact": str(path),
+                },
+            )
+            orchestrator._emit(
                 "task.created",
                 phase="PLAN",
                 message=f"Task {loaded.task_id} created.",
@@ -266,7 +226,12 @@ def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
                 data=raw,
             )
         except Exception as exc:
-            raise OrchestrationError("PLAN_TASK_SCHEMA_INVALID", f"{task_id}: {exc}", verdict="FAILED") from exc
+            raise OrchestrationError(
+                "PLAN_TASK_SCHEMA_INVALID",
+                f"{task_id}: {exc}",
+                verdict="FAILED",
+                failure_domain="PROOFLOOP",
+            ) from exc
     if (
         len(tasks) == 1
         and not tasks[0].criterion_ids

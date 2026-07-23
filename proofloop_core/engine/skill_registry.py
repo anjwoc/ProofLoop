@@ -33,7 +33,7 @@ class SkillContract:
     required_context: tuple[str, ...]
     max_injected_tokens: int
     max_tokens: int
-    max_seconds: int
+    max_seconds: int | None
     max_invocations: int
     completion_artifact: str
     completion_schema: str | None
@@ -221,7 +221,7 @@ def _load_contract(path: Path) -> SkillContract:
         required_context=tuple(context.get("required", [])),
         max_injected_tokens=context.get("maxInjectedTokens", 0),
         max_tokens=budget.get("maxTokens", 10000),
-        max_seconds=budget.get("maxSeconds", 300),
+        max_seconds=budget.get("maxSeconds"),
         max_invocations=budget.get("maxInvocations", 10),
         completion_artifact=completion.get("artifact", ""),
         completion_schema=completion.get("schema"),

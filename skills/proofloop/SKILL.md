@@ -71,9 +71,13 @@ $HOME/.proofloop/bin/proofloop-core report --run-dir "$repo_root/.proofloop/runs
    model routing by role (requested vs. observed), invocation timeline with cost per step,
    and total token/cost summary.
 
-   After printing the report, also read `expected-output-report.json` from the run dir if it
-   exists and present its status. Never upgrade an incomplete evidence contract to a successful
-   user result.
+   Read `run-outcome.json` before treating the run as terminal. If its status is `NEEDS_INPUT`,
+   read and present every question in `input-request.json`, then wait for the user's answer; do
+   not call it `BLOCKED` and do not claim a Truth verdict. Otherwise also read
+   `expected-output-report.json` when it exists. `truth-report.json` is the authoritative terminal
+   verdict for completed work; `run-error.json` instead identifies a ProofLoop system failure that
+   must not be presented as a Truth verdict. Never upgrade an incomplete evidence contract to a
+   successful user result.
 
 
 For a benchmark invocation, preserve the user's suite, hosts, model, repetition, and policy options and run `proofloop-core benchmark` directly. Never substitute an ordinary coding run for a requested comparison.

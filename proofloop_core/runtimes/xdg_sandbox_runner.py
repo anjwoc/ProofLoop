@@ -38,14 +38,6 @@ class XdgSandboxRunner:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(source)
 
-    @staticmethod
-    def _link_auth_directory(source: Path, target: Path) -> None:
-        """Expose an OS credential store without copying its contents."""
-        if not source.is_dir() or target.exists() or target.is_symlink():
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.symlink_to(source, target_is_directory=True)
-
     def _preserve_host_authentication(
         self,
         sandbox_home: Path,
@@ -55,8 +47,12 @@ class XdgSandboxRunner:
     ) -> None:
         """Make a host's existing login available while retaining isolated state."""
         source_home = Path(parent_env.get("HOME") or Path.home()).expanduser()
-        if sys.platform == "darwin":
-            self._link_auth_directory(source_home / "Library" / "Keychains", sandbox_home / "Library" / "Keychains")
+        if sys.platform == "darwin" and self.host in {"agy", "antigravity"}:
+            # macOS Keychain Services resolves login keychains against the real
+            # user home. A synthetic HOME plus a Keychains symlink triggers
+            # "keychain cannot be found" dialogs and breaks existing OAuth.
+            sandbox_env["HOME"] = str(source_home)
+            return
         if self.host == "codex":
             source = Path(parent_env.get("CODEX_HOME") or source_home / ".codex") / "auth.json"
             self._link_auth_file(source, sandbox_config / "codex" / "auth.json")

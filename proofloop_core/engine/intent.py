@@ -17,6 +17,9 @@ _RISK_PATTERNS = {
 }
 _UNCERTAINTY = re.compile(r"\b(appropriate|somehow|as needed|if needed|unknown|unclear|maybe)\b|적당히|알아서|필요하면|불명확|모르", re.I)
 _TARGET = re.compile(r"(?<![\w/.-])([\w.-]+(?:/[\w.-]+)+|[\w.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|md|json|ya?ml))(?![\w/.-])")
+_DIRECTORY_TARGET = re.compile(
+    r"(?<![\w/.-])([A-Za-z0-9_.-]+)(?:이란|이라는|라는)?\s*(?:디렉토리|폴더)"
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,11 @@ def compile_intent(
     if not explicit:
         unknowns.append("Acceptance checks are not explicit and must be derived from repository tests and observable behavior.")
 
-    targets = tuple(dict.fromkeys(_TARGET.findall(request)))
+    target_candidates = [
+        *(value.rstrip(".,;:!?") for value in _TARGET.findall(request)),
+        *(f"{name}/**" for name in _DIRECTORY_TARGET.findall(request)),
+    ]
+    targets = tuple(dict.fromkeys(value for value in target_candidates if value))
     return IntentContract(
         original_request=request,
         original_request_hash=hashlib.sha256(request.encode("utf-8")).hexdigest(),

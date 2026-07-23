@@ -17,7 +17,7 @@ from proofloop_core.context.fingerprint import fingerprint_check_report
 from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
 from proofloop_core.engine.exceptions import OrchestrationError
 from proofloop_core.assurance.diff_guard import inspect_diff
-from proofloop_core.context.git_snapshot import snapshot_worktree
+from proofloop_core.context.git_snapshot import changed_source_files, snapshot_worktree
 from proofloop_core.engine.repair import decide_next
 from proofloop_core.context.memory import prepare_memory, write_memory
 
@@ -61,6 +61,17 @@ class TaskExecutor:
             message=f"Task {task.task_id} started.",
             task_id=task.task_id,
             data={"objective": task.objective},
+        )
+        self.orchestrator._emit(
+            "implementation.started",
+            phase="IMPLEMENT",
+            message=f"Implementing {task.objective}",
+            task_id=task.task_id,
+            data={
+                "basis": [task.simplicity.rationale],
+                "targets": list(task.allowed_paths),
+                "path": task.allowed_paths[0] if len(task.allowed_paths) == 1 else None,
+            },
         )
         task_path = self.orchestrator.run_dir / "tasks" / f"{task.task_id}.json"
         task_dir = self.orchestrator.run_dir / "task-runs" / task.task_id
@@ -106,22 +117,39 @@ class TaskExecutor:
                 if self.orchestrator.goal_mode:
                     memory = prepare_memory(self.orchestrator.repo, task.task_id)
                     memory_note = f"\nRead workflow memory at {memory.workflow_path} and task memory at {memory.task_path}. Treat memory as context, not proof."
-                
+                mandatory_checks = []
+                for item in (self.orchestrator.verification_plan or {}).get("mandatoryChecks", []):
+                    if not isinstance(item, dict) or not item.get("name"):
+                        continue
+                    mandatory_checks.append(str(item["name"]))
+                contract_note = (
+                    f"Task objective: {task.objective}\n"
+                    f"Allowed paths: {', '.join(task.allowed_paths)}\n"
+                    f"Core-owned checks after implementation: {', '.join(mandatory_checks) or 'none declared'}"
+                )
                 ir = PromptIR(
                     prompt_id=f"execute-{sequence}",
                     request_id="todo",
                     contract_id="todo",
                     blueprint_id="todo",
                     role="implementer_fast",
-                    goal="",
+                    goal=self.orchestrator.refined_request or task.objective,
                     stop_when="",
                     deliverables=(),
                     evidence_requirements=(),
                     allowed_scope=(),
                     protected_scope=(),
-                    must_do=("Use TDD for behavior changes. Make the smallest change inside allowed paths.",),
+                    must_do=(
+                        "Use TDD for behavior changes. Make the smallest change inside allowed paths.",
+                        "Satisfy every Core-owned check listed in the task context; do not replace or weaken it.",
+                    ),
                     must_not=("Do not weaken tests or expand the contract.",),
-                    context_refs=(f"Repository: {self.orchestrator.repo}\nEvidence run: {self.orchestrator.run_dir}\n{evidence_note}\n{memory_note}".strip(),),
+                    context_refs=(
+                        f"Repository: {self.orchestrator.repo}\n"
+                        f"Task contract: {task_path}\n{contract_note}\n"
+                        f"Refined request contract:\n{self.orchestrator.refined_request or task.objective}\n"
+                        f"Evidence run: {self.orchestrator.run_dir}\n{evidence_note}\n{memory_note}".strip(),
+                    ),
                     allowed_tools=(),
                     output_contract=(f"Write optional JSON to {result_path}: {{\"status\":\"DONE|BLOCKED\",\"classification\":\"LOCAL_IMPLEMENTATION|DESIGN_CONFLICT|SPEC_AMBIGUITY|CONTRACT_CHANGE\",\"summary\":\"...\"}}.\nDo not decide whether tests passed; ProofLoop will run them.\n"),
                     escalate_when=(),
@@ -129,7 +157,34 @@ class TaskExecutor:
                 )
 
                 prompt = self.orchestrator._render_prompt(ir)
-                self.orchestrator._invoke(role, prompt, task_path=task_path, result_path=result_path, phase="EXECUTE", task_id=task.task_id, attempt=sequence)
+                try:
+                    self.orchestrator._invoke(
+                        role,
+                        prompt,
+                        task_path=task_path,
+                        result_path=result_path,
+                        phase="EXECUTE",
+                        task_id=task.task_id,
+                        attempt=sequence,
+                    )
+                except OrchestrationError as exc:
+                    if exc.verdict != "BLOCKED" or not attempts:
+                        raise
+                    previous = attempts[-1]
+                    if previous.get("checkVerdict") == "PASS" and previous.get("diffVerdict") == "PASS":
+                        raise
+                    diff = _read_optional_json(previous["diffGuardRef"]) or {}
+                    violations = diff.get("violations") or []
+                    detail = ", ".join(
+                        str(item.get("code"))
+                        for item in violations
+                        if isinstance(item, dict) and item.get("code")
+                    ) or f"checks={previous.get('checkVerdict')}, diff={previous.get('diffVerdict')}"
+                    raise OrchestrationError(
+                        "RECOVERY_BLOCKED_AFTER_DETERMINISTIC_FAILURE",
+                        f"{exc}. Recovery could not start after attempt {previous['sequence']} failed deterministic verification: {detail}.",
+                        verdict="BLOCKED",
+                    ) from exc
             
             preinvoked = False
             checks_dir = task_dir / f"attempt-{sequence:02d}-checks"
@@ -146,6 +201,18 @@ class TaskExecutor:
             diff = inspect_diff(task, self.orchestrator.repo, baseline)
             diff_path = task_dir / f"attempt-{sequence:02d}-diff-guard.json"
             write_json(diff_path, diff)
+            changed_paths = changed_source_files(self.orchestrator.repo, baseline)
+            self.orchestrator._emit(
+                "implementation.changed",
+                phase="IMPLEMENT",
+                message=f"Observed {len(changed_paths)} changed file(s).",
+                task_id=task.task_id,
+                data={
+                    "changedPaths": changed_paths,
+                    "attempt": sequence,
+                    "diffGuardRef": str(diff_path),
+                },
+            )
             
             self.orchestrator._emit(
                 "diff_guard.completed" if diff.get("verdict") == "PASS" else "diff_guard.failed",
@@ -175,6 +242,18 @@ class TaskExecutor:
             attempts.append(attempt)
             append_jsonl(self.orchestrator.run_dir / "attempts.jsonl", attempt)
             write_json(task_dir / "latest-attempt.json", attempt)
+
+            if diff.get("verdict") != "PASS":
+                violations = [
+                    str(item.get("code"))
+                    for item in diff.get("violations", [])
+                    if isinstance(item, dict) and item.get("code")
+                ]
+                raise OrchestrationError(
+                    "TASK_CONTRACT_VIOLATION",
+                    f"{task.task_id} violated the frozen change contract: {', '.join(violations) or 'DIFF_GUARD_FAILED'}. No automatic model retry was started.",
+                    verdict="FAILED",
+                )
             
             self.orchestrator._emit(
                 "attempt.recorded",
@@ -256,6 +335,18 @@ class TaskExecutor:
                     raise OrchestrationError("REPLAN_BUDGET_EXHAUSTED", f"{task.task_id} still requires redesign")
 
                 classification = attempt.get("classification")
+                if classification in {"SPEC_AMBIGUITY", "AUTHORIZATION_AMBIGUOUS", "CONTRACT_CHANGE"}:
+                    question = {
+                        "SPEC_AMBIGUITY": f"{task.task_id}의 구현 성공 조건 중 무엇을 우선할지 알려주세요.",
+                        "AUTHORIZATION_AMBIGUOUS": f"{task.task_id}가 현재 허용 경로 밖을 수정해도 되는지 알려주세요.",
+                        "CONTRACT_CHANGE": f"{task.task_id}의 동결된 범위 또는 성공 조건을 바꿔도 되는지 알려주세요.",
+                    }[classification]
+                    raise OrchestrationError(
+                        "TASK_INPUT_REQUIRED",
+                        f"{task.task_id} requires an owner decision: {classification}.",
+                        verdict="NEEDS_INPUT",
+                        questions=(question,),
+                    )
                 if classification == "CONTRACT_CHANGE":
                     for obligation in self.orchestrator.proof_graph.obligations:
                         obligation.revision += 1
@@ -271,4 +362,8 @@ class TaskExecutor:
                 continue
             if self.orchestrator.goal_mode:
                 self.orchestrator._goal_transition("EXHAUSTED", "task repair budget exhausted", taskId=task.task_id)
-            raise OrchestrationError("TASK_REPAIR_BUDGET_EXHAUSTED", f"{task.task_id}: {decision.get('reason')}")
+            raise OrchestrationError(
+                "TASK_VERIFICATION_FAILED",
+                f"{task.task_id} failed deterministic verification: {decision.get('reason')}. No automatic model retry was started.",
+                verdict="FAILED",
+            )
