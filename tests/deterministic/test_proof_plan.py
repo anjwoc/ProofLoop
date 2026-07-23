@@ -17,14 +17,26 @@ def _task(*, red_command: list[str], automated_command: list[str]) -> TaskBrief:
         protected_paths=(),
         required_checks=(CheckSpec(command=[sys.executable, "-c", "raise SystemExit(0)"], name="required"),),
         change_budget=ChangeBudget(1, 10, 0, False),
-        simplicity=SimplicityPlan("DIRECT_CHANGE", "bounded test", ()),
+        simplicity=SimplicityPlan(
+            "DIRECT_CHANGE",
+            "bounded test",
+            ("REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"),
+            ("fixture#/proof-plan",),
+            (),
+        ),
+        max_fast_attempts=1,
+        max_recovery_attempts=0,
         proof_plan=ProofPlan(
             baseline_checks=(CheckSpec(command=[sys.executable, "-c", "raise SystemExit(0)"], name="baseline"),),
             red_checks=(CheckSpec(command=red_command, name="red"),),
             automated_checks=(CheckSpec(command=automated_command, name="automated"),),
             surface_scenarios=(SurfaceScenario(
-                scenario_id="surface-1", invocation="invoke local fixture", observable="exit code 0",
-                pass_rule="process exits 0", artifact_type="process-log", cleanup=None,
+                scenario_id="surface-1",
+                invocation="invoke local fixture",
+                observable="exit code 0",
+                pass_rule="process exits 0",
+                artifact_type="process-log",
+                cleanup=None,
                 command=[sys.executable, "-c", "raise SystemExit(0)"],
             ),),
             adversarial_checks=(),
@@ -43,7 +55,6 @@ class ProofPlanExecutionTest(unittest.TestCase):
             )
             baseline = run_proof_stage(task, "baseline", root, root / "baseline")
             red = run_proof_stage(task, "red", root, root / "red")
-
             self.assertEqual("PASS", baseline["verdict"])
             self.assertTrue(baseline["expectationMet"])
             self.assertEqual("FAIL", red["verdict"])
@@ -58,7 +69,6 @@ class ProofPlanExecutionTest(unittest.TestCase):
                 automated_command=[sys.executable, "-c", "raise SystemExit(1)"],
             )
             report = run_post_implementation_proof(task, root, root / "post")
-
             self.assertEqual("FAIL", report["verdict"])
             self.assertEqual(2, len(report["checks"]))
             self.assertEqual("surface", report["proofStages"][1]["stage"])
