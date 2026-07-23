@@ -6,7 +6,7 @@ from typing import Any
 
 from proofloop_core.contracts.execution_brief import canonical_sha256, validate_execution_brief
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.0"
 
 _ROLE_FIELDS: dict[str, set[str]] = {
     "explorer": {"objective", "facts", "inferences", "openQuestions", "scope"},
@@ -43,7 +43,12 @@ def project_role_view(
     proof_graph_sha256: str | None = None,
     obligation_revision: int = 0,
 ) -> dict[str, Any]:
-    """Project one invocation-scoped, minimal and hash-linked role envelope."""
+    """Project a minimal role view from a validated brief.
+
+    Shadow briefs may be projected for deterministic inspection, but are
+    non-executable and reveal candidates only. The mandatory execution path
+    calls this with an active brief through ``compile_role_ir``.
+    """
 
     resolved_role = _ROLE_ALIASES.get(role, role)
     if resolved_role not in _ROLE_FIELDS:
@@ -52,9 +57,7 @@ def project_role_view(
         raise RoleViewValidationError("invocation_id must be a non-empty string")
 
     validate_execution_brief(brief)
-    if brief.get("kind") != "EXECUTION_BRIEF":
-        raise RoleViewValidationError("ROLE_PROMPT_CONTRACT_MISSING: active execution brief is required")
-
+    active = brief.get("kind") == "EXECUTION_BRIEF"
     brief_sha = canonical_sha256(dict(brief))
     view: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -72,16 +75,18 @@ def project_role_view(
         if value is not None:
             view[field] = copy.deepcopy(value)
 
-    # The active scope is already constrained and validated. Roles need the
-    # approved/protected distinction; hiding it would force them to infer scope.
     if "scope" in view and isinstance(view["scope"], dict):
         scope = view["scope"]
-        view["scope"] = {
-            "candidates": list(scope.get("candidates", [])),
-            "approvedPaths": list(scope.get("approvedPaths", [])),
-            "protectedPaths": list(scope.get("protectedPaths", [])),
-            "status": scope.get("status"),
-        }
+        if active:
+            view["scope"] = {
+                "candidates": list(scope.get("candidates", [])),
+                "approvedPaths": list(scope.get("approvedPaths", [])),
+                "protectedPaths": list(scope.get("protectedPaths", [])),
+                "status": scope.get("status"),
+            }
+        else:
+            view["scope"] = {"candidates": list(scope.get("candidates", []))}
 
-    view["projectionSha256"] = canonical_sha256(view)
+    if active:
+        view["projectionSha256"] = canonical_sha256(view)
     return view
