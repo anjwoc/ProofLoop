@@ -1,6 +1,6 @@
 # ProofLoop Truth Hardening Audit Plan
 
-Status: IN_PROGRESS  
+Status: IN_PROGRESS — source audit and first hardening slice complete; deterministic/live execution remains open  
 Branch: `codex/preserve-eb097dd-with-main`  
 Method: LazyCodex-style decision-complete plan + Ponytail minimal-change ladder + agent-skill-creator validation gates
 
@@ -16,7 +16,7 @@ This plan is complete only when every checked item has a repository artifact or 
 4. Test fixtures must be visibly marked and structurally unable to overwrite authenticated acceptance evidence.
 5. Do not add abstractions where one shared guard or one existing contract field is sufficient.
 6. Keep security, data-loss prevention, authorization boundaries, and trust-boundary validation even when simplifying.
-7. Every non-trivial new rule leaves one runnable regression check.
+7. Every non-trivial new rule leaves one runnable check.
 8. Any unexecuted live-host scenario remains `UNEXECUTED` or `BLOCKED`; never infer success.
 
 ## Evidence classes
@@ -34,61 +34,73 @@ This plan is complete only when every checked item has a repository artifact or 
 - [x] Read `docs/EXPECTED_RESULTS_AND_TEST_SCENARIOS.md` and extract the stated success contract.
 - [x] Read `docs/PIPELINE_EXECUTION_GUIDE.md` and extract documented limits and retry policy.
 - [x] Compare branch with `main` and identify deleted/replaced verification coverage.
-- [ ] Produce a phase-by-phase inventory of timeouts, attempt limits, token limits, output truncation, file/line budgets, polling intervals, loop counts, and environment overrides.
-- [ ] Classify every limit as `SAFETY_BOUNDARY`, `OPERATIONAL_DEFAULT`, `TASK_CONTRACT`, `TEST_ONLY`, or `UNJUSTIFIED_HARDCODE`.
-- [ ] Record source path, symbol, default, override path, affected phase, and failure semantics.
+- [x] Produce a phase-by-phase inventory of timeouts, attempt limits, token limits, output truncation, file/line budgets, polling intervals, loop counts, and environment overrides.
+- [x] Classify every limit as `SAFETY_BOUNDARY`, `OPERATIONAL_DEFAULT`, `TASK_CONTRACT`, `TEST_ONLY`, `CONTRADICTORY`, or `UNJUSTIFIED_HARDCODE`.
+- [x] Record source path, symbol, default, override path, affected phase, and failure semantics.
+
+Evidence: `docs/audits/PROOFLOOP_HARDCODE_AND_LIMIT_INVENTORY.md`.
 
 ## Workstream B — False-success and fake-evidence audit
 
-- [ ] Trace the complete path from adapter result to `truth-report.json`.
-- [ ] Identify every place where exit code, generated artifact, mocked model identity, or empty/skipped checks can become PASS/APPROVED/PROVEN.
-- [ ] Separate deterministic unit fixtures from authenticated host acceptance reports by schema and storage path.
-- [ ] Verify that `PROVEN` requires current-run Core evidence, required criteria closure, valid diff scope, and the appropriate review authority.
-- [ ] Verify that release checks reject missing, stale, simulated, or copied host evidence.
-- [ ] Add adversarial cases: fake result file, fake host label, zero checks, skipped proof, stale evidence, copied report, test adapter claiming observed model, and host exit zero without ProofLoop run.
+- [x] Trace the complete path from adapter result to `truth-report.json`.
+- [x] Identify where exit code, generated artifact, mocked model identity, or empty/skipped checks can become PASS/APPROVED/PROVEN.
+- [ ] Separate deterministic unit fixtures from authenticated host acceptance reports by enforced schema and storage path.
+- [x] Audit whether `PROVEN` requires current-run Core evidence, criteria closure, diff scope, and review authority; document the remaining fast-lane authority gap.
+- [ ] Make release checks reject missing, stale, simulated, copied, or source/runtime-mismatched host evidence.
+- [ ] Complete adversarial cases for fake result file, fake host label, skipped/stale/copied evidence, and host exit zero without a ProofLoop run.
+- [x] Add an adversarial Truth case for an empty check list that falsely says PASS.
+- [x] Persist CLI/programmatic evidence origin in run metadata.
+
+Evidence: `docs/audits/PROOFLOOP_FULL_PIPELINE_AUDIT.md`, `proofloop_core/contracts/run_state.py`, `proofloop_core/assurance/truth.py`, and `tests/deterministic/test_evidence_origin_and_empty_truth.py`.
 
 ## Workstream C — Skill quality audit
 
 - [x] Read `agent-skill-creator` validation philosophy: evidence-derived intent, complete artifacts, spec validation, security scan, pipeline check, eval validation, and held-out evidence.
 - [x] Read Ponytail: understand the whole flow first, then choose the highest reusable rung; one runnable check for non-trivial logic; never remove safety.
 - [x] Read LazyCodex: plan before product code, durable checklist execution, evidence-verified completion, and post-implementation multi-angle review.
-- [ ] Audit `skills/proofloop/SKILL.md` for activation, host parity, unsupported promises, install/runtime assumptions, and cross-platform invocation correctness.
-- [ ] Audit every role protocol injected into planner/explorer/implementer/recovery/reviewer.
-- [ ] Add a mandatory anti-deception contract that is injected before role-specific instructions and cannot be disabled by task/domain skills.
-- [ ] Ensure Ponytail rules apply to implementation and review without weakening correctness or required evidence.
-- [ ] Add a validation test proving the mandatory contract appears in every mutating and reviewing role prompt.
+- [x] Audit `skills/proofloop/SKILL.md` for activation, host parity, unsupported promises, install/runtime assumptions, and cross-platform invocation correctness.
+- [x] Audit every role protocol and its actual prompt-consumer mapping.
+- [x] Add a mandatory anti-deception contract before provider and role-specific instructions.
+- [x] Apply Ponytail rules without weakening validation, security, authorization, or evidence.
+- [x] Add a validation test proving the mandatory contract appears in every role/provider prompt.
+- [x] Allow the entry skill to use an isolated `PROOFLOOP_HOME` runtime and fail visibly when the runtime is missing.
+
+Evidence: `docs/audits/PROOFLOOP_SKILL_VALIDATION_REPORT.md`, `proofloop_core/prompting/renderers.py`, `skills/proofloop/SKILL.md`, and `tests/deterministic/test_prompt_integrity.py`.
 
 ## Workstream D — Minimal hardening changes
 
-- [ ] Add one shared evidence-origin policy rather than scattered string checks.
-- [ ] Mark simulated adapter runs as non-production evidence in durable run metadata.
-- [ ] Prevent authenticated acceptance artifacts from being written from simulated runs.
-- [ ] Require non-empty authoritative checks for criteria claimed as satisfied.
-- [ ] Prevent deterministic fast-lane review from asserting intent alignment or minimality when its only evidence is file-count/diff-budget compliance.
-- [ ] Replace unconditional `APPROVED`/`MINIMAL` generation with a bounded, source-derived fast-lane policy or an honest `CANNOT_VERIFY` result.
-- [ ] Remove or justify duplicated retry/loop defaults and contradictory documented defaults.
-- [ ] Preserve a single explicit run deadline source; expose every derived deadline in artifacts.
+- [x] Add one evidence-origin classification point in run-state creation.
+- [x] Mark programmatic/unknown runs separately from CLI host runs in durable metadata.
+- [ ] Prevent authenticated acceptance artifacts from being written/accepted from simulated runs.
+- [x] Require non-empty check evidence at the Truth Gate.
+- [ ] Reject plans before mutation when no executable post-change verifier exists.
+- [ ] Prevent deterministic fast-lane review from overclaiming semantic intent alignment or global minimality.
+- [ ] Replace unconditional `APPROVED`/`MINIMAL` generation with a bounded policy verdict or honest `CANNOT_VERIFY`.
+- [ ] Remove duplicated retry/loop defaults and contradictory budget paths.
+- [ ] Preserve a single explicit run deadline/budget source and expose every derived limit.
+- [ ] Bind live acceptance source revision to installed runtime revision.
 
 ## Workstream E — Verification ladder
 
-- [ ] Static audit report contains exact file/symbol evidence and distinguishes confirmed facts from hypotheses.
-- [ ] Targeted deterministic tests cover every changed guard.
-- [ ] Existing deterministic suite is run without deleting or weakening unrelated tests.
-- [ ] Package validation is run and reported only as packaging evidence.
-- [ ] Skill spec validation/security scan/pipeline validation are run where the referenced tool is available.
-- [ ] Authenticated Codex acceptance is run once after deterministic gates pass.
-- [ ] Authenticated Antigravity acceptance is run once after deterministic gates pass.
-- [ ] Visual/browser claims are either explicitly asserted or left unproven.
-- [ ] All command lines, exit codes, durations, and artifact paths are recorded.
+- [x] Static audit report contains exact file/symbol evidence and distinguishes confirmed facts from hypotheses.
+- [x] Targeted deterministic test files were added for every guard changed in this slice.
+- [ ] Execute the targeted deterministic tests.
+- [ ] Execute the existing deterministic suite without deleting or weakening unrelated tests.
+- [ ] Run package validation and report it only as packaging evidence.
+- [ ] Run skill spec validation, security scan, and pipeline/eval validation.
+- [ ] Run one authenticated Codex acceptance after deterministic gates pass.
+- [ ] Run one authenticated Antigravity acceptance after deterministic gates pass.
+- [x] Leave visual/browser claims explicitly unproven until the documented scenario and assertions exist.
+- [x] Record reproducible commands, expected outcomes, statuses, and artifact requirements in an execution ledger.
 
 ## Workstream F — Deliverables
 
-- [ ] `docs/audits/PROOFLOOP_FULL_PIPELINE_AUDIT.md`: categorized findings, severity, evidence, impact, and root cause.
-- [ ] `docs/audits/PROOFLOOP_HARDCODE_AND_LIMIT_INVENTORY.md`: exhaustive limit inventory.
-- [ ] `docs/audits/PROOFLOOP_SKILL_VALIDATION_REPORT.md`: agent-skill-creator + Ponytail + LazyCodex assessment.
-- [ ] `docs/PROOFLOOP_TRUTH_AND_ANTI_DECEPTION_CONTRACT.md`: normative rules and evidence taxonomy.
-- [ ] Code/tests implementing the smallest sufficient hardening changes.
-- [ ] Final execution ledger listing `PASSED`, `FAILED`, `BLOCKED`, and `UNEXECUTED` checks without upgrading any status.
+- [x] `docs/audits/PROOFLOOP_FULL_PIPELINE_AUDIT.md`
+- [x] `docs/audits/PROOFLOOP_HARDCODE_AND_LIMIT_INVENTORY.md`
+- [x] `docs/audits/PROOFLOOP_SKILL_VALIDATION_REPORT.md`
+- [x] `docs/PROOFLOOP_TRUTH_AND_ANTI_DECEPTION_CONTRACT.md`
+- [x] First minimal code/test hardening slice
+- [x] `docs/audits/PROOFLOOP_EXECUTION_LEDGER.md`
 
 ## Stop conditions
 
@@ -102,5 +114,7 @@ Stop and report honestly when any of these applies:
 ## Current execution constraints
 
 - GitHub source and writes are available through the connected GitHub app.
-- The local container cannot resolve `github.com`, so a fresh clone and local pytest run are currently unavailable in this session.
-- Therefore, repository edits may be made from source inspection, but no local or authenticated-host test will be marked passed until an actual command transcript is available.
+- The local container could not resolve `github.com`, so a fresh clone and local pytest run were unavailable in this session.
+- New tests are committed but remain `UNEXECUTED`.
+- No authenticated host run or GitHub CI run is being represented as passed.
+- The exact continuation commands and expected current failures are in `docs/audits/PROOFLOOP_EXECUTION_LEDGER.md`.
