@@ -9,6 +9,7 @@ from proofloop_core.context.io import read_json
 from proofloop_core.contracts.evidence_policy import ClaimType
 
 VALID_STATES = {"PROVEN", "PARTIAL", "UNPROVEN", "FAILED", "BLOCKED"}
+_SEMANTIC_CLAIMS = {ClaimType.INTENT_ALIGNMENT.value, ClaimType.SIMPLICITY.value}
 
 
 def _load_optional(path: Path) -> dict[str, Any] | None:
@@ -54,9 +55,10 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
     unproven: list[str] = []
     if live_evidence is not None and live_evidence.get("status") != "VALID":
         reasons = live_evidence.get("reasons")
-        blockers.extend(
-            f"LIVE_EVIDENCE_INVALID:{reason}" for reason in reasons
-        ) if isinstance(reasons, list) and reasons else blockers.append("LIVE_EVIDENCE_INVALID")
+        if isinstance(reasons, list) and reasons:
+            blockers.extend(f"LIVE_EVIDENCE_INVALID:{reason}" for reason in reasons)
+        else:
+            blockers.append("LIVE_EVIDENCE_INVALID")
 
     if intent is not None and not prompt_compilation:
         blockers.append("PROMPT_CONTRACT_MISSING")
@@ -73,8 +75,6 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
     elif diff.get("verdict") != "PASS":
         blockers.append("DIFF_GUARD_FAILED")
 
-    # Review is semantic evidence. Missing review keeps minimality unproven but
-    # deterministic checks/diff never self-promote to semantic approval.
     if not review:
         unproven.append("REVIEW_EVIDENCE_MISSING")
     elif review.get("verdict") != "APPROVED":
@@ -84,9 +84,7 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
     elif trace.get("routingClaimed") and not trace.get("routingObserved"):
         unproven.append("MODEL_ROUTING_UNPROVEN")
 
-    claims: dict[str, str] = {
-        claim.value: "NOT_REQUIRED" for claim in ClaimType
-    }
+    claims: dict[str, str] = {claim.value: "NOT_REQUIRED" for claim in ClaimType}
     if intent is not None:
         if not proof_graph:
             blockers.append("PROOF_GRAPH_MISSING")
@@ -96,12 +94,15 @@ def build_truth_report(run_dir: str | Path, *, require_core_evidence: bool = Fal
                 for key, status in raw_claims.items():
                     if key in claims and status in {"OPEN", "CLOSED", "NOT_REQUIRED"}:
                         claims[key] = status
-            open_obligations = [
-                str(item.get("id"))
-                for item in proof_graph.get("obligations", [])
-                if isinstance(item, dict) and item.get("required", True) and item.get("status") != "CLOSED"
-            ]
-            blockers.extend(f"PROOF_OBLIGATIONS_OPEN:{item}" for item in open_obligations)
+            for item in proof_graph.get("obligations", []):
+                if not isinstance(item, dict) or not item.get("required", True) or item.get("status") == "CLOSED":
+                    continue
+                obligation_id = str(item.get("id"))
+                claim_type = str(item.get("claimType") or ClaimType.PRODUCT_BEHAVIOR.value)
+                if claim_type in _SEMANTIC_CLAIMS:
+                    unproven.append(f"PROOF_OBLIGATION_UNPROVEN:{obligation_id}")
+                else:
+                    blockers.append(f"PROOF_OBLIGATIONS_OPEN:{obligation_id}")
 
     blockers.extend(assurance.get("blocking", []))
     unproven.extend(assurance.get("unproven", []))
