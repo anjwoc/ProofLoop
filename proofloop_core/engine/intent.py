@@ -35,12 +35,7 @@ class SourceRef:
     text_sha256: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "line": self.line,
-            "start": self.start,
-            "end": self.end,
-            "textSha256": self.text_sha256,
-        }
+        return {"line": self.line, "start": self.start, "end": self.end, "textSha256": self.text_sha256}
 
 
 @dataclass(frozen=True)
@@ -85,10 +80,7 @@ class IntentContract:
             "unknowns": list(self.unknowns),
             "riskSignals": list(self.risk_signals),
             "targetArtifacts": list(self.target_artifacts),
-            "sourceRefs": {
-                pointer: [item.to_dict() for item in refs]
-                for pointer, refs in sorted(self.source_refs.items())
-            },
+            "sourceRefs": {pointer: [item.to_dict() for item in refs] for pointer, refs in sorted(self.source_refs.items())},
         }
 
 
@@ -119,27 +111,22 @@ def _clauses(request: str) -> list[_Clause]:
                 relative = leading
             start = offset + relative
             end = start + len(segment)
-            clauses.append(
-                _Clause(
-                    text=segment,
-                    ref=SourceRef(
-                        line=line_number,
-                        start=start,
-                        end=end,
-                        text_sha256=hashlib.sha256(segment.encode("utf-8")).hexdigest(),
-                    ),
-                    listed=listed,
-                )
-            )
+            clauses.append(_Clause(
+                text=segment,
+                ref=SourceRef(
+                    line=line_number,
+                    start=start,
+                    end=end,
+                    text_sha256=hashlib.sha256(segment.encode("utf-8")).hexdigest(),
+                ),
+                listed=listed,
+            ))
             search_from = max(relative + len(segment), search_from)
         offset += len(raw_line)
     return clauses
 
 
-def compile_intent(
-    request: str,
-    intent_gate_result: IntentGateResult | None = None,
-) -> IntentContract:
+def compile_intent(request: str, intent_gate_result: IntentGateResult | None = None) -> IntentContract:
     if not request.strip():
         raise ValueError("request must be non-empty")
     clauses = _clauses(request)
@@ -151,7 +138,6 @@ def compile_intent(
         clauses[0],
     )
     objective = objective_clause.text
-
     criterion_clauses: list[_Clause] = [objective_clause]
     constraints: list[_Clause] = []
     non_goals: list[_Clause] = []
@@ -160,12 +146,14 @@ def compile_intent(
             continue
         if _NON_GOAL.search(clause.text):
             non_goals.append(clause)
+            if clause.listed:
+                criterion_clauses.append(clause)
             continue
         if _CONSTRAINT.search(clause.text):
             constraints.append(clause)
-            # Verification honesty is both a constraint and an observable
-            # acceptance obligation; retain it in both projections.
-            if _VERIFICATION.search(clause.text) or re.search(r"성공|claim|주장", clause.text, re.I):
+            # A numbered/listed negative requirement describes observable
+            # success as well as a boundary. Preserve it in both projections.
+            if clause.listed or _VERIFICATION.search(clause.text) or re.search(r"성공|claim|주장", clause.text, re.I):
                 criterion_clauses.append(clause)
             continue
         if clause.listed or _VERIFICATION.search(clause.text):
@@ -187,7 +175,6 @@ def compile_intent(
     unknowns: list[str] = []
     if is_uncertain:
         unknowns.append("The request leaves implementation scope or method open; repository evidence must resolve it.")
-
     target_candidates = [
         *(value.rstrip(".,;:!?") for value in _TARGET.findall(request)),
         *(f"{name}/**" for name in _DIRECTORY_TARGET.findall(request)),
