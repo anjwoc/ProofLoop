@@ -14,6 +14,21 @@ AUTHORITY = {
     "EXTERNAL_OBSERVATION": 4,
 }
 
+_OBLIGATION_CLAIMS = {
+    "PROMPT-CONTRACT": ClaimType.PROMPT_CONTRACT_APPLIED.value,
+    "scope-integrity": ClaimType.SCOPE_INTEGRITY.value,
+    "SCOPE-INTEGRITY": ClaimType.SCOPE_INTEGRITY.value,
+    "simplicity": ClaimType.SIMPLICITY.value,
+}
+
+
+def _origin_for_authority(authority: str) -> str:
+    return {
+        "DIFF_GUARD": EvidenceOrigin.CORE_DIFF_GUARD.value,
+        "MODEL_REVIEW": EvidenceOrigin.PARENT_REVIEW.value,
+        "EXTERNAL_OBSERVATION": EvidenceOrigin.PARENT_EXTERNAL_OBSERVATION.value,
+    }.get(authority, EvidenceOrigin.CORE_DETERMINISTIC.value)
+
 
 @dataclass
 class Evidence:
@@ -24,10 +39,19 @@ class Evidence:
     revision: int
     verdict: str = "PASS"
     evidence_level: str | None = None
-    origin: str = EvidenceOrigin.CORE_DETERMINISTIC.value
-    claim_type: str = ClaimType.PRODUCT_BEHAVIOR.value
+    origin: str | None = None
+    claim_type: str | None = None
     run_id: str = ""
     invocation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.claim_type is None:
+            self.claim_type = _OBLIGATION_CLAIMS.get(
+                self.obligation_id,
+                ClaimType.PRODUCT_BEHAVIOR.value,
+            )
+        if self.origin is None:
+            self.origin = _origin_for_authority(self.authority)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,12 +74,19 @@ class ProofObligation:
     obligation_id: str
     statement: str
     required_authority: str
-    claim_type: str = ClaimType.PRODUCT_BEHAVIOR.value
+    claim_type: str | None = None
     required: bool = True
     revision: int = 0
     status: str = "OPEN"
     evidence_ids: list[str] = field(default_factory=list)
     last_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.claim_type is None:
+            self.claim_type = _OBLIGATION_CLAIMS.get(
+                self.obligation_id,
+                ClaimType.PRODUCT_BEHAVIOR.value,
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -113,8 +144,8 @@ class ProofGraph:
             obligation.last_reason = "HOST_RECEIPT_INVOCATION_MISSING"
             return
         eligibility = EvidencePolicy.can_close(
-            claim_type=obligation.claim_type,
-            origin=evidence.origin,
+            claim_type=str(obligation.claim_type),
+            origin=str(evidence.origin),
             authority=evidence.authority,
         )
         if not eligibility.allowed:
