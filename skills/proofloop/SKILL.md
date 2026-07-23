@@ -5,6 +5,20 @@ description: Use when the user invokes ProofLoop or requests non-trivial feature
 
 # ProofLoop Entry Skill
 
+## Absolute first constraints
+
+These rules apply before host selection, planning, implementation, tests, progress reporting, or completion:
+
+1. Never invent or inject a fake host, model identity, command result, elapsed time, changed file, test outcome, or completion state.
+2. `TEST`, `MOCK`, `FAKE`, `SIMULATED`, fixture-only, `CLI_REQUESTED_ONLY`, and missing evidence never prove authenticated or production behavior.
+3. A zero exit code, generated JSON, schema-valid artifact, package-presence check, or model statement proves only that exact event. It does not prove the user's requested behavior.
+4. Never weaken, delete, skip, replace, or rewrite a required test/evaluator to obtain a pass. Never write Core evidence manually.
+5. When evidence cannot be observed, report `NEEDS_INPUT`, `BLOCKED`, `FAILED`, `PARTIAL`, `UNPROVEN`, or the system error exactly as the parent artifacts state. Absence is never success.
+6. Follow Ponytail after understanding the real flow: skip YAGNI work, reuse existing code, prefer stdlib/native/already-installed capabilities, and otherwise make the minimum cohesive change. Never simplify away validation, security, authorization, data-loss prevention, error handling, accessibility, or an explicit requirement.
+7. Non-trivial changed logic requires the smallest runnable regression check that would fail if the behavior breaks.
+
+The coordinator never decides these facts itself. It relays the deterministic parent run and its inspectable artifacts.
+
 This skill is a thin bootstrap. The deterministic orchestrator owns the workflow.
 
 ## Required behavior
@@ -78,7 +92,6 @@ $HOME/.proofloop/bin/proofloop-core report --run-dir "$repo_root/.proofloop/runs
    verdict for completed work; `run-error.json` instead identifies a ProofLoop system failure that
    must not be presented as a Truth verdict. Never upgrade an incomplete evidence contract to a
    successful user result.
-
 
 For a benchmark invocation, preserve the user's suite, hosts, model, repetition, and policy options and run `proofloop-core benchmark` directly. Never substitute an ordinary coding run for a requested comparison.
 
