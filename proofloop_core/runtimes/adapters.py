@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from proofloop_core.analysis.usage import record_normalized_usage
 from proofloop_core.context.events import EventEmitter
+from proofloop_core.context.io import read_json, write_json
 from proofloop_core.contracts.host_receipt import (
     HostReceiptError,
     seal_acp_receipt,
@@ -27,10 +28,7 @@ _FORBIDDEN_AUTHORITY_KEYS = {
     "claimScope",
     "hostReceipt",
     "receipt",
-    "receiptSha256",
     "authenticated",
-    "hostExecutionObserved",
-    "modelRoutingObserved",
 }
 
 
@@ -136,8 +134,7 @@ class ExternalCLIAdapter:
 
     def collect_result(self, handle: HostRunHandle) -> HostResult:
         state = handle.internal_state or {}
-        invocation = state["invocation"]
-        return HostResult(payload=self.invoke(invocation))
+        return HostResult(payload=self.invoke(state["invocation"]))
 
     def resolve_role(self, role: str) -> ResolvedRuntime:
         resolved = self.registry.resolve(self.host, role, policy=self.routing_policy)
@@ -160,7 +157,14 @@ class ExternalCLIAdapter:
         invocation_root = invocation.run_dir / "invocations"
         sequence = len(list(invocation_root.glob("*"))) + 1 if invocation_root.exists() else 1
         invocation_id = invocation.invocation_id or f"{sequence:02d}-{resolved.runtime_id}-{invocation.role}"
-        effective_prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        effective_prompt_sha = _seal_final_projection(
+            invocation.run_dir,
+            invocation_id,
+            invocation.role,
+            resolved.runtime_id,
+            resolved.model,
+            prompt,
+        )
 
         if resolved.transport == "acp":
             call_dir = invocation_root / invocation_id
@@ -245,7 +249,7 @@ class ExternalCLIAdapter:
                 fixed_args=resolved.fixed_args,
                 invocation_id=invocation_id,
             )
-            normalized = _strip_authority_claims(result, preserve_parent_fields=True)
+            normalized = _strip_authority_claims(result, trusted_parent_result=True)
             normalized["runtime"] = resolved.runtime_id
 
         normalized["routingFallback"] = resolved.fallback
@@ -272,21 +276,45 @@ class ExternalCLIAdapter:
         return _materialize_parent_artifact(invocation, normalized)
 
 
+def _seal_final_projection(
+    run_dir: Path,
+    invocation_id: str,
+    role: str,
+    runtime: str,
+    model: str,
+    prompt: str,
+) -> str:
+    path = run_dir / "prompt-projections" / f"{invocation_id}.json"
+    previous = read_json(path) if path.is_file() else {}
+    prompt_sha = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    projection = {
+        **previous,
+        "schemaVersion": "1.1",
+        "invocationId": invocation_id,
+        "role": role,
+        "runtime": runtime,
+        "model": model,
+        "preAdapterPromptSha256": previous.get("promptSha256"),
+        "promptSha256": prompt_sha,
+        "promptText": prompt,
+        "projectionStage": "FINAL_SENT_BYTES",
+    }
+    write_json(path, projection)
+    (run_dir / "prompt-projections" / f"{invocation_id}.md").write_text(prompt, encoding="utf-8")
+    return prompt_sha
+
+
 def _strip_authority_claims(
     result: Any,
     *,
-    preserve_parent_fields: bool = False,
+    trusted_parent_result: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {"verdict": "FAIL", "reasonCode": "ROLE_RESULT_INVALID", "reason": "adapter returned non-object"}
+    if trusted_parent_result:
+        return dict(result)
     ignored = sorted(key for key in result if key in _FORBIDDEN_AUTHORITY_KEYS)
-    cleaned = {
-        key: value
-        for key, value in result.items()
-        if key not in _FORBIDDEN_AUTHORITY_KEYS or (
-            preserve_parent_fields and key in {"receiptSha256", "hostExecutionObserved", "modelRoutingObserved"}
-        )
-    }
+    cleaned = {key: value for key, value in result.items() if key not in _FORBIDDEN_AUTHORITY_KEYS}
     if ignored:
         cleaned["ignoredAuthorityClaims"] = ignored
         cleaned["authorityClaimDisposition"] = "EVIDENCE_ORIGIN_FORGERY_IGNORED"
