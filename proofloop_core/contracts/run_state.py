@@ -1,12 +1,48 @@
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 from proofloop_core.context.io import read_json, write_json
+
+
+_SUPPORTED_HOSTS = {"claude-code", "codex", "agy"}
+
+
+def _invocation_metadata() -> dict[str, str]:
+    """Describe how the parent run was started without claiming authentication.
+
+    CLI invocation is observable from argv. Programmatic calls remain explicitly
+    labelled so their deterministic mechanics cannot be confused with an
+    authenticated host acceptance run.
+    """
+    host = os.environ.get("PROOFLOOP_HOST")
+    if host not in _SUPPORTED_HOSTS:
+        try:
+            index = sys.argv.index("--host")
+            candidate = sys.argv[index + 1]
+        except (ValueError, IndexError):
+            candidate = None
+        host = candidate if candidate in _SUPPORTED_HOSTS else None
+
+    if host is None:
+        session_signals = (
+            ("codex", os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_SESSION_ID")),
+            ("claude-code", os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDECODE")),
+            ("agy", os.environ.get("ANTIGRAVITY_SESSION_ID") or os.environ.get("AGY_SESSION_ID")),
+        )
+        detected = [name for name, signal in session_signals if signal]
+        host = detected[0] if len(detected) == 1 else None
+
+    return {
+        "host": host or "unresolved",
+        "evidenceOrigin": "CLI_HOST_RUN" if host else "PROGRAMMATIC_OR_UNKNOWN",
+    }
 
 
 def _prune_old_records(repo: Path, keep: int = 30) -> None:
@@ -46,6 +82,7 @@ def start_run(repository: str | Path, request: str = "") -> dict[str, Any]:
         "request": request,
         "status": "ACTIVE",
         "createdAtEpoch": time.time(),
+        **_invocation_metadata(),
     }
     write_json(run_dir / "run.json", state)
     write_json(repo / ".proofloop" / "active-run.json", state)
