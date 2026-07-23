@@ -1,10 +1,11 @@
+import json
 import tempfile
 import unittest
-import json
 from pathlib import Path
 
 from proofloop_core.contracts.task_brief import load_task_brief
 from proofloop_core.engine.orchestrator import task_to_dict
+
 
 class TaskBriefTest(unittest.TestCase):
     def setUp(self):
@@ -15,7 +16,7 @@ class TaskBriefTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_loads_v1_brief_with_defaults(self):
+    def test_rejects_brief_without_explicit_budgets(self):
         data = {
             "id": "T-1",
             "objective": "Do the thing",
@@ -26,34 +27,19 @@ class TaskBriefTest(unittest.TestCase):
                 "maxChangedFiles": 5,
                 "maxAddedLines": 500,
                 "maxNewFiles": 1,
-                "allowDependencyChanges": False
+                "allowDependencyChanges": False,
             },
             "simplicity": {
                 "selectedRung": "STDLIB",
                 "rationale": "No need for external libs",
-                "considered": ["foo"]
-            }
+                "considered": ["REUSE_EXISTING"],
+            },
         }
         self.brief_path.write_text(json.dumps(data), encoding="utf-8")
-        brief = load_task_brief(self.brief_path)
-        
-        self.assertEqual("T-1", brief.task_id)
-        self.assertEqual("Do the thing", brief.objective)
-        self.assertEqual("", brief.title)
-        self.assertEqual((), brief.criterion_ids)
-        self.assertEqual((), brief.deliverables)
-        self.assertEqual((), brief.dependencies)
-        self.assertEqual((), brief.interfaces)
-        self.assertEqual((), brief.context_refs)
-        self.assertEqual((), brief.tool_allowlist)
-        self.assertIsNone(brief.proof_plan)
-        self.assertEqual("", brief.stop_when)
-        self.assertEqual((), brief.escalate_on)
-        self.assertEqual(1, brief.max_fast_attempts)
-        self.assertEqual(0, brief.max_recovery_attempts)
-        self.assertIsNone(brief.required_checks[0].timeout_seconds)
+        with self.assertRaisesRegex(ValueError, "budgets is required"):
+            load_task_brief(self.brief_path)
 
-    def test_loads_v2_brief_with_proof_plan_and_criterion_ids(self):
+    def test_loads_explicit_brief_with_proof_plan_and_criterion_ids(self):
         data = {
             "id": "T-1",
             "title": "Build the feature",
@@ -72,12 +58,14 @@ class TaskBriefTest(unittest.TestCase):
                 "maxChangedFiles": 5,
                 "maxAddedLines": 500,
                 "maxNewFiles": 1,
-                "allowDependencyChanges": False
+                "allowDependencyChanges": False,
             },
             "simplicity": {
                 "selectedRung": "STDLIB",
                 "rationale": "No need for external libs",
-                "considered": ["foo"]
+                "considered": ["REUSE_EXISTING"],
+                "evidenceRefs": [],
+                "permittedNewArtifacts": [],
             },
             "proofPlan": {
                 "baselineChecks": [{"command": ["make", "check"]}],
@@ -94,14 +82,14 @@ class TaskBriefTest(unittest.TestCase):
                     "timeoutSeconds": 12,
                 }],
                 "adversarialChecks": [],
-                "cleanupChecks": []
+                "cleanupChecks": [],
             },
             "stop_when": "all green",
-            "escalate_on": ["timeout"]
+            "escalate_on": ["timeout"],
         }
         self.brief_path.write_text(json.dumps(data), encoding="utf-8")
         brief = load_task_brief(self.brief_path)
-        
+
         self.assertEqual("Build the feature", brief.title)
         self.assertEqual(("C-1", "C-2"), brief.criterion_ids)
         self.assertEqual(("bin/out",), brief.deliverables)
@@ -111,38 +99,47 @@ class TaskBriefTest(unittest.TestCase):
         self.assertEqual(("git",), brief.tool_allowlist)
         self.assertEqual("all green", brief.stop_when)
         self.assertEqual(("timeout",), brief.escalate_on)
-        
+        self.assertEqual(2, brief.max_fast_attempts)
+        self.assertEqual(1, brief.max_recovery_attempts)
+        self.assertIsNone(brief.required_checks[0].timeout_seconds)
+
         self.assertIsNotNone(brief.proof_plan)
         plan = brief.proof_plan
         self.assertEqual(1, len(plan.baseline_checks))
         self.assertEqual(["make", "check"], plan.baseline_checks[0].command)
         self.assertEqual(1, len(plan.red_checks))
         self.assertEqual(1, len(plan.automated_checks))
-        
         self.assertEqual(1, len(plan.surface_scenarios))
-        s = plan.surface_scenarios[0]
-        self.assertEqual("S-1", s.scenario_id)
-        self.assertEqual("curl /api", s.invocation)
-        self.assertEqual("status 200", s.observable)
-        self.assertEqual("strict match", s.pass_rule)
-        self.assertEqual("json", s.artifact_type)
-        self.assertEqual("drop db", s.cleanup)
-        self.assertEqual(["python", "-c", "raise SystemExit(0)"], s.command)
-        self.assertEqual(12, s.timeout_seconds)
-        
+        scenario = plan.surface_scenarios[0]
+        self.assertEqual("S-1", scenario.scenario_id)
+        self.assertEqual("curl /api", scenario.invocation)
+        self.assertEqual("status 200", scenario.observable)
+        self.assertEqual("strict match", scenario.pass_rule)
+        self.assertEqual("json", scenario.artifact_type)
+        self.assertEqual("drop db", scenario.cleanup)
+        self.assertEqual(["python", "-c", "raise SystemExit(0)"], scenario.command)
+        self.assertEqual(12, scenario.timeout_seconds)
         self.assertEqual((), plan.adversarial_checks)
         self.assertEqual((), plan.cleanup_checks)
 
     def test_rejects_non_executable_surface_scenario(self):
         data = {
-            "id": "T-1", "objective": "Do the thing", "allowedPaths": ["src/"], "protectedPaths": [],
+            "id": "T-1",
+            "objective": "Do the thing",
+            "allowedPaths": ["src/"],
+            "protectedPaths": [],
             "requiredChecks": [{"command": ["pytest"]}],
+            "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0},
             "changeBudget": {"maxChangedFiles": 1, "maxAddedLines": 1, "maxNewFiles": 0, "allowDependencyChanges": False},
             "simplicity": {"selectedRung": "STDLIB", "rationale": "no dependency", "considered": []},
             "proofPlan": {
                 "surfaceScenarios": [{
-                    "scenario_id": "S-1", "invocation": "run it", "observable": "ok",
-                    "pass_rule": "exit 0", "artifact_type": "text", "cleanup": None,
+                    "scenario_id": "S-1",
+                    "invocation": "run it",
+                    "observable": "ok",
+                    "pass_rule": "exit 0",
+                    "artifact_type": "text",
+                    "cleanup": None,
                 }],
             },
         }
@@ -150,13 +147,14 @@ class TaskBriefTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "surfaceScenarios\\[0\\]\\.command"):
             load_task_brief(self.brief_path)
 
-    def test_empty_required_checks_round_trip_as_model_candidates(self):
+    def test_minimal_new_code_round_trip_preserves_evidence_and_permissions(self):
         data = {
             "id": "T-EMPTY",
             "objective": "Create a static web example",
             "allowedPaths": ["example/**"],
             "protectedPaths": [],
             "requiredChecks": [],
+            "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0},
             "changeBudget": {
                 "maxChangedFiles": 3,
                 "maxAddedLines": 1500,
@@ -166,16 +164,23 @@ class TaskBriefTest(unittest.TestCase):
             "simplicity": {
                 "selectedRung": "MINIMAL_NEW_CODE",
                 "rationale": "Use three static files",
-                "considered": ["STDLIB", "PLATFORM_NATIVE"],
+                "considered": ["REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"],
+                "evidenceRefs": ["repository-context.json#/facts/0"],
+                "permittedNewArtifacts": ["example/**"],
             },
         }
         self.brief_path.write_text(json.dumps(data), encoding="utf-8")
-
         brief = load_task_brief(self.brief_path)
         self.assertEqual((), brief.required_checks)
 
-        self.brief_path.write_text(json.dumps(task_to_dict(brief)), encoding="utf-8")
+        serialized = task_to_dict(brief)
+        # The orchestrator serializer is part of the frozen contract and must
+        # not drop the evidence required to load its own output.
+        self.assertEqual(["repository-context.json#/facts/0"], serialized["simplicity"]["evidenceRefs"])
+        self.assertEqual(["example/**"], serialized["simplicity"]["permittedNewArtifacts"])
+        self.brief_path.write_text(json.dumps(serialized), encoding="utf-8")
         self.assertEqual(brief, load_task_brief(self.brief_path))
+
 
 if __name__ == "__main__":
     unittest.main()
