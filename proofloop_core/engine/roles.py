@@ -1,47 +1,38 @@
 from __future__ import annotations
+
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from proofloop_core.context.io import write_json, read_json
-from proofloop_core.prompting.prompt_ir import PromptIR, PromptMetadata
+from proofloop_core.contracts.prompt_contract import compile_role_ir
 from proofloop_core.contracts.task_brief import TaskBrief, load_task_brief
 from proofloop_core.engine.exceptions import OrchestrationError
-
 
 if TYPE_CHECKING:
     from proofloop_core.engine.orchestrator import ProofLoopOrchestrator
 
+
 def run_explorer(orchestrator: "ProofLoopOrchestrator") -> Any:
     assert orchestrator.run_dir is not None and orchestrator.strategy is not None
     result_path = orchestrator.run_dir / "exploration.json"
-    ir = PromptIR(
-        prompt_id="explorer-1",
-        request_id="todo",
-        contract_id="todo",
-        blueprint_id="todo",
+    ir = compile_role_ir(
+        orchestrator,
         role="explorer_fast",
-        goal=orchestrator.refined_request or str(orchestrator.request),
-        stop_when="",
-        deliverables=(),
-        evidence_requirements=(),
-        allowed_scope=(),
-        protected_scope=(),
         must_do=("Map only the relevant entry points, callers, tests, constraints, and open risks.",),
         must_not=("Do not edit source and do not design speculative features.",),
         context_refs=(
             f"Strategy: {orchestrator.strategy.strategy}",
             f"Repository: {orchestrator.repo}",
-            f"Repository context: {orchestrator.run_dir / 'repository-context.json'}"
+            f"Repository context: {orchestrator.run_dir / 'repository-context.json'}",
         ),
-        allowed_tools=(),
-        output_contract=f"Write JSON to {result_path} exactly:\n{{\"schemaVersion\":\"1.0\",\"entryPoints\":[],\"impactedFiles\":[],\"tests\":[],\"constraints\":[],\"openRisks\":[]}}\n",
-        escalate_when=(),
-        metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
+        output_contract=(
+            f"Write JSON to {result_path} exactly:\n"
+            '{"schemaVersion":"1.0","entryPoints":[],"impactedFiles":[],"tests":[],"constraints":[],"openRisks":[]}\n'
+        ),
     )
-    prompt = orchestrator._render_prompt(ir)
     orchestrator._invoke(
         "explorer_fast",
-        prompt,
+        orchestrator._render_prompt(ir),
         result_path=result_path,
         immutable_source=True,
         phase="EXPLORE",
@@ -49,32 +40,32 @@ def run_explorer(orchestrator: "ProofLoopOrchestrator") -> Any:
     if not result_path.exists():
         raise OrchestrationError("EXPLORATION_ARTIFACT_MISSING", "explorer did not produce exploration.json")
 
+
 def run_planner(orchestrator: "ProofLoopOrchestrator") -> Any:
     assert orchestrator.run_dir is not None and orchestrator.strategy is not None and orchestrator.intent is not None
     orchestrator.transition("PLAN")
     result_path = orchestrator.run_dir / "plan.json"
     accepted_criteria = ", ".join(item.criterion_id for item in orchestrator.intent.acceptance_criteria)
-    ir = PromptIR(
-        prompt_id="planner-1",
-        request_id="todo",
-        contract_id="todo",
-        blueprint_id="todo",
+    first_criterion = orchestrator.intent.acceptance_criteria[0].criterion_id
+    ir = compile_role_ir(
+        orchestrator,
         role="planner_deep",
-        goal=orchestrator.refined_request or str(orchestrator.request),
-        stop_when="",
-        deliverables=(),
-        evidence_requirements=(),
-        allowed_scope=(),
-        protected_scope=(),
-        must_do=("Inspect real files and create the smallest sufficient implementation plan.",),
-        must_not=("Do not edit production or test source.",),
+        must_do=(
+            "Inspect real files and create the smallest sufficient implementation plan.",
+            "Link every task to one or more frozen acceptance criteria.",
+            "Record evidence for the selected Ponytail rung before proposing new artifacts.",
+        ),
+        must_not=(
+            "Do not edit production or test source.",
+            "Do not invent acceptance criteria, scope, checks, or authority.",
+        ),
         context_refs=(
             f"Strategy: {orchestrator.strategy.strategy}",
             f"Repository: {orchestrator.repo}",
             f"Repository evidence: {orchestrator.run_dir / 'repository-context.json'}",
-            f"Exploration evidence: {orchestrator.run_dir / 'exploration.json' if (orchestrator.run_dir / 'exploration.json').exists() else 'not requested'}"
+            f"Exploration evidence: {orchestrator.run_dir / 'exploration.json' if (orchestrator.run_dir / 'exploration.json').exists() else 'not requested'}",
+            f"Active execution brief: {orchestrator.run_dir / 'execution-brief.json'}",
         ),
-        allowed_tools=(),
         output_contract=(
             f"Write JSON to {result_path} with exactly this shape:\n"
             "{\n"
@@ -85,58 +76,56 @@ def run_planner(orchestrator: "ProofLoopOrchestrator") -> Any:
             '    {\n'
             '      "id": "TASK-001",\n'
             '      "objective": "...",\n'
-            f'      "criterion_ids": ["{orchestrator.intent.acceptance_criteria[0].criterion_id}"],\n'
+            f'      "criterion_ids": ["{first_criterion}"],\n'
             '      "allowedPaths": ["path/**"],\n'
             '      "protectedPaths": [],\n'
             '      "requiredChecks": [{"name": "tests", "command": ["executable", "arg"]}],\n'
             '      "proofPlan": {"baselineChecks": [], "redChecks": [], "automatedChecks": [{"name": "behavior", "command": ["executable", "arg"]}], "surfaceScenarios": [], "adversarialChecks": [], "cleanupChecks": []},\n'
-            '      "changeBudget": {"maxChangedFiles": <positive integer derived from allowedPaths>, "maxAddedLines": <optional positive integer only when a line cap is justified>, "maxNewFiles": <nonnegative integer derived from deliverables>, "allowDependencyChanges": false},\n'
-            '      "simplicity": {"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": []},\n'
+            '      "changeBudget": {"maxChangedFiles": 1, "maxAddedLines": null, "maxNewFiles": 0, "allowDependencyChanges": false},\n'
+            '      "simplicity": {"selectedRung": "REUSE_EXISTING", "rationale": "...", "considered": [], "evidenceRefs": ["repository-context.json#/..."] , "permittedNewArtifacts": []},\n'
             '      "budgets": {"maxFastAttempts": 1, "maxRecoveryAttempts": 0}\n'
             '    }\n'
             '  ]\n'
             "}\n"
-            f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); replace every <...> budget placeholder with an integer derived from the declared deliverables before writing JSON; every command (including every surface scenario command) must be executable in this repository; proofPlan automated/adversarial/cleanup/surface checks run after the change and must contain at least one executable check; baseline checks must pass before mutation and red checks must fail before mutation; stop at the first sufficient simplicity rung; no speculative work.\n"
+            f"Rules: 1-4 bounded tasks; every task must link one or more declared criterion_ids ({accepted_criteria}); "
+            "derive every numeric budget from declared deliverables; every command must be executable in this repository; "
+            "post-change proof must contain at least one executable check; baseline checks pass before mutation and red checks fail before mutation; "
+            "stop at the first sufficient Ponytail rung; no speculative work or unreferenced artifact.\n"
         ),
-        escalate_when=(),
-        metadata=PromptMetadata(compiler_version="todo", generation_time="todo")
     )
-    prompt = orchestrator._render_prompt(ir)
-    orchestrator._invoke("planner_deep", prompt, result_path=result_path, immutable_source=True, phase="PLAN")
+    orchestrator._invoke(
+        "planner_deep",
+        orchestrator._render_prompt(ir),
+        result_path=result_path,
+        immutable_source=True,
+        phase="PLAN",
+    )
     return materialize_plan(orchestrator, result_path)
+
 
 def run_plan_review(orchestrator: "ProofLoopOrchestrator") -> Any:
     assert orchestrator.run_dir is not None
     orchestrator.transition("PLAN_REVIEW")
     result_path = orchestrator.run_dir / "plan-review.json"
-    ir = PromptIR(
-        prompt_id="plan-review-1",
-        request_id="todo",
-        contract_id="todo",
-        role="reviewer_deep", blueprint_id="PLAN_REVIEW",
-        goal="",
-        stop_when="",
-        deliverables=(),
-        evidence_requirements=(),
-        allowed_scope=(),
-        protected_scope=(),
-        must_do=(),
-        must_not=("Do not edit source.",),
-        context_refs=(),
-        allowed_tools=(),
+    ir = compile_role_ir(
+        orchestrator,
+        role="reviewer_deep",
+        must_do=("Verify acceptance coverage, executable checks, frozen scope, escalation conditions, and minimality evidence.",),
+        must_not=("Do not edit source or silently repair the plan.",),
+        context_refs=(
+            f"Plan artifact: {orchestrator.run_dir / 'plan.json'}",
+            f"Prompt compilation: {orchestrator.run_dir / 'prompt-compilation.json'}",
+        ),
         output_contract=(
             f"Write JSON to {result_path}:\n"
-            '{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{"severity":"critical|important|minor","message":"..."}]}\n'
-            "Approve only if acceptance criteria, checks, scope, and escalation conditions are sufficient and minimal.\n"
+            '{"verdict":"APPROVED|FIX_REQUIRED|CANNOT_VERIFY","findings":[{"severity":"critical|important|minor","message":"...","evidenceRef":"..."}]}\n'
+            "Approve only if acceptance criteria, checks, scope, escalation conditions, and Ponytail evidence are sufficient and minimal.\n"
         ),
-        escalate_when=(),
-        metadata=PromptMetadata(compiler_version=str(orchestrator.run_dir / 'plan.json'), generation_time="todo")
     )
-    prompt = orchestrator._render_prompt(ir)
     orchestrator._emit("review.started", phase="PLAN", message="High-risk plan review started.")
     orchestrator._invoke(
         "reviewer_deep",
-        prompt,
+        orchestrator._render_prompt(ir),
         result_path=result_path,
         immutable_source=True,
         phase="PLAN",
@@ -150,6 +139,7 @@ def run_plan_review(orchestrator: "ProofLoopOrchestrator") -> Any:
         message="High-risk plan review approved.",
         data={"verdict": review.get("verdict"), "findings": review.get("findings", [])},
     )
+
 
 def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
     assert orchestrator.run_dir is not None and orchestrator.intent is not None
@@ -232,11 +222,7 @@ def materialize_plan(orchestrator: "ProofLoopOrchestrator", result_path) -> Any:
                 verdict="FAILED",
                 failure_domain="PROOFLOOP",
             ) from exc
-    if (
-        len(tasks) == 1
-        and not tasks[0].criterion_ids
-        and len(orchestrator.intent.acceptance_criteria) == 1
-    ):
+    if len(tasks) == 1 and not tasks[0].criterion_ids and len(orchestrator.intent.acceptance_criteria) == 1:
         criterion_id = orchestrator.intent.acceptance_criteria[0].criterion_id
         task = replace(tasks[0], criterion_ids=(criterion_id,))
         tasks[0] = task
