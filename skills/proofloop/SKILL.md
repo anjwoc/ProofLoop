@@ -36,6 +36,9 @@ This skill is a thin bootstrap. The deterministic orchestrator owns the workflow
 
 ```bash
 repo_root="$(git rev-parse --show-toplevel)" || exit 1
+proofloop_home="${PROOFLOOP_HOME:-$HOME/.proofloop}"
+proofloop_core="$proofloop_home/bin/proofloop-core"
+test -x "$proofloop_core" || { printf 'ProofLoop runtime missing: %s\n' "$proofloop_core" >&2; exit 1; }
 request_dir="$repo_root/.proofloop/requests"
 mkdir -p "$request_dir"
 request_file="$request_dir/request-$(date +%Y%m%dT%H%M%S).txt"
@@ -44,7 +47,7 @@ cd "$repo_root" || exit 1
 relay_dir="$repo_root/.proofloop/relay/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$relay_dir"
 printf '1\n' > "$relay_dir/next-line"
-nohup $HOME/.proofloop/bin/proofloop-core run \
+nohup "$proofloop_core" run \
   --mode <adaptive-or-goal-or-audit> \
   --host <current-host> \
   --repo "$repo_root" \
@@ -54,17 +57,17 @@ nohup $HOME/.proofloop/bin/proofloop-core run \
   --color never \
   > "$relay_dir/output.log" 2>&1 < /dev/null &
 printf '%s\n' "$!" > "$relay_dir/pid"
-printf 'RELAY_DIR=%s\nPID=%s\n' "$relay_dir" "$(cat "$relay_dir/pid")"
+printf 'RELAY_DIR=%s\nPID=%s\nPROOFLOOP_CORE=%s\n' "$relay_dir" "$(cat "$relay_dir/pid")" "$proofloop_core"
 ```
 
-5. Tell the user the run has started, including only the observed run PID and
+5. Tell the user the run has started, including only the observed run PID, runtime path, and
    relay status. Then keep polling in separate terminal calls until it reports
    finished; do not make a single long-running `tail -f` or wait call and do
    not return control to the user while the relay is active. Retain the
-   absolute `RELAY_DIR` from the launch result and use exactly this command:
+   absolute `RELAY_DIR` and `PROOFLOOP_CORE` from the launch result and use exactly this command:
 
 ```bash
-$HOME/.proofloop/bin/proofloop-core relay --relay-dir "$RELAY_DIR" --wait-seconds 3
+"$PROOFLOOP_CORE" relay --relay-dir "$RELAY_DIR" --wait-seconds 3
 ```
 
 6. Relay every new `[ProofLoop]` line to the user between polls. These are the
@@ -72,13 +75,13 @@ $HOME/.proofloop/bin/proofloop-core relay --relay-dir "$RELAY_DIR" --wait-second
    and observed model evidence, checks, recovery decisions, review, budget,
    and Truth verdict. The relay command outputs every newly appended observable
    line exactly once. Do not expose provider private reasoning or raw provider
-   transcripts, and do not invent progress. If the user requests the TUI screen or debug view (`TUI`), pass `--tui` to relay (`$HOME/.proofloop/bin/proofloop-core relay --relay-dir "$RELAY_DIR" --tui`) or inspect a completed/running session directly via `$HOME/.proofloop/bin/proofloop-core tui --run latest`.
+   transcripts, and do not invent progress. If the user requests the TUI screen or debug view (`TUI`), pass `--tui` to relay (`"$PROOFLOOP_CORE" relay --relay-dir "$RELAY_DIR" --tui`) or inspect a completed/running session directly via `"$PROOFLOOP_CORE" tui --run latest`.
 
 7. When the relay finishes, extract the run ID from the first `ProofLoop run` line in
    `output.log`. Then run the full run report command and print its output verbatim to the user:
 
 ```bash
-$HOME/.proofloop/bin/proofloop-core report --run-dir "$repo_root/.proofloop/runs/<run-id>"
+"$PROOFLOOP_CORE" report --run-dir "$repo_root/.proofloop/runs/<run-id>"
 ```
 
    The report includes: verdict, task type (strategy), host, duration, per-model token usage,
