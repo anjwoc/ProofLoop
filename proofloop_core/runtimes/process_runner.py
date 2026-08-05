@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Callable, Mapping
 
-
 LineCallback = Callable[[str, str], None]
 HeartbeatCallback = Callable[[int, float], None]
 OutputFilter = Callable[[str, str], str]
@@ -20,6 +19,7 @@ OutputFilter = Callable[[str, str], str]
 class ProcessResult:
     command: tuple[str, ...]
     cwd: str
+    process_id: int
     exit_code: int
     timed_out: bool
     cancelled: bool
@@ -38,14 +38,10 @@ class ProcessRunner:
         poll_interval: float = 0.05,
         max_queued_lines: int = 1024,
     ) -> None:
-        if terminate_grace_seconds < 0:
-            raise ValueError("terminate_grace_seconds must be non-negative")
-        if drain_grace_seconds < 0:
-            raise ValueError("drain_grace_seconds must be non-negative")
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be positive")
-        if max_queued_lines <= 0:
-            raise ValueError("max_queued_lines must be positive")
+        if terminate_grace_seconds < 0 or drain_grace_seconds < 0:
+            raise ValueError("grace periods must be non-negative")
+        if poll_interval <= 0 or max_queued_lines <= 0:
+            raise ValueError("poll interval and queue size must be positive")
         self.terminate_grace_seconds = terminate_grace_seconds
         self.drain_grace_seconds = drain_grace_seconds
         self.poll_interval = poll_interval
@@ -106,6 +102,7 @@ class ProcessRunner:
                 bufsize=0,
                 start_new_session=os.name == "posix",
             )
+            process_id = process.pid
             assert process.stdout is not None and process.stderr is not None
             if os.name == "posix":
                 os.set_blocking(process.stdout.fileno(), False)
@@ -158,7 +155,7 @@ class ProcessRunner:
                     and now >= next_heartbeat
                 ):
                     try:
-                        on_heartbeat(process.pid, now - started)
+                        on_heartbeat(process_id, now - started)
                     except BaseException as exc:
                         callback_error = exc
                         termination_started = now
@@ -183,10 +180,7 @@ class ProcessRunner:
                         timeout_reason = "TOTAL_TIMEOUT"
                         termination_started = now
                         self._terminate(process)
-                elif (
-                    not killed
-                    and now - termination_started >= self.terminate_grace_seconds
-                ):
+                elif not killed and now - termination_started >= self.terminate_grace_seconds:
                     killed = True
                     kill_started = now
                     self._kill(process)
@@ -244,6 +238,7 @@ class ProcessRunner:
         return ProcessResult(
             command=tuple(command),
             cwd=str(root),
+            process_id=process_id,
             exit_code=exit_code,
             timed_out=timed_out,
             cancelled=cancelled,
@@ -298,8 +293,7 @@ class ProcessRunner:
                     del pending[:boundary]
                     line = raw_line.decode("utf-8", errors="replace")
                     if output_filter is not None:
-                        persisted = output_filter(name, line)
-                        output.write(persisted.encode("utf-8", errors="replace"))
+                        output.write(output_filter(name, line).encode("utf-8", errors="replace"))
                         output.flush()
                     messages.put((name, line, None))
                 while len(pending) >= 65536:
@@ -307,15 +301,13 @@ class ProcessRunner:
                     del pending[:65536]
                     line = raw_line.decode("utf-8", errors="replace")
                     if output_filter is not None:
-                        persisted = output_filter(name, line)
-                        output.write(persisted.encode("utf-8", errors="replace"))
+                        output.write(output_filter(name, line).encode("utf-8", errors="replace"))
                         output.flush()
                     messages.put((name, line, None))
             if pending:
                 line = bytes(pending).decode("utf-8", errors="replace")
                 if output_filter is not None:
-                    persisted = output_filter(name, line)
-                    output.write(persisted.encode("utf-8", errors="replace"))
+                    output.write(output_filter(name, line).encode("utf-8", errors="replace"))
                     output.flush()
                 messages.put((name, line, None))
         except BaseException as exc:

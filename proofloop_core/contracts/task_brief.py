@@ -6,7 +6,6 @@ from typing import Any
 
 from proofloop_core.context.io import read_json
 
-
 SIMPLICITY_RUNGS = {
     "SKIP_NOT_NEEDED",
     "REUSE_EXISTING",
@@ -16,20 +15,21 @@ SIMPLICITY_RUNGS = {
     "DIRECT_CHANGE",
     "MINIMAL_NEW_CODE",
 }
+_EVIDENCE_REQUIRED_RUNGS = {"DIRECT_CHANGE", "MINIMAL_NEW_CODE"}
 
 
 @dataclass(frozen=True)
 class CheckSpec:
     command: list[str]
     cwd: str | None = None
-    timeout_seconds: int = 300
+    timeout_seconds: int | None = None
     name: str | None = None
 
 
 @dataclass(frozen=True)
 class ChangeBudget:
     max_changed_files: int
-    max_added_lines: int
+    max_added_lines: int | None
     max_new_files: int
     allow_dependency_changes: bool
 
@@ -39,6 +39,8 @@ class SimplicityPlan:
     selected_rung: str
     rationale: str
     considered: tuple[str, ...]
+    evidence_refs: tuple[str, ...] = ()
+    permitted_new_artifacts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class SurfaceScenario:
     cleanup: str | None
     command: list[str]
     cwd: str | None = None
-    timeout_seconds: int = 300
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -73,8 +75,8 @@ class TaskBrief:
     required_checks: tuple[CheckSpec, ...]
     change_budget: ChangeBudget
     simplicity: SimplicityPlan
-    max_fast_attempts: int = 2
-    max_recovery_attempts: int = 1
+    max_fast_attempts: int
+    max_recovery_attempts: int
 
     title: str = ""
     criterion_ids: tuple[str, ...] = ()
@@ -104,9 +106,22 @@ def _list_of_strings(value: Any, field: str) -> tuple[str, ...]:
 
 def _positive_int(value: Any, field: str, *, allow_zero: bool = False) -> int:
     minimum = 0 if allow_zero else 1
-    if not isinstance(value, int) or value < minimum:
-        op = ">=" if allow_zero else ">="
-        raise ValueError(f"{field} must be {op} {minimum}")
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ValueError(f"{field} must be >= {minimum}")
+    return value
+
+
+def _optional_positive_int(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    return _positive_int(value, field)
+
+
+def _optional_timeout(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer when provided")
     return value
 
 
@@ -115,7 +130,6 @@ def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
         return ()
     if not isinstance(raw_list, list):
         raise ValueError(f"{field} must be a list")
-
     checks: list[CheckSpec] = []
     for index, item in enumerate(raw_list):
         if not isinstance(item, dict):
@@ -123,9 +137,7 @@ def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
         command = item.get("command")
         if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
             raise ValueError(f"{field}[{index}].command must be a non-empty string list")
-        timeout = item.get("timeoutSeconds", 300)
-        if not isinstance(timeout, int) or timeout <= 0:
-            raise ValueError(f"{field}[{index}].timeoutSeconds must be a positive integer")
+        timeout = _optional_timeout(item.get("timeoutSeconds"), f"{field}[{index}].timeoutSeconds")
         cwd = item.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise ValueError(f"{field}[{index}].cwd must be a string")
@@ -136,87 +148,97 @@ def _parse_check_list(raw_list: Any, field: str) -> tuple[CheckSpec, ...]:
     return tuple(checks)
 
 
+def _parse_simplicity(raw: Any) -> SimplicityPlan:
+    if not isinstance(raw, dict):
+        raise ValueError("simplicity is required and must be an object")
+    selected_rung = _require_string(raw.get("selectedRung"), "simplicity.selectedRung")
+    if selected_rung not in SIMPLICITY_RUNGS:
+        raise ValueError(f"simplicity.selectedRung must be one of {sorted(SIMPLICITY_RUNGS)}")
+    considered = _list_of_strings(raw.get("considered"), "simplicity.considered")
+    evidence_refs = _list_of_strings(raw.get("evidenceRefs"), "simplicity.evidenceRefs")
+    permitted = _list_of_strings(raw.get("permittedNewArtifacts"), "simplicity.permittedNewArtifacts")
+    if selected_rung in _EVIDENCE_REQUIRED_RUNGS and not evidence_refs:
+        raise ValueError("simplicity.evidenceRefs is required for DIRECT_CHANGE or MINIMAL_NEW_CODE")
+    if selected_rung in _EVIDENCE_REQUIRED_RUNGS and not considered:
+        raise ValueError("simplicity.considered must record earlier Ponytail rungs before new code")
+    return SimplicityPlan(
+        selected_rung=selected_rung,
+        rationale=_require_string(raw.get("rationale"), "simplicity.rationale"),
+        considered=considered,
+        evidence_refs=evidence_refs,
+        permitted_new_artifacts=permitted,
+    )
+
+
 def load_task_brief(path: str | Path) -> TaskBrief:
     raw = read_json(path)
+    checks = _parse_check_list(raw.get("requiredChecks"), "requiredChecks")
 
-    checks_raw = raw.get("requiredChecks")
-    if checks_raw is not None and (not isinstance(checks_raw, list) or not checks_raw):
-        raise ValueError("requiredChecks must contain at least one command if present")
-    checks = _parse_check_list(checks_raw, "requiredChecks")
-
-    budgets = raw.get("budgets") or {}
+    budgets = raw.get("budgets")
     if not isinstance(budgets, dict):
-        raise ValueError("budgets must be an object")
-    fast = budgets.get("maxFastAttempts", 2)
-    recovery = budgets.get("maxRecoveryAttempts", 1)
-    if not isinstance(fast, int) or fast < 1:
-        raise ValueError("budgets.maxFastAttempts must be >= 1")
-    if not isinstance(recovery, int) or recovery < 0:
-        raise ValueError("budgets.maxRecoveryAttempts must be >= 0")
+        raise ValueError("budgets is required and must be an object")
+    if set(budgets) != {"maxFastAttempts", "maxRecoveryAttempts"}:
+        raise ValueError("budgets must contain exactly maxFastAttempts and maxRecoveryAttempts")
+    fast = _positive_int(budgets.get("maxFastAttempts"), "budgets.maxFastAttempts")
+    recovery = _positive_int(
+        budgets.get("maxRecoveryAttempts"),
+        "budgets.maxRecoveryAttempts",
+        allow_zero=True,
+    )
 
     change_raw = raw.get("changeBudget")
     if not isinstance(change_raw, dict):
         raise ValueError("changeBudget is required and must be an object")
-    allow_dependency_changes = change_raw.get("allowDependencyChanges", False)
+    required_change_fields = {"maxChangedFiles", "maxAddedLines", "maxNewFiles", "allowDependencyChanges"}
+    if set(change_raw) != required_change_fields:
+        raise ValueError(f"changeBudget must contain exactly {sorted(required_change_fields)}")
+    allow_dependency_changes = change_raw.get("allowDependencyChanges")
     if not isinstance(allow_dependency_changes, bool):
         raise ValueError("changeBudget.allowDependencyChanges must be boolean")
     change_budget = ChangeBudget(
         max_changed_files=_positive_int(change_raw.get("maxChangedFiles"), "changeBudget.maxChangedFiles"),
-        max_added_lines=_positive_int(change_raw.get("maxAddedLines"), "changeBudget.maxAddedLines"),
+        max_added_lines=_optional_positive_int(change_raw.get("maxAddedLines"), "changeBudget.maxAddedLines"),
         max_new_files=_positive_int(change_raw.get("maxNewFiles"), "changeBudget.maxNewFiles", allow_zero=True),
         allow_dependency_changes=allow_dependency_changes,
     )
-
-    simplicity_raw = raw.get("simplicity")
-    if not isinstance(simplicity_raw, dict):
-        raise ValueError("simplicity is required and must be an object")
-    selected_rung = _require_string(simplicity_raw.get("selectedRung"), "simplicity.selectedRung")
-    if selected_rung not in SIMPLICITY_RUNGS:
-        raise ValueError(f"simplicity.selectedRung must be one of {sorted(SIMPLICITY_RUNGS)}")
-    simplicity = SimplicityPlan(
-        selected_rung=selected_rung,
-        rationale=_require_string(simplicity_raw.get("rationale"), "simplicity.rationale"),
-        considered=_list_of_strings(simplicity_raw.get("considered"), "simplicity.considered"),
-    )
+    simplicity = _parse_simplicity(raw.get("simplicity"))
 
     proof_plan = None
     if "proofPlan" in raw:
         pp_raw = raw["proofPlan"]
         if not isinstance(pp_raw, dict):
             raise ValueError("proofPlan must be an object")
-
         scenarios_raw = pp_raw.get("surfaceScenarios", [])
         if not isinstance(scenarios_raw, list):
             raise ValueError("proofPlan.surfaceScenarios must be a list")
-
         scenarios: list[SurfaceScenario] = []
-        for i, s in enumerate(scenarios_raw):
-            if not isinstance(s, dict):
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}] must be an object")
-            command = s.get("command")
+        for index, scenario in enumerate(scenarios_raw):
+            if not isinstance(scenario, dict):
+                raise ValueError(f"proofPlan.surfaceScenarios[{index}] must be an object")
+            command = scenario.get("command")
             if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}].command must be a non-empty string list")
-            cleanup = s.get("cleanup")
+                raise ValueError(f"proofPlan.surfaceScenarios[{index}].command must be a non-empty string list")
+            cleanup = scenario.get("cleanup")
             if cleanup is not None and not isinstance(cleanup, str):
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}].cleanup must be a string or null")
-            cwd = s.get("cwd")
+                raise ValueError(f"proofPlan.surfaceScenarios[{index}].cleanup must be a string or null")
+            cwd = scenario.get("cwd")
             if cwd is not None and not isinstance(cwd, str):
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}].cwd must be a string or null")
-            timeout = s.get("timeoutSeconds", 300)
-            if not isinstance(timeout, int) or timeout <= 0:
-                raise ValueError(f"proofPlan.surfaceScenarios[{i}].timeoutSeconds must be a positive integer")
+                raise ValueError(f"proofPlan.surfaceScenarios[{index}].cwd must be a string or null")
+            timeout = _optional_timeout(
+                scenario.get("timeoutSeconds"),
+                f"proofPlan.surfaceScenarios[{index}].timeoutSeconds",
+            )
             scenarios.append(SurfaceScenario(
-                scenario_id=_require_string(s.get("scenario_id"), f"surfaceScenarios[{i}].scenario_id"),
-                invocation=_require_string(s.get("invocation"), f"surfaceScenarios[{i}].invocation"),
-                observable=_require_string(s.get("observable"), f"surfaceScenarios[{i}].observable"),
-                pass_rule=_require_string(s.get("pass_rule"), f"surfaceScenarios[{i}].pass_rule"),
-                artifact_type=_require_string(s.get("artifact_type"), f"surfaceScenarios[{i}].artifact_type"),
+                scenario_id=_require_string(scenario.get("scenario_id"), f"surfaceScenarios[{index}].scenario_id"),
+                invocation=_require_string(scenario.get("invocation"), f"surfaceScenarios[{index}].invocation"),
+                observable=_require_string(scenario.get("observable"), f"surfaceScenarios[{index}].observable"),
+                pass_rule=_require_string(scenario.get("pass_rule"), f"surfaceScenarios[{index}].pass_rule"),
+                artifact_type=_require_string(scenario.get("artifact_type"), f"surfaceScenarios[{index}].artifact_type"),
                 cleanup=cleanup,
                 command=list(command),
                 cwd=cwd,
                 timeout_seconds=timeout,
             ))
-
         proof_plan = ProofPlan(
             baseline_checks=_parse_check_list(pp_raw.get("baselineChecks"), "proofPlan.baselineChecks"),
             red_checks=_parse_check_list(pp_raw.get("redChecks"), "proofPlan.redChecks"),
@@ -236,7 +258,6 @@ def load_task_brief(path: str | Path) -> TaskBrief:
         simplicity=simplicity,
         max_fast_attempts=fast,
         max_recovery_attempts=recovery,
-
         title=raw.get("title", ""),
         criterion_ids=_list_of_strings(raw.get("criterion_ids"), "criterion_ids"),
         deliverables=_list_of_strings(raw.get("deliverables"), "deliverables"),

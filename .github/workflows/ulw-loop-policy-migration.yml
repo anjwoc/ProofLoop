@@ -1,0 +1,339 @@
+name: ULW Loop Policy Migration
+
+on:
+  push:
+    branches:
+      - codex/preserve-eb097dd-with-main
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply assertion-backed migration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path('.')
+
+          def replace(path: str, old: str, new: str, *, count: int = 1) -> None:
+              target = ROOT / path
+              text = target.read_text(encoding='utf-8')
+              observed = text.count(old)
+              if observed != count:
+                  raise SystemExit(f'{path}: expected {count} occurrences, found {observed}: {old[:100]!r}')
+              target.write_text(text.replace(old, new), encoding='utf-8')
+
+          def regex_replace(path: str, pattern: str, replacement: str, *, count: int = 1) -> None:
+              target = ROOT / path
+              text = target.read_text(encoding='utf-8')
+              updated, observed = re.subn(pattern, replacement, text, flags=re.MULTILINE | re.DOTALL)
+              if observed != count:
+                  raise SystemExit(f'{path}: expected {count} regex matches, found {observed}: {pattern[:100]!r}')
+              target.write_text(updated, encoding='utf-8')
+
+          # Orchestrator: one resolved policy, one invocation context, no runtime defaults.
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              'from proofloop_core.contracts.run_state import start_run, finalize_run\n',
+              'from proofloop_core.contracts.run_policy import ResolvedRunPolicy, resolve_run_policy\n'
+              'from proofloop_core.contracts.run_state import (\n'
+              '    InvocationContext,\n'
+              '    create_invocation_context,\n'
+              '    start_run,\n'
+              '    finalize_run,\n'
+              ')\n',
+          )
+          replace('proofloop_core/engine/orchestrator.py', 'timeout_seconds: int = 1200,', 'timeout_seconds: int | None = None,', count=4)
+          replace('proofloop_core/engine/orchestrator.py', 'max_goal_cycles: int = 8,', 'max_goal_cycles: int | None = None,', count=3)
+          replace('proofloop_core/engine/orchestrator.py', 'max_replans: int = 2,', 'max_replans: int | None = None,', count=3)
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        event_bus: EventBus | None = None,\n    ) -> None:\n',
+              '        event_bus: EventBus | None = None,\n'
+              '        run_policy: ResolvedRunPolicy | None = None,\n'
+              '        invocation_context: InvocationContext | None = None,\n'
+              '    ) -> None:\n',
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        self.goal_mode = goal_mode or mode == "goal"\n'
+              '        self.max_goal_cycles = max_goal_cycles\n'
+              '        self.max_replans = max_replans\n'
+              '        self.adapter = adapter or ExternalCLIAdapter(host, routing_policy="goal" if goal_mode else "controller")\n'
+              '        self.strategy_override = strategy_override\n'
+              '        self.timeout_seconds = timeout_seconds\n',
+              '        self.goal_mode = goal_mode or mode == "goal"\n'
+              '        policy_overrides = {\n'
+              '            "run.timeoutSeconds": timeout_seconds,\n'
+              '            "goal.maxCycles": max_goal_cycles,\n'
+              '            "goal.maxReplans": max_replans,\n'
+              '        }\n'
+              '        self.run_policy = run_policy or resolve_run_policy(cli_overrides=policy_overrides)\n'
+              '        self.invocation_context = invocation_context or create_invocation_context(\n'
+              '            self.repo,\n'
+              '            self.run_policy,\n'
+              '            invocation_kind="PROGRAMMATIC",\n'
+              '            requested_host=host,\n'
+              '        )\n'
+              '        self.max_goal_cycles = int(self.run_policy.get("goal.maxCycles"))\n'
+              '        self.max_replans = int(self.run_policy.get("goal.maxReplans"))\n'
+              '        self.adapter = adapter or ExternalCLIAdapter(host, routing_policy="goal" if goal_mode else "controller")\n'
+              '        self.strategy_override = strategy_override\n'
+              '        self.timeout_seconds = int(self.run_policy.get("run.timeoutSeconds"))\n',
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        started = start_run(self.repo, self.request)\n',
+              '        started = start_run(\n'
+              '            self.repo,\n'
+              '            self.request,\n'
+              '            policy=self.run_policy,\n'
+              '            invocation_context=self.invocation_context,\n'
+              '        )\n',
+          )
+          regex_replace(
+              'proofloop_core/engine/orchestrator.py',
+              r'    def _role_time_budget_seconds\(self, role: str\) -> int:\n.*?(?=\n    def )',
+              '    def _role_time_budget_seconds(self, role: str) -> int:\n'
+              '        configured = int(self.run_policy.get(f"roles.{role}.timeoutSeconds"))\n'
+              '        return min(self.timeout_seconds, configured)\n',
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        simplicity=SimplicityPlan(\n'
+              '            selected_rung=ranked[0].simplicity.selected_rung,\n'
+              '            rationale="; ".join(task.simplicity.rationale for task in ranked),\n'
+              '            considered=tuple(dict.fromkeys(item for task in ranked for item in task.simplicity.considered)),\n'
+              '        ),\n',
+              '        simplicity=SimplicityPlan(\n'
+              '            selected_rung=ranked[0].simplicity.selected_rung,\n'
+              '            rationale="; ".join(task.simplicity.rationale for task in ranked),\n'
+              '            considered=tuple(dict.fromkeys(item for task in ranked for item in task.simplicity.considered)),\n'
+              '            evidence_refs=tuple(dict.fromkeys(item for task in ranked for item in task.simplicity.evidence_refs)),\n'
+              '            permitted_new_artifacts=tuple(\n'
+              '                dict.fromkeys(item for task in ranked for item in task.simplicity.permitted_new_artifacts)\n'
+              '            ),\n'
+              '        ),\n',
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        "simplicity": {\n'
+              '            "selectedRung": task.simplicity.selected_rung,\n'
+              '            "rationale": task.simplicity.rationale,\n'
+              '            "considered": list(task.simplicity.considered),\n'
+              '        },\n',
+              '        "simplicity": {\n'
+              '            "selectedRung": task.simplicity.selected_rung,\n'
+              '            "rationale": task.simplicity.rationale,\n'
+              '            "considered": list(task.simplicity.considered),\n'
+              '            "evidenceRefs": list(task.simplicity.evidence_refs),\n'
+              '            "permittedNewArtifacts": list(task.simplicity.permitted_new_artifacts),\n'
+              '        },\n',
+          )
+          # Add policy/context pass-through to three public wrappers.
+          for marker in (
+              '    experimental_domain_packs: bool = False,\n) -> dict[str, Any]:\n    return ProofLoopOrchestrator(',
+              '    experimental_domain_packs: bool = False,\n) -> dict[str, Any]:\n    return ProofLoopOrchestrator(',
+              '    event_bus: EventBus | None = None,\n) -> dict[str, Any]:\n    effective_goal_mode',
+          ):
+              pass
+          # First two identical wrapper signatures are replaced together.
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '    experimental_domain_packs: bool = False,\n) -> dict[str, Any]:\n    return ProofLoopOrchestrator(',
+              '    experimental_domain_packs: bool = False,\n'
+              '    run_policy: ResolvedRunPolicy | None = None,\n'
+              '    invocation_context: InvocationContext | None = None,\n'
+              ') -> dict[str, Any]:\n    return ProofLoopOrchestrator(',
+              count=2,
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '    event_bus: EventBus | None = None,\n) -> dict[str, Any]:\n    effective_goal_mode',
+              '    event_bus: EventBus | None = None,\n'
+              '    run_policy: ResolvedRunPolicy | None = None,\n'
+              '    invocation_context: InvocationContext | None = None,\n'
+              ') -> dict[str, Any]:\n    effective_goal_mode',
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        experimental_domain_packs=experimental_domain_packs,\n    ).run()\n',
+              '        experimental_domain_packs=experimental_domain_packs,\n'
+              '        run_policy=run_policy,\n'
+              '        invocation_context=invocation_context,\n'
+              '    ).run()\n',
+              count=2,
+          )
+          replace(
+              'proofloop_core/engine/orchestrator.py',
+              '        event_bus=event_bus,\n    ).run()\n',
+              '        event_bus=event_bus,\n'
+              '        run_policy=run_policy,\n'
+              '        invocation_context=invocation_context,\n'
+              '    ).run()\n',
+          )
+
+          # CLI: resolve the policy once and pass the same immutable context to the run.
+          replace(
+              'proofloop_core/ui/cli.py',
+              'from proofloop_core.contracts.run_state import start_run, abort_run, finalize_run\n',
+              'from proofloop_core.contracts.run_policy import resolve_run_policy\n'
+              'from proofloop_core.contracts.run_state import (\n'
+              '    create_invocation_context,\n'
+              '    start_run,\n'
+              '    abort_run,\n'
+              '    finalize_run,\n'
+              ')\n',
+          )
+          replace('proofloop_core/ui/cli.py', 'default=1200', 'default=None', count=5)
+          replace('proofloop_core/ui/cli.py', 'default=8', 'default=None', count=2)
+          replace('proofloop_core/ui/cli.py', 'default=2', 'default=None', count=2)
+          replace('proofloop_core/ui/cli.py', 'default=3', 'default=None', count=1)
+          replace(
+              'proofloop_core/ui/cli.py',
+              '    p_orch.add_argument("--strategy")\n',
+              '    p_orch.add_argument("--strategy")\n    p_orch.add_argument("--policy-file")\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '    p_goal.add_argument("--strategy")\n',
+              '    p_goal.add_argument("--strategy")\n    p_goal.add_argument("--policy-file")\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '    p_run.add_argument("--strategy")\n',
+              '    p_run.add_argument("--strategy")\n    p_run.add_argument("--policy-file")\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '    args = parser.parse_args()\n\n',
+              '    args = parser.parse_args()\n'
+              '    policy_overrides = {\n'
+              '        "run.timeoutSeconds": getattr(args, "timeout_seconds", None),\n'
+              '        "goal.maxCycles": getattr(args, "max_goal_cycles", None),\n'
+              '        "goal.maxReplans": getattr(args, "max_replans", None),\n'
+              '        "relay.intervalSeconds": getattr(args, "wait_seconds", None),\n'
+              '    }\n'
+              '    run_policy = resolve_run_policy(\n'
+              '        policy_file=getattr(args, "policy_file", None),\n'
+              '        cli_overrides=policy_overrides,\n'
+              '    )\n\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '        value = start_run(args.repo, request)\n',
+              '        context = create_invocation_context(\n'
+              '            args.repo, run_policy, invocation_kind="CLI", requested_host=None\n'
+              '        )\n'
+              '        value = start_run(args.repo, request, policy=run_policy, invocation_context=context)\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '            timeout_seconds=args.timeout_seconds,\n',
+              '            timeout_seconds=int(run_policy.get("run.timeoutSeconds")),\n',
+              count=5,
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '            max_goal_cycles=args.max_goal_cycles,\n            max_replans=args.max_replans,\n',
+              '            max_goal_cycles=int(run_policy.get("goal.maxCycles")),\n'
+              '            max_replans=int(run_policy.get("goal.maxReplans")),\n',
+              count=2,
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '            experimental_domain_packs=args.experimental_domain_packs,\n        )\n',
+              '            experimental_domain_packs=args.experimental_domain_packs,\n'
+              '            run_policy=run_policy,\n'
+              '            invocation_context=create_invocation_context(\n'
+              '                args.repo, run_policy, invocation_kind="CLI", requested_host=args.host\n'
+              '            ),\n'
+              '        )\n',
+              count=2,
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '            event_bus=event_bus,\n        )\n',
+              '            event_bus=event_bus,\n'
+              '            run_policy=run_policy,\n'
+              '            invocation_context=create_invocation_context(\n'
+              '                args.repo, run_policy, invocation_kind="CLI", requested_host=args.host\n'
+              '            ),\n'
+              '        )\n',
+          )
+          replace(
+              'proofloop_core/ui/cli.py',
+              '            wait_seconds=args.wait_seconds,\n',
+              '            wait_seconds=int(run_policy.get("relay.intervalSeconds")),\n',
+          )
+
+          # Adapter has no operational default of its own.
+          replace(
+              'proofloop_core/runtimes/adapters.py',
+              '    timeout_seconds: int = 1200\n',
+              '    timeout_seconds: int | None = None\n',
+          )
+          replace(
+              'proofloop_core/runtimes/adapters.py',
+              '        resolved = invocation.runtime or self.resolve_role(invocation.role)\n',
+              '        if invocation.timeout_seconds is None:\n'
+              '            raise ValueError("RoleInvocation.timeout_seconds must come from the resolved run policy")\n'
+              '        resolved = invocation.runtime or self.resolve_role(invocation.role)\n',
+              count=2,
+          )
+
+          # Migrate remaining deterministic expectations and planner fixture.
+          replace(
+              'tests/deterministic/test_orchestrator_smoke.py',
+              '                "simplicity": {"selectedRung": "DIRECT_CHANGE", "rationale": "test fixture", "considered": ["REUSE_EXISTING"]},\n',
+              '                "simplicity": {\n'
+              '                    "selectedRung": "DIRECT_CHANGE",\n'
+              '                    "rationale": "test fixture",\n'
+              '                    "considered": ["REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"],\n'
+              '                    "evidenceRefs": ["fixture#/direct-change"],\n'
+              '                    "permittedNewArtifacts": [],\n'
+              '                },\n',
+          )
+          replace(
+              'tests/deterministic/test_execution_brief.py',
+              '        self.assertEqual("user_explicit", shadow["riskSignals"][0]["provenance"])\n',
+              '        self.assertEqual("proof_policy", shadow["riskSignals"][0]["provenance"])\n',
+          )
+          replace(
+              'tests/deterministic/test_proof_graph.py',
+              '        self.assertEqual("INSUFFICIENT_AUTHORITY", graph.obligations[0].last_reason)\n',
+              '        self.assertEqual("EVIDENCE_AUTHORITY_NOT_ELIGIBLE", graph.obligations[0].last_reason)\n',
+          )
+
+          # Replace stale documented test paths with executable focused commands.
+          replace(
+              'docs/EXPECTED_RESULTS_AND_TEST_SCENARIOS.md',
+              '`python3 -m unittest tests.deterministic.test_direct_bootstrap -v`',
+              '`python3 -m pytest tests/deterministic/test_orchestrator_smoke.py -q`',
+          )
+          replace(
+              'docs/EXPECTED_RESULTS_AND_TEST_SCENARIOS.md',
+              '`python3 -m unittest tests.deterministic.test_static_web -v`',
+              '`python3 -m pytest tests/deterministic/test_ponytail_enforcement.py -q`',
+          )
+
+          # Remove this one-shot migration before committing its product changes.
+          Path('.github/workflows/ulw-loop-policy-migration.yml').unlink()
+          PY
+      - name: Commit migrated product code
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "refactor(policy): wire resolved policy through runtime"
+          git push origin HEAD:${GITHUB_REF_NAME}

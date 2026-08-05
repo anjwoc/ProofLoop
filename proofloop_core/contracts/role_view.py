@@ -8,34 +8,31 @@ from proofloop_core.contracts.execution_brief import canonical_sha256, validate_
 
 SCHEMA_VERSION = "1.0"
 
-# ponytail: table-driven field selection, one dict lookup instead of five classes
 _ROLE_FIELDS: dict[str, set[str]] = {
-    "explorer": {"objective", "facts", "openQuestions"},
+    "explorer": {"objective", "facts", "inferences", "openQuestions", "scope"},
     "planner_deep": {"objective", "acceptanceCriteria", "constraints", "nonGoals", "scope", "openQuestions", "riskSignals"},
-    "implementer_fast": {"objective", "acceptanceCriteria", "constraints", "scope"},
-    "recovery": {"objective", "acceptanceCriteria", "constraints", "scope", "riskSignals", "unknowns"},
-    "reviewer": {"objective", "acceptanceCriteria", "scope", "assumptions", "openQuestions", "riskSignals", "unknowns"},
+    "implementer_fast": {"objective", "acceptanceCriteria", "constraints", "nonGoals", "scope"},
+    "recovery": {"objective", "acceptanceCriteria", "constraints", "nonGoals", "scope", "riskSignals", "unknowns"},
+    "reviewer": {"objective", "acceptanceCriteria", "constraints", "nonGoals", "scope", "assumptions", "openQuestions", "riskSignals", "unknowns"},
 }
 
 KNOWN_ROLES = frozenset(_ROLE_FIELDS)
-
-# The orchestrator/host_runner use canonical role identifiers; map them onto the
-# internal short field-set keys so both vocabularies project identically.
 _ROLE_ALIASES = {
     "explorer_fast": "explorer",
     "implementer_recovery": "recovery",
     "reviewer_deep": "reviewer",
 }
-
 _AUTHORITY_REFS = {
-    "originalRequest": "request.json",
+    "originalRequest": "request-envelope.json",
+    "intentContract": "intent-contract.json",
+    "promptCompilation": "prompt-compilation.json",
     "executionBrief": "execution-brief.json",
     "proofGraph": "proof-graph.json",
 }
 
 
 class RoleViewValidationError(ValueError):
-    """Raised when role view projection inputs are invalid."""
+    """Raised when role-view projection inputs are invalid."""
 
 
 def project_role_view(
@@ -46,11 +43,13 @@ def project_role_view(
     proof_graph_sha256: str | None = None,
     obligation_revision: int = 0,
 ) -> dict[str, Any]:
-    """Project a minimal role view from an execution brief.
+    """Project a minimal role view from a validated brief.
 
-    Returns an invocation-scoped envelope containing only the fields
-    the role needs. Does not mutate the input brief.
+    Shadow briefs may be projected for deterministic inspection, but are
+    non-executable and reveal candidates only. The mandatory execution path
+    calls this with an active brief through ``compile_role_ir``.
     """
+
     resolved_role = _ROLE_ALIASES.get(role, role)
     if resolved_role not in _ROLE_FIELDS:
         raise RoleViewValidationError(f"unknown role: {role}")
@@ -58,10 +57,8 @@ def project_role_view(
         raise RoleViewValidationError("invocation_id must be a non-empty string")
 
     validate_execution_brief(brief)
-
+    active = brief.get("kind") == "EXECUTION_BRIEF"
     brief_sha = canonical_sha256(dict(brief))
-    fields = _ROLE_FIELDS[resolved_role]
-
     view: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "role": role,
@@ -73,14 +70,23 @@ def project_role_view(
         },
         "authorityRefs": dict(_AUTHORITY_REFS),
     }
-
-    for field in sorted(fields):
+    for field in sorted(_ROLE_FIELDS[resolved_role]):
         value = brief.get(field)
         if value is not None:
             view[field] = copy.deepcopy(value)
 
-    # ponytail: scope in role view only shows candidates, never approvedPaths (shadow brief)
     if "scope" in view and isinstance(view["scope"], dict):
-        view["scope"] = {"candidates": view["scope"].get("candidates", [])}
+        scope = view["scope"]
+        if active:
+            view["scope"] = {
+                "candidates": list(scope.get("candidates", [])),
+                "approvedPaths": list(scope.get("approvedPaths", [])),
+                "protectedPaths": list(scope.get("protectedPaths", [])),
+                "status": scope.get("status"),
+            }
+        else:
+            view["scope"] = {"candidates": list(scope.get("candidates", []))}
 
+    if active:
+        view["projectionSha256"] = canonical_sha256(view)
     return view

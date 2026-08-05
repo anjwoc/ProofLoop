@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from proofloop_core.context.io import read_json, write_json
-from proofloop_core.engine.skill_registry import _satisfies_version
+
 
 
 _SKIP_DIRS = {".git", ".proofloop", "node_modules", ".venv", "venv", "dist", "build", "vendor"}
@@ -158,10 +158,6 @@ def select_reference_slices(
     if max_tokens <= 0:
         raise ValueError("context budget must be positive")
     signals = {str(value) for value in fingerprint.get("signals", [])}
-    frameworks = {
-        str(name).casefold(): str(version)
-        for name, version in (fingerprint.get("frameworks") or {}).items()
-    }
     task_types = {str(value) for value in fingerprint.get("taskTypes", [])}
     adapter_ids: list[str] = []
     adapter_path = root / "adapters" / "index.json"
@@ -176,10 +172,8 @@ def select_reference_slices(
             if framework is not None:
                 if not isinstance(framework, dict):
                     raise ValueError(f"{adapter_path}: adapter framework must be an object")
-                name = _entry_string(framework, "name", adapter_path).casefold()
-                version_range = str(framework.get("range", "*"))
-                if name not in frameworks or not _satisfies_version(frameworks[name], version_range):
-                    continue
+                _entry_string(framework, "name", adapter_path)
+                pass
             adapter_ids.append(adapter_id)
 
     reference_path = root / "references" / "index.json"

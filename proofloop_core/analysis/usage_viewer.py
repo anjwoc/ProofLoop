@@ -5,7 +5,6 @@ import json
 import socketserver
 import threading
 import webbrowser
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 

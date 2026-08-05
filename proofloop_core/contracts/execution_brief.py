@@ -9,16 +9,17 @@ from enum import Enum
 from typing import AbstractSet, Any
 
 SCHEMA_VERSION = "1.0"
-COMPOSER_POLICY_VERSION = "1.0"
+COMPOSER_POLICY_VERSION = "1.1"
 _REQUEST_FIELDS = frozenset({
     "schemaVersion", "requestId", "rawText", "rawHash", "receivedAt", "repoRoot",
-    "hostRequested", "explicitPermissions", "explicitDenials", "userConstraints", "invocationSource"
+    "hostRequested", "explicitPermissions", "explicitDenials", "userConstraints", "invocationSource",
 })
-_INTENT_FIELDS = {
+_INTENT_REQUIRED_FIELDS = {
     "schemaVersion", "originalRequest", "originalRequestHash", "objective",
     "acceptanceCriteria", "constraints", "nonGoals", "authorizationBoundary",
     "assumptions", "unknowns", "riskSignals", "targetArtifacts",
 }
+_INTENT_OPTIONAL_FIELDS = {"sourceRefs"}
 _BRIEF_FIELDS = {
     "schemaVersion", "kind", "provenance", "objective", "acceptanceCriteria",
     "constraints", "nonGoals", "authorizationBoundary", "assumptions", "unknowns",
@@ -55,6 +56,21 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _source_refs(intent: Mapping[str, Any], pointer: str) -> list[dict[str, Any]]:
+    mapping = intent.get("sourceRefs")
+    if not isinstance(mapping, Mapping):
+        return []
+    refs = mapping.get(pointer)
+    return copy.deepcopy(refs) if isinstance(refs, list) else []
+
+
+def _provenanced(statement: str, provenance: ProvenanceType, refs: list[dict[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {"statement": statement, "provenance": provenance.value}
+    if refs:
+        value["sourceRefs"] = refs
+    return value
+
+
 def compose_execution_brief(
     *,
     request_artifact: Mapping[str, Any],
@@ -63,7 +79,8 @@ def compose_execution_brief(
     repository_context: Mapping[str, Any],
     repository_baseline: str,
 ) -> dict[str, Any]:
-    """Compose an unapproved shadow brief without mutating any input mapping."""
+    """Compose an unapproved source-linked shadow brief without mutating inputs."""
+
     request = _validate_request(request_artifact)
     intent = _validate_intent(intent_contract)
     _validate_opaque(strategy, "strategy")
@@ -86,30 +103,63 @@ def compose_execution_brief(
     }
     questions = [
         {
-            "id": f"OQ-{index:03d}", "statement": statement, "blocking": True,
-            "sourceRefs": [{"artifact": "intent-contract.json", "pointer": f"/unknowns/{index - 1}"}],
+            "id": f"OQ-{index:03d}",
+            "statement": statement,
+            "blocking": True,
+            "sourceRefs": _source_refs(intent, f"/unknowns/{index - 1}") or [
+                {"artifact": "intent-contract.json", "pointer": f"/unknowns/{index - 1}"}
+            ],
         }
         for index, statement in enumerate(intent["unknowns"], start=1)
     ]
+    criteria: list[dict[str, Any]] = []
+    for index, criterion in enumerate(copy.deepcopy(intent["acceptanceCriteria"])):
+        refs = criterion.pop("sourceRefs", None) or _source_refs(intent, f"/acceptanceCriteria/{index}")
+        value = {**criterion, "provenance": ProvenanceType.USER_EXPLICIT.value}
+        if refs:
+            value["sourceRefs"] = refs
+        criteria.append(value)
+
     brief = {
         "schemaVersion": SCHEMA_VERSION,
         "kind": "EXECUTION_BRIEF_SHADOW",
         "provenance": provenance,
-        "objective": {"statement": intent["objective"], "provenance": ProvenanceType.USER_EXPLICIT.value},
-        "acceptanceCriteria": [
-            {**ac, "provenance": ProvenanceType.USER_EXPLICIT.value} for ac in copy.deepcopy(intent["acceptanceCriteria"])
+        "objective": _provenanced(
+            intent["objective"], ProvenanceType.USER_EXPLICIT, _source_refs(intent, "/objective")
+        ),
+        "acceptanceCriteria": criteria,
+        "constraints": [
+            _provenanced(item, ProvenanceType.USER_EXPLICIT, _source_refs(intent, f"/constraints/{index}"))
+            for index, item in enumerate(intent["constraints"])
         ],
-        "constraints": [{"statement": c, "provenance": ProvenanceType.USER_EXPLICIT.value} for c in intent["constraints"]],
-        "nonGoals": [{"statement": c, "provenance": ProvenanceType.USER_EXPLICIT.value} for c in intent["nonGoals"]],
-        "authorizationBoundary": {"statement": intent["authorizationBoundary"], "provenance": ProvenanceType.USER_EXPLICIT.value},
-        "assumptions": [{"statement": c, "provenance": ProvenanceType.USER_EXPLICIT.value} for c in intent["assumptions"]],
-        "unknowns": [{"statement": c, "provenance": ProvenanceType.USER_EXPLICIT.value} for c in intent["unknowns"]],
-        "riskSignals": [{"statement": c, "provenance": ProvenanceType.USER_EXPLICIT.value} for c in intent["riskSignals"]],
+        "nonGoals": [
+            _provenanced(item, ProvenanceType.USER_EXPLICIT, _source_refs(intent, f"/nonGoals/{index}"))
+            for index, item in enumerate(intent["nonGoals"])
+        ],
+        "authorizationBoundary": _provenanced(
+            intent["authorizationBoundary"], ProvenanceType.USER_EXPLICIT, _source_refs(intent, "/authorizationBoundary")
+        ),
+        "assumptions": [
+            _provenanced(item, ProvenanceType.USER_EXPLICIT, _source_refs(intent, f"/assumptions/{index}"))
+            for index, item in enumerate(intent["assumptions"])
+        ],
+        "unknowns": [
+            _provenanced(item, ProvenanceType.USER_EXPLICIT, _source_refs(intent, f"/unknowns/{index}"))
+            for index, item in enumerate(intent["unknowns"])
+        ],
+        "riskSignals": [
+            _provenanced(item, ProvenanceType.PROOF_POLICY, _source_refs(intent, f"/riskSignals/{index}"))
+            for index, item in enumerate(intent["riskSignals"])
+        ],
         "scope": {
-            "candidates": list(intent["targetArtifacts"]), "approvedPaths": [],
-            "protectedPaths": [], "status": "UNRESOLVED",
+            "candidates": list(intent["targetArtifacts"]),
+            "approvedPaths": [],
+            "protectedPaths": [],
+            "status": "UNRESOLVED",
         },
-        "facts": [], "inferences": [], "openQuestions": questions,
+        "facts": [],
+        "inferences": [],
+        "openQuestions": questions,
     }
     provenance["briefSha256"] = _brief_sha256(brief)
     validate_execution_brief(brief)
@@ -154,16 +204,22 @@ def _validate_request(value: Mapping[str, Any]) -> str:
     if value.get("schemaVersion") != SCHEMA_VERSION:
         raise ExecutionBriefValidationError("request artifact requires schemaVersion 1.0")
     request = value.get("rawText")
-    if not isinstance(request, str):
-        raise ExecutionBriefValidationError("request artifact rawText must be a string")
+    if not isinstance(request, str) or not request.strip():
+        raise ExecutionBriefValidationError("request artifact rawText must be a non-empty string")
     return request
 
 
 def _validate_intent(value: Mapping[str, Any]) -> dict[str, Any]:
     _mapping(value, "intent contract")
-    _exact(value, _INTENT_FIELDS, "intent contract")
-    if value.get("schemaVersion") != SCHEMA_VERSION:
-        raise ExecutionBriefValidationError("intent contract requires schemaVersion 1.0")
+    fields = set(value)
+    if not _INTENT_REQUIRED_FIELDS.issubset(fields) or fields - (_INTENT_REQUIRED_FIELDS | _INTENT_OPTIONAL_FIELDS):
+        raise ExecutionBriefValidationError(
+            "intent contract fields are invalid: "
+            f"missing={sorted(_INTENT_REQUIRED_FIELDS - fields)}, "
+            f"unknown={sorted(fields - (_INTENT_REQUIRED_FIELDS | _INTENT_OPTIONAL_FIELDS))}"
+        )
+    if value.get("schemaVersion") not in {"1.0", "1.1"}:
+        raise ExecutionBriefValidationError("intent contract requires schemaVersion 1.0 or 1.1")
     for field in ("originalRequest", "originalRequestHash", "objective", "authorizationBoundary"):
         _string(value.get(field), f"intent contract {field}")
     if not re.fullmatch(r"[0-9a-f]{64}", value["originalRequestHash"]):
@@ -171,6 +227,8 @@ def _validate_intent(value: Mapping[str, Any]) -> dict[str, Any]:
     _criteria(value.get("acceptanceCriteria"), "intent contract acceptanceCriteria")
     for field in ("constraints", "nonGoals", "assumptions", "unknowns", "riskSignals", "targetArtifacts"):
         _strings(value.get(field), f"intent contract {field}")
+    if "sourceRefs" in value:
+        _source_ref_map(value.get("sourceRefs"), "intent contract sourceRefs")
     _reject_floats(value, "intent contract")
     return copy.deepcopy(dict(value))
 
@@ -182,9 +240,13 @@ def _criteria(value: Any, label: str) -> None:
     for index, item in enumerate(value):
         name = f"{label}[{index}]"
         _mapping(item, name)
-        _exact(item, {"id", "statement"}, name)
+        allowed = {"id", "statement", "sourceRefs"}
+        if not {"id", "statement"}.issubset(item) or set(item) - allowed:
+            raise ExecutionBriefValidationError(f"{name} fields are invalid")
         criterion_id = _string(item.get("id"), f"{name}.id")
         _string(item.get("statement"), f"{name}.statement")
+        if "sourceRefs" in item:
+            _source_ref_list(item.get("sourceRefs"), f"{name}.sourceRefs")
         if criterion_id in seen:
             raise ExecutionBriefValidationError(f"{label} contains duplicate id {criterion_id}")
         seen.add(criterion_id)
@@ -197,10 +259,14 @@ def _provenanced_criteria(value: Any, label: str) -> None:
     for index, item in enumerate(value):
         name = f"{label}[{index}]"
         _mapping(item, name)
-        _exact(item, {"id", "statement", "provenance"}, name)
+        allowed = {"id", "statement", "provenance", "sourceRefs"}
+        if not {"id", "statement", "provenance"}.issubset(item) or set(item) - allowed:
+            raise ExecutionBriefValidationError(f"{name} fields are invalid")
         criterion_id = _string(item.get("id"), f"{name}.id")
         _string(item.get("statement"), f"{name}.statement")
         ProvenanceType(_string(item.get("provenance"), f"{name}.provenance"))
+        if "sourceRefs" in item:
+            _source_ref_list(item.get("sourceRefs"), f"{name}.sourceRefs")
         if criterion_id in seen:
             raise ExecutionBriefValidationError(f"{label} contains duplicate id {criterion_id}")
         seen.add(criterion_id)
@@ -225,18 +291,14 @@ def _scope(value: Any, *, kind: str) -> None:
     _strings(approved, "execution brief scope.approvedPaths")
     _strings(protected, "execution brief scope.protectedPaths")
     if kind == "EXECUTION_BRIEF_SHADOW":
-        if approved != [] or protected != []:
-            raise ExecutionBriefValidationError("shadow execution brief cannot approve or protect paths")
-        if value.get("status") != "UNRESOLVED":
-            raise ExecutionBriefValidationError("shadow execution brief scope must remain UNRESOLVED")
+        if approved != [] or protected != [] or value.get("status") != "UNRESOLVED":
+            raise ExecutionBriefValidationError("shadow execution brief scope must remain unresolved")
         return
     if value.get("status") != "CONSTRAINED":
         raise ExecutionBriefValidationError("active execution brief scope must be CONSTRAINED")
     candidates = set(value["candidates"])
-    if not set(approved).issubset(candidates):
-        raise ExecutionBriefValidationError("active execution brief cannot approve paths outside candidates")
-    if not set(protected).issubset(candidates):
-        raise ExecutionBriefValidationError("active execution brief cannot protect paths outside candidates")
+    if not set(approved).issubset(candidates) or not set(protected).issubset(candidates):
+        raise ExecutionBriefValidationError("active execution brief scope path outside candidates")
     if set(approved).intersection(protected):
         raise ExecutionBriefValidationError("active execution brief path cannot be both approved and protected")
 
@@ -264,7 +326,11 @@ def _questions(value: Any) -> None:
         _string(item.get("statement"), f"{name}.statement")
         if item.get("blocking") is not True:
             raise ExecutionBriefValidationError(f"{name}.blocking cannot be downgraded")
-        _refs(item.get("sourceRefs"), f"{name}.sourceRefs")
+        refs = item.get("sourceRefs")
+        if isinstance(refs, list) and refs and isinstance(refs[0], Mapping) and "artifact" in refs[0]:
+            _refs(refs, f"{name}.sourceRefs")
+        else:
+            _source_ref_list(refs, f"{name}.sourceRefs")
 
 
 def _refs(value: Any, label: str) -> None:
@@ -279,24 +345,57 @@ def _refs(value: Any, label: str) -> None:
             raise ExecutionBriefValidationError(f"{name}.pointer must be a JSON pointer")
 
 
-def _strings(value: Any, label: str) -> None:
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
-        raise ExecutionBriefValidationError(f"{label} must be a list of non-empty strings")
+def _source_ref_map(value: Any, label: str) -> None:
+    _mapping(value, label)
+    for pointer, refs in value.items():
+        if not isinstance(pointer, str) or not pointer.startswith("/"):
+            raise ExecutionBriefValidationError(f"{label} keys must be JSON pointers")
+        _source_ref_list(refs, f"{label}.{pointer}")
+
+
+def _source_ref_list(value: Any, label: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise ExecutionBriefValidationError(f"{label} must be a non-empty source reference list")
+    for index, item in enumerate(value):
+        name = f"{label}[{index}]"
+        _mapping(item, name)
+        _exact(item, {"line", "start", "end", "textSha256"}, name)
+        for key in ("line", "start", "end"):
+            number = item.get(key)
+            if not isinstance(number, int) or isinstance(number, bool) or number < 0:
+                raise ExecutionBriefValidationError(f"{name}.{key} must be a nonnegative integer")
+        digest = _string(item.get("textSha256"), f"{name}.textSha256")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ExecutionBriefValidationError(f"{name}.textSha256 must be lowercase SHA-256 hex")
 
 
 def _provenanced_string(value: Any, label: str) -> None:
     _mapping(value, label)
-    _exact(value, {"statement", "provenance"}, label)
+    allowed = {"statement", "provenance", "sourceRefs"}
+    if not {"statement", "provenance"}.issubset(value) or set(value) - allowed:
+        raise ExecutionBriefValidationError(f"{label} fields are invalid")
     _string(value.get("statement"), f"{label}.statement")
     ProvenanceType(_string(value.get("provenance"), f"{label}.provenance"))
+    if "sourceRefs" in value:
+        _source_ref_list(value.get("sourceRefs"), f"{label}.sourceRefs")
 
 
 def _provenanced_strings(value: Any, label: str) -> None:
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise ExecutionBriefValidationError(f"{label} must be a list of provenanced items")
     for index, item in enumerate(value):
-        name = f"{label}[{index}]"
-        _provenanced_string(item, name)
+        _provenanced_string(item, f"{label}[{index}]")
+
+
+def _criteria_ids(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(item.get("id")) for item in value if isinstance(item, Mapping) and item.get("id")}
+
+
+def _strings(value: Any, label: str) -> None:
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ExecutionBriefValidationError(f"{label} must be a list of non-empty strings")
 
 
 def _validate_opaque(value: Mapping[str, Any], label: str) -> None:

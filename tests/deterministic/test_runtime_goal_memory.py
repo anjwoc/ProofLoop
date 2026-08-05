@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 from proofloop_core.contracts.goal import build_goal_contract
@@ -14,18 +12,13 @@ from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, Simplic
 
 class RuntimeGoalMemoryTest(unittest.TestCase):
     def test_goal_registry_routes_roles_across_available_runtimes(self) -> None:
-        available = {
-            "claude": "/bin/claude",
-            "agy": "/bin/agy",
-            "codex": "/bin/codex",
-        }
+        available = {"claude": "/bin/claude", "agy": "/bin/agy", "codex": "/bin/codex"}
         with patch("proofloop_core.runtime.shutil.which", side_effect=lambda name: available.get(name)), patch(
             "proofloop_core.runtime.acp_sdk_available", return_value=False
         ):
             registry = RuntimeRegistry()
             explorer = registry.resolve("codex", "explorer_fast", policy="goal")
             recovery = registry.resolve("codex", "implementer_recovery", policy="goal")
-
         self.assertEqual("claude-code", explorer.runtime_id)
         self.assertEqual("haiku", explorer.model)
         self.assertEqual("agy", recovery.runtime_id)
@@ -37,7 +30,6 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
             "proofloop_core.runtime.shutil.which", return_value="/bin/codex"
         ), patch("proofloop_core.runtime.acp_sdk_available", return_value=False):
             resolved = RuntimeRegistry().resolve("codex", "implementer_fast")
-
         self.assertEqual("CURRENT_ACCOUNT_DEFAULT", resolved.model)
         self.assertEqual("codex", resolved.runtime_id)
 
@@ -46,10 +38,8 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
             "proofloop_core.runtime.acp_sdk_available", return_value=False
         ):
             resolved = RuntimeRegistry().resolve("claude-code", "reviewer_deep")
-
         self.assertEqual("claude-code", resolved.runtime_id)
         self.assertEqual("opus", resolved.model)
-
 
     def test_goal_contract_and_two_tier_memory_are_bounded_and_safe(self) -> None:
         task = TaskBrief(
@@ -59,7 +49,15 @@ class RuntimeGoalMemoryTest(unittest.TestCase):
             protected_paths=(),
             required_checks=(CheckSpec(["python3", "-m", "unittest"], name="unit"),),
             change_budget=ChangeBudget(2, 20, 0, False),
-            simplicity=SimplicityPlan("DIRECT_CHANGE", "one change", ("reuse",)),
+            simplicity=SimplicityPlan(
+                "DIRECT_CHANGE",
+                "one change",
+                ("REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"),
+                ("fixture#/goal",),
+                (),
+            ),
+            max_fast_attempts=1,
+            max_recovery_attempts=0,
         )
         contract = build_goal_contract("Fix behavior", [task])
         self.assertEqual("SC-REQUEST", contract.criteria[0].criterion_id)

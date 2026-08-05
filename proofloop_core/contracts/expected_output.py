@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from proofloop_core.context.io import read_json
+from proofloop_core.context.io import read_json, write_json
 
 from proofloop_core.assurance.live_evidence import validate_core_evidence
 from proofloop_core.contracts.request_envelope import hash_raw_text
@@ -25,6 +25,51 @@ from proofloop_core.contracts.request_envelope import hash_raw_text
 
 SCHEMA_VERSION = "1.0"
 CONTRACT_SOURCE = "docs/roadmap/expected-output.md"
+
+
+def write_run_outcome(
+    run_dir: str | Path,
+    truth_report: dict[str, Any],
+    *,
+    usage: dict[str, Any] | None = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Persist the user-facing terminal result without re-deciding Truth."""
+    root = Path(run_dir).resolve()
+    run = _read_object(root / "run.json")
+    intent = _read_object(root / "intent-contract.json")
+    strategy = _read_object(root / "strategy.json")
+    verdict = str(truth_report.get("verdict") or "FAILED")
+    summaries = {
+        "PROVEN": "All acceptance criteria are proven.",
+        "PARTIAL": "The run completed with unproven claims.",
+        "BLOCKED": "The run is blocked.",
+        "FAILED": "The run failed.",
+    }
+    outcome = {
+        "schemaVersion": "1.0",
+        "runId": run.get("runId"),
+        "status": "COMPLETED",
+        "verdict": verdict,
+        "summary": message or summaries.get(verdict, f"The run ended with {verdict}."),
+        "objective": intent.get("objective"),
+        "acceptanceCriteria": intent.get("acceptanceCriteria", []),
+        "strategy": {
+            "name": strategy.get("strategy"),
+            "tier": strategy.get("tier"),
+        },
+        "blockers": list(truth_report.get("blockers") or []),
+        "unproven": list(truth_report.get("unproven") or []),
+        "evidence": dict(truth_report.get("evidence") or {}),
+        "usage": usage or {},
+        "artifacts": {
+            "truthReport": str(root / "truth-report.json"),
+            "events": str(root / "events.jsonl"),
+            "run": str(root / "run.json"),
+        },
+    }
+    write_json(root / "run-outcome.json", outcome)
+    return outcome
 
 
 def verify_expected_output(

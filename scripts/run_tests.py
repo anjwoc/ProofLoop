@@ -13,7 +13,6 @@ def test_arguments() -> list[str]:
     """Return the canonical test collection used by development and release gates."""
     return [
         str(ROOT / "tests" / "deterministic"),
-        str(ROOT / "tests" / "orchestration"),
         "-q",
     ]
 

@@ -12,29 +12,10 @@ _SKIP_PATTERN = re.compile(r"^\+.*(?:\.skip\s*\(|\.only\s*\(|@Disabled\b|@Ignore
 _ASSERT_REMOVAL_PATTERN = re.compile(r"^-.*\b(?:assert|expect\s*\(|assertThat\s*\(|should\b)", re.I)
 _TIMEOUT_INCREASE_PATTERN = re.compile(r"^\+.*(?:timeout|setTimeout).*\b(?:[5-9]\d{3,}|\d{5,})\b", re.I)
 _DEPENDENCY_FILES = {
-    "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lock",
-    "bun.lockb",
-    "pyproject.toml",
-    "poetry.lock",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "Pipfile",
-    "Pipfile.lock",
-    "uv.lock",
-    "go.mod",
-    "go.sum",
-    "Cargo.toml",
-    "Cargo.lock",
-    "Gemfile",
-    "Gemfile.lock",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "gradle/libs.versions.toml",
+    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb",
+    "pyproject.toml", "poetry.lock", "requirements.txt", "requirements-dev.txt", "Pipfile", "Pipfile.lock", "uv.lock",
+    "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Gemfile", "Gemfile.lock", "pom.xml",
+    "build.gradle", "build.gradle.kts", "gradle/libs.versions.toml",
 }
 
 
@@ -81,9 +62,7 @@ def _untracked_files(repo: Path) -> list[str]:
 
 def _numstat_metrics(repo: Path, baseline: str, untracked: list[str]) -> dict[str, int]:
     output = _git(repo, "diff", "--numstat", baseline, "--")
-    added = 0
-    deleted = 0
-    files = 0
+    added = deleted = files = 0
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -117,21 +96,41 @@ def inspect_diff(task: TaskBrief, repository: str | Path, baseline: str = "HEAD"
     violations: list[dict[str, str]] = []
     new_files = 0
     dependency_changes: list[str] = []
+    permitted = tuple(task.simplicity.permitted_new_artifacts)
 
     entries: list[tuple[str, str]] = []
     for line in name_status.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        entries.append((parts[0], parts[-1]))
+        if line.strip():
+            parts = line.split("\t")
+            entries.append((parts[0], parts[-1]))
     entries.extend(("A", path) for path in untracked)
 
     for status, path in entries:
         changed.append({"status": status, "path": path})
-        if status.startswith("A"):
+        is_new = status.startswith("A")
+        dependency = _is_dependency_file(path)
+        if is_new:
             new_files += 1
-        if _is_dependency_file(path):
+            if not permitted or not _matches_any(path, permitted):
+                violations.append({
+                    "code": "UNJUSTIFIED_NEW_ARTIFACT",
+                    "path": path,
+                    "detail": "new file is absent from simplicity.permittedNewArtifacts",
+                })
+        if dependency:
             dependency_changes.append(path)
+            if not task.change_budget.allow_dependency_changes:
+                violations.append({
+                    "code": "DEPENDENCY_CHANGE_FORBIDDEN",
+                    "path": path,
+                    "detail": "changeBudget.allowDependencyChanges=false",
+                })
+            elif not permitted or not _matches_any(path, permitted):
+                violations.append({
+                    "code": "UNJUSTIFIED_NEW_ARTIFACT",
+                    "path": path,
+                    "detail": "dependency artifact is not explicitly permitted",
+                })
         if task.allowed_paths and not _matches_any(path, task.allowed_paths):
             violations.append({"code": "SCOPE_VIOLATION", "path": path, "detail": "outside allowedPaths"})
         if task.protected_paths and _matches_any(path, task.protected_paths):
@@ -165,36 +164,35 @@ def inspect_diff(task: TaskBrief, repository: str | Path, baseline: str = "HEAD"
     metrics["newFiles"] = new_files
     if metrics["changedFiles"] > task.change_budget.max_changed_files:
         violations.append({
-            "code": "CHANGED_FILE_BUDGET_EXCEEDED",
-            "path": "",
+            "code": "CHANGED_FILE_BUDGET_EXCEEDED", "path": "",
             "detail": f"{metrics['changedFiles']} > {task.change_budget.max_changed_files}",
         })
-    if metrics["addedLines"] > task.change_budget.max_added_lines:
+    if task.change_budget.max_added_lines is not None and metrics["addedLines"] > task.change_budget.max_added_lines:
         violations.append({
-            "code": "ADDED_LINE_BUDGET_EXCEEDED",
-            "path": "",
+            "code": "ADDED_LINE_BUDGET_EXCEEDED", "path": "",
             "detail": f"{metrics['addedLines']} > {task.change_budget.max_added_lines}",
         })
     if new_files > task.change_budget.max_new_files:
         violations.append({
-            "code": "NEW_FILE_BUDGET_EXCEEDED",
-            "path": "",
+            "code": "NEW_FILE_BUDGET_EXCEEDED", "path": "",
             "detail": f"{new_files} > {task.change_budget.max_new_files}",
         })
-    if dependency_changes and not task.change_budget.allow_dependency_changes:
-        for path in dependency_changes:
-            violations.append({
-                "code": "DEPENDENCY_CHANGE_FORBIDDEN",
-                "path": path,
-                "detail": "changeBudget.allowDependencyChanges=false",
-            })
 
-    verdict = "PASS" if not violations else "FAIL"
+    # Multiple checks can identify the same artifact; make the report stable.
+    unique: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for violation in violations:
+        key = (violation["code"], violation["path"], violation["detail"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(violation)
+    verdict = "PASS" if not unique else "FAIL"
     return {
-        "schemaVersion": "2.0",
+        "schemaVersion": "3.0",
         "taskId": task.task_id,
         "baseline": baseline,
         "verdict": verdict,
+        "scopeStatus": "SCOPE_COMPLIANT" if verdict == "PASS" else "SCOPE_VIOLATION",
         "changedFiles": changed,
         "metrics": metrics,
         "dependencyChanges": dependency_changes,
@@ -208,6 +206,9 @@ def inspect_diff(task: TaskBrief, repository: str | Path, baseline: str = "HEAD"
             "selectedRung": task.simplicity.selected_rung,
             "rationale": task.simplicity.rationale,
             "considered": list(task.simplicity.considered),
+            "evidenceRefs": list(task.simplicity.evidence_refs),
+            "permittedNewArtifacts": list(permitted),
         },
-        "violations": violations,
+        "semanticApproval": "UNPROVEN",
+        "violations": unique,
     }

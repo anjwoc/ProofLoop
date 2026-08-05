@@ -5,15 +5,33 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from proofloop_core.assurance.truth import build_truth_report
 from proofloop_core.context.io import write_json
 from proofloop_core.context.trace import summarize_trace
-from proofloop_core.assurance.truth import build_truth_report
 
 
 def write_core_evidence(root: Path) -> None:
-    write_json(root / "checks" / "checks.json", {"verdict": "PASS"})
-    write_json(root / "diff-guard.json", {"verdict": "PASS", "violations": [], "metrics": {}, "changeBudget": {}, "simplicityPlan": {}})
-    write_json(root / "review.json", {"verdict": "APPROVED", "simplicityVerdict": "MINIMAL", "deletionCandidates": []})
+    write_json(root / "checks" / "checks.json", {
+        "verdict": "PASS",
+        "checks": [{
+            "name": "unit",
+            "command": ["python3", "-m", "unittest"],
+            "exitCode": 0,
+            "status": "PASS",
+        }],
+    })
+    write_json(root / "diff-guard.json", {
+        "verdict": "PASS",
+        "violations": [],
+        "metrics": {},
+        "changeBudget": {},
+        "simplicityPlan": {},
+    })
+    write_json(root / "review.json", {
+        "verdict": "APPROVED",
+        "simplicityVerdict": "MINIMAL",
+        "deletionCandidates": [],
+    })
     write_json(root / "claims.json", {
         "schemaVersion": "1.0",
         "claims": [
@@ -42,7 +60,7 @@ class TruthGateTest(unittest.TestCase):
             trace.write_text("\n".join([
                 json.dumps({"role": "planner_deep", "observedModel": "opus"}),
                 json.dumps({"role": "implementer_fast", "observedModel": "haiku"}),
-                json.dumps({"role": "reviewer_deep", "observedModel": "fable"})
+                json.dumps({"role": "reviewer_deep", "observedModel": "fable"}),
             ]) + "\n", encoding="utf-8")
             write_json(root / "model-trace-summary.json", summarize_trace(trace))
             claims = json.loads((root / "claims.json").read_text(encoding="utf-8"))
@@ -62,19 +80,19 @@ class TruthGateTest(unittest.TestCase):
             root = Path(tmp)
             write_core_evidence(root)
             write_json(root / "intent-contract.json", {"schemaVersion": "1.0"})
-            write_json(
-                root / "proof-graph.json",
-                {
-                    "schemaVersion": "1.0",
-                    "obligations": [
-                        {"id": "AC-001", "status": "OPEN", "revision": 1, "requiredAuthority": "DETERMINISTIC_CHECK"}
-                    ],
-                },
-            )
-            write_json(
-                root / "model-trace-summary.json",
-                {"routingClaimed": False, "routingObserved": False},
-            )
+            write_json(root / "prompt-compilation.json", {"schemaVersion": "1.0"})
+            write_json(root / "proof-graph.json", {
+                "schemaVersion": "2.0",
+                "claims": {"PRODUCT_BEHAVIOR": "OPEN"},
+                "obligations": [{
+                    "id": "AC-001",
+                    "status": "OPEN",
+                    "revision": 1,
+                    "requiredAuthority": "DETERMINISTIC_CHECK",
+                    "claimType": "PRODUCT_BEHAVIOR",
+                }],
+            })
+            write_json(root / "model-trace-summary.json", {"routingClaimed": False, "routingObserved": False})
 
             result = build_truth_report(root)
 
@@ -87,7 +105,7 @@ class TruthGateTest(unittest.TestCase):
             trace.write_text("\n".join([
                 json.dumps({"role": "planner_deep", "observedModel": "gemini-pro"}),
                 json.dumps({"role": "implementer_fast", "observedModel": "gemini-pro"}),
-                json.dumps({"role": "reviewer_deep", "observedModel": "gemini-pro"})
+                json.dumps({"role": "reviewer_deep", "observedModel": "gemini-pro"}),
             ]) + "\n", encoding="utf-8")
             summary = summarize_trace(trace)
             self.assertFalse(summary["routingObserved"])
@@ -97,20 +115,17 @@ class TruthGateTest(unittest.TestCase):
             trace = Path(tmp) / "trace.jsonl"
             trace.write_text(
                 "\n".join(
-                    json.dumps(
-                        {
-                            "role": role,
-                            "observedModel": model,
-                            "modelEvidence": "ACP_SESSION_CONFIG",
-                        }
-                    )
+                    json.dumps({
+                        "role": role,
+                        "observedModel": model,
+                        "modelEvidence": "ACP_SESSION_CONFIG",
+                    })
                     for role, model in (
                         ("planner_deep", "opus"),
                         ("implementer_fast", "haiku"),
                         ("reviewer_deep", "fable"),
                     )
-                )
-                + "\n",
+                ) + "\n",
                 encoding="utf-8",
             )
             summary = summarize_trace(trace)

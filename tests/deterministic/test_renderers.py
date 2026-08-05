@@ -29,10 +29,8 @@ def event(
 
 
 class RendererTest(unittest.TestCase):
-    def test_info_renders_live_role_progress_and_output(self) -> None:
-        stream = io.StringIO()
-        renderer = build_renderer("human", stream, "info", "never")
-        renderer.render(
+    def test_info_hides_live_role_internals_while_verbose_shows_them(self) -> None:
+        items = (
             event(
                 "role.progress",
                 phase="PLAN",
@@ -41,9 +39,7 @@ class RendererTest(unittest.TestCase):
                     "processId": 12345,
                     "elapsedSeconds": 5.0,
                 },
-            )
-        )
-        renderer.render(
+            ),
             event(
                 "role.output",
                 phase="PLAN",
@@ -52,10 +48,16 @@ class RendererTest(unittest.TestCase):
                     "stream": "stdout",
                     "text": "working on plan",
                 },
-            )
+            ),
         )
+        info = io.StringIO()
+        verbose = io.StringIO()
+        for item in items:
+            build_renderer("human", info, "info", "never").render(item)
+            build_renderer("human", verbose, "verbose", "never").render(item)
 
-        text = stream.getvalue()
+        self.assertEqual("", info.getvalue())
+        text = verbose.getvalue()
         self.assertIn("planner_deep running", text)
         self.assertIn("5.0s", text)
         self.assertIn("pid 12345", text)
@@ -64,7 +66,7 @@ class RendererTest(unittest.TestCase):
 
     def test_human_renderer_separates_requested_and_unobserved_model(self) -> None:
         stream = io.StringIO()
-        renderer = build_renderer("human", stream, "info", "never")
+        renderer = build_renderer("human", stream, "verbose", "never")
 
         renderer.render(
             event(
@@ -89,7 +91,7 @@ class RendererTest(unittest.TestCase):
 
     def test_human_renderer_shows_session_activity_and_model_change(self) -> None:
         stream = io.StringIO()
-        renderer = build_renderer("human", stream, "info", "never")
+        renderer = build_renderer("human", stream, "verbose", "never")
         renderer.render(
             event(
                 "session.update",
@@ -114,7 +116,7 @@ class RendererTest(unittest.TestCase):
 
     def test_human_renderer_shows_live_and_completed_usage(self) -> None:
         stream = io.StringIO()
-        renderer = build_renderer("human", stream, "info", "never")
+        renderer = build_renderer("human", stream, "verbose", "never")
         renderer.render(
             event(
                 "usage.observed",
@@ -174,6 +176,18 @@ class RendererTest(unittest.TestCase):
         self.assertIn("fast-model → recovery-model", text)
         self.assertIn("keyboard navigation missing", text)
         self.assertIn("PROVEN", text)
+
+    def test_human_renderer_keeps_the_core_check_id_with_its_plain_label(self) -> None:
+        stream = io.StringIO()
+        renderer = build_renderer("human", stream, "info", "never")
+        renderer.render(
+            event(
+                "check.completed",
+                phase="VERIFY",
+                data={"name": "static-web-browser-load", "exitCode": 0},
+            )
+        )
+        self.assertIn("static-web-browser-load · 브라우저 로드", stream.getvalue())
 
     def test_info_hides_check_output_while_debug_shows_it(self) -> None:
         item = event(

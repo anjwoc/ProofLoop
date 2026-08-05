@@ -8,11 +8,23 @@ from proofloop_core.contracts.task_brief import ChangeBudget, CheckSpec, ProofPl
 
 def _task(proof_plan: ProofPlan | None) -> TaskBrief:
     return TaskBrief(
-        task_id="TASK-001", objective="bounded", allowed_paths=("src/**",), protected_paths=(),
+        task_id="TASK-001",
+        objective="bounded",
+        allowed_paths=("src/**",),
+        protected_paths=(),
         required_checks=(CheckSpec(command=["python", "-m", "pytest"]),),
         change_budget=ChangeBudget(1, 10, 0, False),
-        simplicity=SimplicityPlan("DIRECT_CHANGE", "bounded", ()),
-        criterion_ids=("AC-001",), proof_plan=proof_plan,
+        simplicity=SimplicityPlan(
+            "DIRECT_CHANGE",
+            "bounded",
+            ("REUSE_EXISTING", "STDLIB", "PLATFORM_NATIVE", "INSTALLED_DEPENDENCY"),
+            ("fixture#/blueprint",),
+            (),
+        ),
+        max_fast_attempts=1,
+        max_recovery_attempts=0,
+        criterion_ids=("AC-001",),
+        proof_plan=proof_plan,
     )
 
 
